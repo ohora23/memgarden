@@ -1,5 +1,6 @@
 pub mod banks;
 mod conn;
+pub mod metrics_store;
 mod migrate;
 pub mod models;
 pub mod nodes;

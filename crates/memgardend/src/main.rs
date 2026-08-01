@@ -1,8 +1,10 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use memgarden_core::config::Config;
+use memgarden_core::metrics::METRICS;
 use memgarden_store::Db;
-use memgardend::{routes, state::AppState};
+use memgardend::{metrics_task, routes, state::AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -13,19 +15,30 @@ async fn main() -> anyhow::Result<()> {
 
     let db = Arc::new(Db::open(&cfg.db_path)?);
     let cfg = Arc::new(cfg);
+    let started_at_ms = memgarden_core::now_ms();
+    METRICS
+        .started_at_ms
+        .store(started_at_ms as u64, Ordering::Relaxed);
     let state = AppState {
         db: db.clone(),
         cfg: cfg.clone(),
-        started_at_ms: memgarden_core::now_ms(),
+        started_at_ms,
     };
 
     let app = routes::router(state);
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     tracing::info!(addr = %cfg.bind, "listening");
 
+    let metrics_task_handle = tokio::spawn(metrics_task::run(
+        db.clone(),
+        cfg.metrics_snapshot_interval_secs,
+    ));
+
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(memgardend::shutdown_signal())
         .await?;
+
+    let _ = metrics_task_handle.await;
 
     tracing::info!("shutting down: checkpointing WAL");
     let checkpoint_db = db.clone();
@@ -44,28 +57,4 @@ fn init_tracing(cfg_level: &str) {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(cfg_level));
     tracing_subscriber::fmt().with_env_filter(filter).init();
-}
-
-/// Resolves when either Ctrl+C or SIGTERM is received.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
 }

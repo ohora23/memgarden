@@ -44,6 +44,20 @@ impl<'a> NewNode<'a> {
     }
 }
 
+/// A benefit-ledger row: a manually (or, from CE-5+, automatically) logged
+/// case of the recall/retain system substituting for or capping tokens
+/// that would otherwise have been spent. `detail` is the free-form JSON
+/// blob (case_text, injection_tokens, replaced_tokens_est, session_id,
+/// evidence_ref) — see memgardend::routes::metrics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerEntry {
+    pub id: i64,
+    pub kind: String,
+    pub bank_id: Option<String>,
+    pub detail: Option<String>,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryNode {
     pub id: i64,
