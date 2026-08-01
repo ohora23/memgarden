@@ -19,7 +19,7 @@ pub fn create(
              VALUES (?1, ?2, ?3, ?4, ?4)",
             params![bank_id, mission, disposition, now],
         )
-        .map_err(store_err)?;
+        .map_err(|e| map_create_err(e, bank_id))?;
         Ok(())
     })?;
     Ok(Bank {
@@ -29,6 +29,17 @@ pub fn create(
         created_at: now,
         updated_at: now,
     })
+}
+
+/// All banks, ordered by `bank_id`.
+pub fn list(db: &Db) -> Result<Vec<Bank>> {
+    let conn = db.read()?;
+    let mut stmt = conn
+        .prepare("SELECT bank_id, mission, disposition, created_at, updated_at FROM banks ORDER BY bank_id")
+        .map_err(store_err)?;
+    let rows = stmt.query_map([], row_to_bank).map_err(store_err)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(store_err)
 }
 
 pub fn get(db: &Db, bank_id: &str) -> Result<Option<Bank>> {
@@ -71,6 +82,15 @@ pub fn delete(db: &Db, bank_id: &str) -> Result<()> {
             .map_err(store_err)?;
         Ok(())
     })
+}
+
+/// Maps a `bank_id` UNIQUE-constraint violation to `Error::Conflict`; any
+/// other rusqlite error falls through to the generic storage mapping.
+fn map_create_err(e: rusqlite::Error, bank_id: &str) -> Error {
+    if e.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
+        return Error::Conflict(format!("bank {bank_id} already exists"));
+    }
+    store_err(e)
 }
 
 fn row_to_bank(row: &rusqlite::Row) -> rusqlite::Result<Bank> {

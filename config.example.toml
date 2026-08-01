@@ -1,0 +1,27 @@
+# memgardend configuration.
+#
+# Every key below is optional; anything left out falls back to the
+# built-in default shown here. Copy to $XDG_CONFIG_HOME/memgarden/config.toml
+# (or point MEMGARDEN_CONFIG at this file) to use it.
+#
+# Every value can also be overridden via environment, which wins over both
+# this file and the built-in defaults:
+#   MEMGARDEN_BIND, MEMGARDEN_DB_PATH, MEMGARDEN_LOG_LEVEL,
+#   MEMGARDEN_METRICS_INTERVAL
+
+[server]
+# Note: ports 9077 (hindsight) and 9090 (memdash) are already in use on
+# this machine by unrelated legacy tooling. 9100 is memgarden's default.
+bind = "127.0.0.1:9100"
+
+[storage]
+# Defaults to the XDG data dir: $XDG_DATA_HOME/memgarden/memgarden.db, or
+# ~/.local/share/memgarden/memgarden.db if XDG_DATA_HOME is unset.
+# "~" is expanded to $HOME.
+db_path = "~/.local/share/memgarden/memgarden.db"
+
+[log]
+level = "info"
+
+[metrics]
+snapshot_interval_secs = 60
