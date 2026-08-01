@@ -44,8 +44,8 @@ CREATE TABLE memory_nodes (
   updated_at      INTEGER NOT NULL
 ) STRICT;
 
-CREATE INDEX idx_memory_nodes_bank_date ON memory_nodes(bank_id, created_at);
-CREATE INDEX idx_memory_nodes_bank_type_date ON memory_nodes(bank_id, fact_type, created_at);
+CREATE INDEX idx_memory_nodes_bank_date ON memory_nodes(bank_id, event_date DESC);
+CREATE INDEX idx_memory_nodes_bank_type_date ON memory_nodes(bank_id, fact_type, event_date DESC);
 CREATE INDEX idx_memory_nodes_document ON memory_nodes(document_id);
 CREATE INDEX idx_memory_nodes_occurred ON memory_nodes(occurred_start, occurred_end);
 CREATE INDEX idx_memory_nodes_mentioned ON memory_nodes(mentioned_at);
