@@ -33,6 +33,7 @@ fn get_request(uri: &str) -> Request<Body> {
     Request::builder()
         .method("GET")
         .uri(uri)
+        .header("host", "127.0.0.1:9100")
         .body(Body::empty())
         .unwrap()
 }
@@ -41,6 +42,7 @@ fn json_request(method: &str, uri: &str, body: Value) -> Request<Body> {
     Request::builder()
         .method(method)
         .uri(uri)
+        .header("host", "127.0.0.1:9100")
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
@@ -111,6 +113,31 @@ async fn ledger_roundtrip() {
         entries[0]["case_text"],
         "avoided a 400-token recall by reusing cached context"
     );
+}
+
+#[tokio::test]
+async fn ledger_limit_clamped() {
+    let (app, _db) = test_app();
+
+    for i in 0..3 {
+        let create = json_request(
+            "POST",
+            "/v1/ledger",
+            json!({ "kind": "manual", "case_text": format!("case {i}") }),
+        );
+        let response = app.clone().oneshot(create).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    // limit=-1 must clamp to 1, not be treated as unbounded or rejected.
+    let response = app
+        .clone()
+        .oneshot(get_request("/v1/ledger?limit=-1"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body.as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]

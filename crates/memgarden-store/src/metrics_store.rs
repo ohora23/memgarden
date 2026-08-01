@@ -25,8 +25,11 @@ pub fn insert_snapshot(db: &Db, payload: &str) -> Result<()> {
     })
 }
 
-/// Newest-first `(id, created_at, payload)` rows, capped at `limit`.
+/// Newest-first `(id, created_at, payload)` rows, capped at `limit`
+/// (clamped to `1..=1000` so a caller-supplied 0/negative/huge value can't
+/// turn into an unbounded scan).
 pub fn recent_snapshots(db: &Db, limit: i64) -> Result<Vec<(i64, i64, String)>> {
+    let limit = limit.clamp(1, 1000);
     let conn = db.read()?;
     let mut stmt = conn
         .prepare("SELECT id, created_at, payload FROM metric_snapshots ORDER BY id DESC LIMIT ?1")
@@ -64,8 +67,10 @@ pub fn insert_ledger(
     })
 }
 
-/// Newest-first ledger entries, capped at `limit`.
+/// Newest-first ledger entries, capped at `limit` (clamped to `1..=1000`,
+/// same rationale as `recent_snapshots`).
 pub fn list_ledger(db: &Db, limit: i64) -> Result<Vec<LedgerEntry>> {
+    let limit = limit.clamp(1, 1000);
     let conn = db.read()?;
     let mut stmt = conn
         .prepare("SELECT id, kind, bank_id, detail, created_at FROM benefit_ledger ORDER BY id DESC LIMIT ?1")

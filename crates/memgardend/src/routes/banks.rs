@@ -39,12 +39,18 @@ pub struct CreateBankRequest {
     pub disposition: Option<String>,
 }
 
+/// `None` (key absent from the JSON body) leaves the field untouched;
+/// `Some(None)` (key present, value `null`) clears it; `Some(Some(v))` sets
+/// it. This relies on serde's standard handling of `Option<T>`-typed
+/// fields: a missing key defaults to the outer `None` regardless of what
+/// `T` is, so `Option<Option<String>>` distinguishes "absent" from
+/// "explicit null" without a custom deserializer.
 #[derive(Debug, Deserialize)]
 pub struct PatchBankRequest {
     #[serde(default)]
-    pub mission: Option<String>,
+    pub mission: Option<Option<String>>,
     #[serde(default)]
-    pub disposition: Option<String>,
+    pub disposition: Option<Option<String>>,
 }
 
 pub async fn list_banks(
@@ -61,6 +67,11 @@ pub async fn create_bank(
     State(state): State<AppState>,
     Json(body): Json<CreateBankRequest>,
 ) -> Result<(StatusCode, Json<BankResponse>), ApiError> {
+    if body.bank_id.is_empty() || body.bank_id.len() > 200 || body.bank_id.contains('/') {
+        return Err(
+            memgarden_core::Error::Invalid(format!("invalid bank_id: {:?}", body.bank_id)).into(),
+        );
+    }
     let db = state.db.clone();
     let created = tokio::task::spawn_blocking(move || {
         banks::create(
@@ -99,8 +110,8 @@ pub async fn patch_bank(
         banks::update(
             &db,
             &id,
-            body.mission.as_deref(),
-            body.disposition.as_deref(),
+            body.mission.as_ref().map(|m| m.as_deref()),
+            body.disposition.as_ref().map(|d| d.as_deref()),
         )
     })
     .await
@@ -119,17 +130,11 @@ pub async fn delete_bank(
     Path(bank_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let db = state.db.clone();
-    let id = bank_id.clone();
-    let existing = tokio::task::spawn_blocking(move || banks::get(&db, &id))
+    let changed = tokio::task::spawn_blocking(move || banks::delete(&db, &bank_id))
         .await
         .map_err(join_err)??;
-    if existing.is_none() {
+    if changed == 0 {
         return Err(ApiError::not_found("bank not found"));
     }
-
-    let db = state.db.clone();
-    tokio::task::spawn_blocking(move || banks::delete(&db, &bank_id))
-        .await
-        .map_err(join_err)??;
     Ok(StatusCode::NO_CONTENT)
 }

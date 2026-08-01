@@ -27,6 +27,12 @@ pub async fn run(db: Arc<Db>, interval_secs: u64) {
         return;
     }
     let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
+    // Pinned once, outside the loop: awaiting `crate::shutdown_signal()`
+    // fresh inside each `select!` would create (and immediately drop) a new
+    // listener every tick, so a signal arriving mid-tick could be missed
+    // entirely instead of breaking the loop.
+    let shutdown = crate::shutdown_signal();
+    tokio::pin!(shutdown);
     loop {
         tokio::select! {
             _ = ticker.tick() => {
@@ -37,7 +43,7 @@ pub async fn run(db: Arc<Db>, interval_secs: u64) {
                     Err(e) => tracing::warn!(error = %e, "metrics snapshot task panicked"),
                 }
             }
-            _ = crate::shutdown_signal() => break,
+            _ = &mut shutdown => break,
         }
     }
 }

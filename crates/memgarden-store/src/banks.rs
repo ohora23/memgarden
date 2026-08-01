@@ -19,7 +19,7 @@ pub fn create(
              VALUES (?1, ?2, ?3, ?4, ?4)",
             params![bank_id, mission, disposition, now],
         )
-        .map_err(|e| map_create_err(e, bank_id))?;
+        .map_err(|e| map_bank_err(e, bank_id))?;
         Ok(())
     })?;
     Ok(Bank {
@@ -53,22 +53,38 @@ pub fn get(db: &Db, bank_id: &str) -> Result<Option<Bank>> {
     .map_err(store_err)
 }
 
-/// Overwrites `mission`/`disposition` (each `None` sets the column to
-/// `NULL`) and bumps `updated_at`.
+/// Partial update: `None` leaves the column untouched, `Some(None)` sets it
+/// to `NULL`, `Some(Some(v))` sets it to `v`. Builds a dynamic (but still
+/// fully parameter-bound) `SET` clause covering only the columns actually
+/// present in the request, and always bumps `updated_at`.
 pub fn update(
     db: &Db,
     bank_id: &str,
-    mission: Option<&str>,
-    disposition: Option<&str>,
+    mission: Option<Option<&str>>,
+    disposition: Option<Option<&str>>,
 ) -> Result<()> {
     let now = now_ms();
     db.write(|tx| {
+        let mut sets = vec!["updated_at = ?1".to_string()];
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&now];
+        if let Some(m) = &mission {
+            sets.push(format!("mission = ?{}", values.len() + 1));
+            values.push(m);
+        }
+        if let Some(d) = &disposition {
+            sets.push(format!("disposition = ?{}", values.len() + 1));
+            values.push(d);
+        }
+        let bank_id_idx = values.len() + 1;
+        values.push(&bank_id);
+        let sql = format!(
+            "UPDATE banks SET {} WHERE bank_id = ?{bank_id_idx}",
+            sets.join(", ")
+        );
+
         let changed = tx
-            .execute(
-                "UPDATE banks SET mission = ?1, disposition = ?2, updated_at = ?3 WHERE bank_id = ?4",
-                params![mission, disposition, now, bank_id],
-            )
-            .map_err(store_err)?;
+            .execute(&sql, values.as_slice())
+            .map_err(|e| map_bank_err(e, bank_id))?;
         if changed == 0 {
             return Err(Error::NotFound(format!("bank {bank_id}")));
         }
@@ -76,19 +92,29 @@ pub fn update(
     })
 }
 
-pub fn delete(db: &Db, bank_id: &str) -> Result<()> {
+pub fn delete(db: &Db, bank_id: &str) -> Result<usize> {
     db.write(|tx| {
         tx.execute("DELETE FROM banks WHERE bank_id = ?1", params![bank_id])
-            .map_err(store_err)?;
-        Ok(())
+            .map_err(store_err)
     })
 }
 
-/// Maps a `bank_id` UNIQUE-constraint violation to `Error::Conflict`; any
-/// other rusqlite error falls through to the generic storage mapping.
-fn map_create_err(e: rusqlite::Error, bank_id: &str) -> Error {
-    if e.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
-        return Error::Conflict(format!("bank {bank_id} already exists"));
+/// Maps a rusqlite constraint violation to the right API-level error:
+/// `UNIQUE`/`PRIMARY KEY` (duplicate `bank_id`) -> `Error::Conflict`;
+/// `CHECK` (e.g. invalid `disposition` JSON) -> `Error::Invalid`. Any other
+/// error falls through to the generic storage mapping.
+fn map_bank_err(e: rusqlite::Error, bank_id: &str) -> Error {
+    if let rusqlite::Error::SqliteFailure(ref ffi_err, _) = e {
+        match ffi_err.extended_code {
+            rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+            | rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY => {
+                return Error::Conflict(format!("bank {bank_id} already exists"));
+            }
+            rusqlite::ffi::SQLITE_CONSTRAINT_CHECK => {
+                return Error::Invalid(format!("bank {bank_id}: json_valid or enum check failed"));
+            }
+            _ => {}
+        }
     }
     store_err(e)
 }

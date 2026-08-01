@@ -287,7 +287,13 @@ fn bank_crud() {
     assert_eq!(fetched.mission.as_deref(), Some("mission"));
     assert_eq!(fetched.disposition, None);
 
-    banks::update(&db, "b1", Some("new mission"), Some(r#"{"k":"v"}"#)).unwrap();
+    banks::update(
+        &db,
+        "b1",
+        Some(Some("new mission")),
+        Some(Some(r#"{"k":"v"}"#)),
+    )
+    .unwrap();
     let updated = banks::get(&db, "b1").unwrap().unwrap();
     assert_eq!(updated.mission.as_deref(), Some("new mission"));
     assert_eq!(updated.disposition.as_deref(), Some(r#"{"k":"v"}"#));

@@ -8,6 +8,7 @@ pub mod search;
 pub mod vecblob;
 
 use std::path::Path;
+use std::time::Duration;
 
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
@@ -42,6 +43,7 @@ impl Db {
     fn from_manager(manager: SqliteConnectionManager) -> Result<Self> {
         let pool = Pool::builder()
             .max_size(POOL_MAX_SIZE)
+            .connection_timeout(Duration::from_secs(3))
             .build(manager)
             .map_err(store_err)?;
         let mut conn = pool.get().map_err(store_err)?;

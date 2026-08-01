@@ -32,6 +32,7 @@ fn json_request(method: &str, uri: &str, body: Value) -> Request<Body> {
     Request::builder()
         .method(method)
         .uri(uri)
+        .header("host", "127.0.0.1:9100")
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
@@ -41,6 +42,7 @@ fn get_request(uri: &str) -> Request<Body> {
     Request::builder()
         .method("GET")
         .uri(uri)
+        .header("host", "127.0.0.1:9100")
         .body(Body::empty())
         .unwrap()
 }
@@ -102,6 +104,7 @@ async fn banks_crud_roundtrip() {
     let delete = Request::builder()
         .method("DELETE")
         .uri("/v1/banks/roundtrip")
+        .header("host", "127.0.0.1:9100")
         .body(Body::empty())
         .unwrap();
     let response = app.clone().oneshot(delete).await.unwrap();
@@ -116,7 +119,7 @@ async fn banks_crud_roundtrip() {
 }
 
 #[tokio::test]
-async fn duplicate_bank_conflicts() {
+async fn duplicate_still_409() {
     let app = test_app();
 
     let create = json_request("POST", "/v1/banks", json!({ "bank_id": "dup" }));
@@ -128,6 +131,127 @@ async fn duplicate_bank_conflicts() {
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let body = body_json(response).await;
     assert_eq!(body["error"]["code"], "conflict");
+}
+
+#[tokio::test]
+async fn check_violation_returns_400() {
+    let app = test_app();
+
+    // disposition must be valid JSON (CHECK (disposition IS NULL OR
+    // json_valid(disposition))) — a plain non-JSON string violates it and
+    // must surface as 400, not 500.
+    let create = json_request(
+        "POST",
+        "/v1/banks",
+        json!({ "bank_id": "bad-disposition", "disposition": "not json" }),
+    );
+    let response = app.oneshot(create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["code"], "invalid");
+}
+
+#[tokio::test]
+async fn empty_bank_id_400() {
+    let app = test_app();
+    let create = json_request("POST", "/v1/banks", json!({ "bank_id": "" }));
+    let response = app.oneshot(create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn patch_invalid_json_400() {
+    let app = test_app();
+
+    let create = json_request("POST", "/v1/banks", json!({ "bank_id": "patch-target" }));
+    let response = app.clone().oneshot(create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let patch = json_request(
+        "PATCH",
+        "/v1/banks/patch-target",
+        json!({ "disposition": "not json" }),
+    );
+    let response = app.oneshot(patch).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["code"], "invalid");
+}
+
+#[tokio::test]
+async fn patch_partial_preserves_other_fields() {
+    let app = test_app();
+
+    let create = json_request(
+        "POST",
+        "/v1/banks",
+        json!({ "bank_id": "partial", "mission": "original mission", "disposition": "{\"x\":1}" }),
+    );
+    let response = app.clone().oneshot(create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    // Only `mission` is present in the body; `disposition` must be left
+    // untouched, not nulled out.
+    let patch = json_request(
+        "PATCH",
+        "/v1/banks/partial",
+        json!({ "mission": "updated mission" }),
+    );
+    let response = app.oneshot(patch).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["mission"], "updated mission");
+    assert_eq!(body["disposition"], "{\"x\":1}");
+}
+
+#[tokio::test]
+async fn delete_twice_second_404() {
+    let app = test_app();
+
+    let create = json_request("POST", "/v1/banks", json!({ "bank_id": "del-twice" }));
+    let response = app.clone().oneshot(create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let delete = Request::builder()
+        .method("DELETE")
+        .uri("/v1/banks/del-twice")
+        .header("host", "127.0.0.1:9100")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(delete).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let delete_again = Request::builder()
+        .method("DELETE")
+        .uri("/v1/banks/del-twice")
+        .header("host", "127.0.0.1:9100")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(delete_again).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn host_header_rejected() {
+    let app = test_app();
+
+    let evil = Request::builder()
+        .method("GET")
+        .uri("/livez")
+        .header("host", "evil.com")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(evil).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let allowed = Request::builder()
+        .method("GET")
+        .uri("/livez")
+        .header("host", "127.0.0.1:9100")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(allowed).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

@@ -19,6 +19,12 @@ pub fn fts_query_string(raw: &str) -> String {
 /// Full-text candidate node ids for `bank_id`, ranked by BM25 (best first).
 /// `match_query` is an FTS5 MATCH expression — see `fts_query_string`.
 pub fn fts_candidates(db: &Db, bank_id: &str, match_query: &str, limit: usize) -> Result<Vec<i64>> {
+    if match_query.is_empty() {
+        // `MATCH ''` is a SQLite/FTS5 syntax error, not "no results" — an
+        // empty query (e.g. from fts_query_string on punctuation-only
+        // input) has no candidates by definition, so short-circuit.
+        return Ok(vec![]);
+    }
     let conn = db.read()?;
     let mut stmt = conn
         .prepare(
@@ -70,5 +76,18 @@ mod tests {
         assert_eq!(fts_query_string("데몬"), "데몬*");
         assert_eq!(fts_query_string("hello world"), "hello* world*");
         assert_eq!(fts_query_string("  foo,bar  "), "foo* bar*");
+    }
+
+    #[test]
+    fn empty_fts_query_no_error() {
+        let db = Db::open_memory().unwrap();
+        crate::banks::create(&db, "b1", None, None).unwrap();
+        // Punctuation-only input tokenizes to an empty match string; that
+        // must return no candidates, not a `MATCH ''` syntax error.
+        assert_eq!(fts_query_string("!!!"), "");
+        assert_eq!(
+            fts_candidates(&db, "b1", "", 10).unwrap(),
+            Vec::<i64>::new()
+        );
     }
 }

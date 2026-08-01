@@ -101,15 +101,19 @@ impl Histogram {
                     let bound = BOUNDS_US[i];
                     let bucket_count = cum - prev_cum;
                     if bucket_count == 0 {
-                        return prev_bound as f64;
+                        return (prev_bound as f64).min(max_us as f64);
                     }
                     let frac = (target - prev_cum) as f64 / bucket_count as f64;
-                    return prev_bound as f64 + frac * (bound as f64 - prev_bound as f64);
+                    let value = prev_bound as f64 + frac * (bound as f64 - prev_bound as f64);
+                    // Clamp: a sample landing in the overflow bucket
+                    // (bound == u64::MAX) can interpolate toward u64::MAX
+                    // even though the true max observed is far lower.
+                    return value.min(max_us as f64);
                 }
                 prev_bound = BOUNDS_US[i];
                 prev_cum = cum;
             }
-            prev_bound as f64
+            (prev_bound as f64).min(max_us as f64)
         };
 
         let under_bound = |bound_us: u64| -> u64 {
@@ -320,6 +324,25 @@ mod tests {
             "boundary value 35_000 must be <= bound, inclusive"
         );
         assert_eq!(snap.under_60ms, 2);
+    }
+
+    #[test]
+    fn quantile_clamped_to_max() {
+        // One sample lands in the overflow bucket (bound == u64::MAX) but
+        // is nowhere near u64::MAX itself. Without clamping, interpolation
+        // between the previous bucket's bound and u64::MAX would blow p99
+        // up to ~1.8e19 even though the real max is 700_000.
+        let h = Histogram::new();
+        h.record_us(1_000);
+        h.record_us(700_000);
+        let snap = h.snapshot().unwrap();
+        assert_eq!(snap.max_us, 700_000);
+        assert!(
+            snap.p99_us <= snap.max_us as f64,
+            "p99 {} must not exceed max_us {}",
+            snap.p99_us,
+            snap.max_us
+        );
     }
 
     #[test]
