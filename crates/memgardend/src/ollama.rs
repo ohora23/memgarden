@@ -33,6 +33,8 @@ const TOTAL_DEADLINE_CAP: Duration = Duration::from_secs(600);
 pub enum OllamaError {
     #[error("timed out waiting for an Ollama request slot")]
     Busy,
+    #[error("ollama call exceeded the {0:?} total deadline")]
+    Deadline(Duration),
     #[error("ollama request failed: {0}")]
     Transport(String),
     #[error("ollama returned HTTP {status}: {body}")]
@@ -133,7 +135,7 @@ impl OllamaClient {
             Err(last_err)
         })
         .await
-        .unwrap_or(Err(OllamaError::Busy));
+        .unwrap_or(Err(OllamaError::Deadline(deadline)));
 
         drop(permit);
         result

@@ -467,6 +467,22 @@ mod tests {
     }
 
     #[test]
+    fn ollama_validation_rejects_bad_values() {
+        let env = HashMap::new();
+        let mut bad_url = defaults();
+        bad_url.ollama.base_url = "localhost:11434".to_string(); // no scheme
+        assert!(from_parts(bad_url, None, &env).is_err());
+
+        let mut zero_timeout = defaults();
+        zero_timeout.ollama.request_timeout_secs = 0;
+        assert!(from_parts(zero_timeout, None, &env).is_err());
+
+        let mut zero_concurrent = defaults();
+        zero_concurrent.ollama.max_concurrent = 0;
+        assert!(from_parts(zero_concurrent, None, &env).is_err());
+    }
+
+    #[test]
     fn ollama_precedence() {
         let toml_str = r#"
             [ollama]

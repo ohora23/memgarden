@@ -26,17 +26,18 @@ pub struct DryRunExtractResponse {
     pub facts: Vec<ParsedFact>,
 }
 
-/// `POST /v1/banks/{bank_id}/dry-run-extract` — runs extraction against
-/// Ollama and returns the parsed facts. No writes (legacy has the same
-/// debug route, `api/http.py:4092`). 404 for an unknown bank; 503 when
-/// Ollama is unreachable or the request timed out waiting for a permit
-/// (Critic Revision R11).
 /// Security review M1: one oversized `text` would hold the single Ollama
 /// permit for the whole prompt-eval. ~10x legacy's 3000-char chunk; B3's
 /// retain ingest chunks at legacy size and never comes near this.
 const MAX_TEXT_BYTES: usize = 32 * 1024;
 const MAX_MISSION_BYTES: usize = 4 * 1024;
 
+/// `POST /v1/banks/{bank_id}/dry-run-extract` — runs extraction against
+/// Ollama and returns the parsed facts. No writes (legacy has the same
+/// debug route, `api/http.py:4092`). 404 for an unknown bank; 400 for
+/// oversized input; 503 for transient trouble (permit timeout — Critic
+/// Revision R11 — transport, 5xx, deadline); 502 for a permanent upstream
+/// refusal (4xx like model-not-found) or unparseable output across retries.
 pub async fn dry_run_extract(
     State(state): State<AppState>,
     Path(bank_id): Path<String>,
@@ -77,7 +78,9 @@ pub async fn dry_run_extract(
         match &e {
             // Busy/Transport/5xx: Ollama is temporarily the problem — 503,
             // so the client knows to retry.
-            OllamaError::Busy | OllamaError::Transport(_) => ApiError::unavailable(message),
+            OllamaError::Busy | OllamaError::Deadline(_) | OllamaError::Transport(_) => {
+                ApiError::unavailable(message)
+            }
             OllamaError::Http { status, .. } if *status >= 500 => {
                 ApiError::unavailable(message)
             }
