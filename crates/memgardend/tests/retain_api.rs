@@ -216,6 +216,86 @@ async fn empty_messages_is_400() {
     assert_eq!(body["error"]["code"], "invalid");
 }
 
+/// Review MEDIUM: `sanitize_tags` used to run on `body.tags` only, so a
+/// `session_id` carrying control characters (or 4KB of them) went into
+/// `node_tags` unchecked — and the total count cap was bypassable by
+/// splitting tags across sources.
+#[tokio::test]
+async fn every_tag_source_is_sanitized_not_just_the_caller_supplied_ones() {
+    let (harness, mut rx, _state) = build("http://127.0.0.1:1", |_| {});
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let flood: Vec<String> = (0..40).map(|i| format!("flood{i}")).collect();
+    let response = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({
+                "messages": [{ "role": "user", "content": "please remember the sanitizer" }],
+                "is_initial": true,
+                "session_id": "sess\u{7}with\u{1b}control",
+                "tags": flood,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+    let task = rx.try_recv().expect("a task must have been queued");
+    assert!(
+        !task.tags.iter().any(|t| t.chars().any(char::is_control)),
+        "no control characters may survive any source: {:?}",
+        task.tags
+    );
+    assert!(
+        !task.tags.iter().any(|t| t.starts_with("session:sess\u{7}")),
+        "the raw session tag must be dropped, not passed through: {:?}",
+        task.tags
+    );
+    assert!(
+        task.tags.len() <= 32,
+        "the count cap applies to the combined list: {}",
+        task.tags.len()
+    );
+}
+
+/// PR #8 review LOW: a body that is valid JSON but the wrong shape used to
+/// come back as axum's own 422 with a `text/plain` payload — the one failure
+/// mode on the whole API that did not speak the error envelope. `is_initial`
+/// is the field this matters most for: it is required precisely so a caller
+/// who forgets it cannot silently take the uncapped branch.
+#[tokio::test]
+async fn a_missing_required_field_is_400_in_the_error_envelope() {
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+    let response = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+        "application/json"
+    );
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["code"], "invalid");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("is_initial"),
+        "serde's own message must survive: {body}"
+    );
+}
+
 #[tokio::test]
 async fn nothing_to_retain_is_a_clean_skip_not_an_error() {
     let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});

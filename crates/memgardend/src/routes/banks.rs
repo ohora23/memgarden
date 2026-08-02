@@ -7,6 +7,7 @@ use memgarden_store::banks;
 use memgarden_store::models::Bank;
 
 use crate::error::{ApiError, join_err};
+use crate::json::ApiJson;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -65,7 +66,7 @@ pub async fn list_banks(
 
 pub async fn create_bank(
     State(state): State<AppState>,
-    Json(body): Json<CreateBankRequest>,
+    ApiJson(body): ApiJson<CreateBankRequest>,
 ) -> Result<(StatusCode, Json<BankResponse>), ApiError> {
     if body.bank_id.is_empty() || body.bank_id.len() > 200 || body.bank_id.contains('/') {
         return Err(
@@ -110,7 +111,7 @@ pub async fn get_bank(
 pub async fn patch_bank(
     State(state): State<AppState>,
     Path(bank_id): Path<String>,
-    Json(body): Json<PatchBankRequest>,
+    ApiJson(body): ApiJson<PatchBankRequest>,
 ) -> Result<Json<BankResponse>, ApiError> {
     let db = state.db.clone();
     let id = bank_id.clone();

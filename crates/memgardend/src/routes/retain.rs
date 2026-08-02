@@ -19,15 +19,19 @@ use memgarden_core::metrics::METRICS;
 use memgarden_store::{banks, documents, metrics_store, retain_jobs};
 
 use crate::error::{ApiError, join_err};
+use crate::json::ApiJson;
 use crate::retain::{IngestPlan, RetainTask};
 use crate::state::AppState;
 
-/// Hard ceiling on one retain request body. The caps that shrink a
-/// transcript run *after* parsing, so this has to fit a real first-retain of
-/// a long-lived project — but a single request must never be able to OOM the
-/// daemon, and 32MB already exceeds any transcript the backfill cap will let
-/// through to extraction. Pair with `retain::MAX_QUEUED_BYTES`, which bounds
-/// the *sum* of what is waiting in the queue.
+/// Hard ceiling on one retain request body. Every cap MemGarden applies —
+/// the backfill cap, both tool-input caps — runs *after* the body is parsed,
+/// so this limit has to accommodate the **uncapped** transcript a client
+/// sends, not the much smaller thing that survives capping. That is the
+/// whole reason it is 16x axum's default: the 102MB-transcript incident is
+/// exactly this shape. The counterweight is that one request must never be
+/// able to OOM the daemon, which is what puts the ceiling at 32MB. Pair with
+/// `retain::MAX_QUEUED_BYTES`, which bounds the *sum* of what is waiting in
+/// the queue.
 /// The route-level `DefaultBodyLimit` in `routes/mod.rs` enforces it.
 pub const MAX_RETAIN_BODY_BYTES: usize = 32 * 1024 * 1024;
 
@@ -85,7 +89,7 @@ pub struct RetainResponse {
 pub async fn retain(
     State(state): State<AppState>,
     Path(bank_id): Path<String>,
-    Json(body): Json<RetainRequest>,
+    ApiJson(body): ApiJson<RetainRequest>,
 ) -> Result<Response, ApiError> {
     let started = Instant::now();
     METRICS.retain_requests.fetch_add(1, Ordering::Relaxed);
@@ -316,14 +320,23 @@ fn prepare(
         Some(&detail),
     )?;
 
-    let mut tags = sanitize_tags(&body.tags);
-    // Critic Revision R15: the session tag is the data path AC-4's session
-    // filter (and B5's `/graph?session=`) reads. legacy template parity:
-    // `retain.py:201-206`.
+    // Every tag source goes through `sanitize_tags` together, not just the
+    // caller-supplied ones (review MEDIUM): `session_id` is raw request
+    // input and a `file:` path is transcript-derived, so both can carry
+    // control characters or absurd lengths, and sanitizing only `body.tags`
+    // left the per-tag caps AND the total count cap bypassable.
+    //
+    // Order is priority under the count cap: the session tag is AC-4's
+    // filter data path (Critic Revision R15, legacy template parity
+    // `retain.py:201-206`) and the `file:` tags are the feature, so a caller
+    // who floods `body.tags` loses their own tags first, not ours.
+    let mut tags: Vec<String> = Vec::new();
     if let Some(session_id) = &body.session_id {
         tags.push(format!("session:{session_id}"));
     }
     tags.extend(plan.file_tags.iter().cloned());
+    tags.extend(body.tags.iter().cloned());
+    let tags = sanitize_tags(&tags);
 
     let task = RetainTask {
         job_id: job_id.to_string(),

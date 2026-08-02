@@ -49,7 +49,7 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 | Phase | Scope | State |
 |---|---|---|
 | A — Foundation | workspace/CI, SQLite schema, REST skeleton, metrics plumbing (CE-1..3, MX-1) | ✅ merged |
-| B — Core pipeline | embeddings CE-4 ✅ · Ollama extraction CE-5a ✅ · retain ingest CE-5b 🔄 · hybrid recall CE-6 · entities/graph CE-7 · temporal CE-8 · consolidation CE-9 · reflect CE-10 · reranker CE-11 | 🔄 in progress |
+| B — Core pipeline | embeddings CE-4 ✅ · Ollama extraction CE-5a ✅ · retain ingest CE-5b ✅ · hybrid recall CE-6 🔄 · entities/graph CE-7 · temporal CE-8 · consolidation CE-9 · reflect CE-10 · reranker CE-11 | 🔄 in progress |
 | C — Hooks | 4 Rust hook subcommands, global settings switch | ⏳ |
 | D — Migration | Postgres → SQLite exporter, lossless-verification script | ⏳ |
 | E — UI & metrics | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views | ⏳ |

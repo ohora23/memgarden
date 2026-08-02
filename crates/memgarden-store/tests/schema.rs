@@ -139,9 +139,11 @@ fn fts_korean_prefix() {
             .is_empty()
     );
 
-    // fts_query_string appends '*', which matches via the prefix='2 3 4' index.
+    // fts_query_string quotes each term and appends '*', which matches via
+    // the prefix='2 3 4' index. (Quoting neutralizes FTS5's bareword
+    // operators; a quoted phrase still takes a prefix suffix.)
     let query = search::fts_query_string("데몬");
-    assert_eq!(query, "데몬*");
+    assert_eq!(query, "\"데몬\"*");
     assert_eq!(
         search::fts_candidates(&db, "b1", &query, 10).unwrap(),
         vec![id]
@@ -458,5 +460,149 @@ fn rebuild_vec_index_is_bank_scoped() {
     assert!(
         search::knn(&db, "b2", &v2, 10).unwrap().is_empty(),
         "unscoped bank must not be rebuilt"
+    );
+}
+
+/// Critic Revision R1: the whole reason `fts_query_string` joins with `OR`.
+/// A realistic multi-token prompt must return hits — under the previous
+/// whitespace (implicit AND) join both of these measured zero.
+#[test]
+fn fts_multi_token_queries_hit() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    let en = nodes::insert(
+        &db,
+        NewNode::new(
+            "b1",
+            FactType::World,
+            "the recall pipeline fuses BM25 and vector candidates with reciprocal rank fusion",
+        ),
+    )
+    .unwrap();
+    let ko = nodes::insert(
+        &db,
+        NewNode::new(
+            "b1",
+            FactType::World,
+            "메모리 회수 파이프라인은 하이브리드 검색으로 후보를 융합한다",
+        ),
+    )
+    .unwrap();
+
+    // 13 tokens (> MAX_QUERY_TERMS, so the cap is exercised too), only some
+    // of which appear in the stored text.
+    let english = "how does the hybrid recall pipeline combine keyword search \
+                   with vector similarity again";
+    assert!(english.split_whitespace().count() >= 12);
+    let hits = search::fts_candidates(&db, "b1", &search::fts_query_string(english), 10).unwrap();
+    assert!(hits.contains(&en), "multi-token English query found nothing");
+
+    // 5 Korean tokens.
+    let korean = "메모리 회수 파이프라인 하이브리드 검색";
+    assert_eq!(korean.split_whitespace().count(), 5);
+    let hits = search::fts_candidates(&db, "b1", &search::fts_query_string(korean), 10).unwrap();
+    assert!(hits.contains(&ko), "multi-token Korean query found nothing");
+}
+
+#[test]
+fn fts_candidates_filtered_by_fact_type() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    let w = nodes::insert(&db, NewNode::new("b1", FactType::World, "migration notes")).unwrap();
+    let o = nodes::insert(
+        &db,
+        NewNode::new("b1", FactType::Observation, "migration notes"),
+    )
+    .unwrap();
+
+    let q = search::fts_query_string("migration");
+    let all = search::fts_candidates_filtered(&db, "b1", &q, &[], 10).unwrap();
+    assert_eq!(all.len(), 2, "empty fact_types means no filter");
+    // bm25() is negative (lower = better), so a real score came back.
+    assert!(all.iter().all(|(_, score)| *score < 0.0));
+
+    let only_world =
+        search::fts_candidates_filtered(&db, "b1", &q, &[FactType::World], 10).unwrap();
+    assert_eq!(only_world.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![w]);
+
+    let two = search::fts_candidates_filtered(
+        &db,
+        "b1",
+        &q,
+        &[FactType::World, FactType::Observation],
+        10,
+    )
+    .unwrap();
+    assert_eq!(two.len(), 2);
+    assert!(two.iter().any(|(id, _)| *id == o));
+
+    let none =
+        search::fts_candidates_filtered(&db, "b1", &q, &[FactType::Experience], 10).unwrap();
+    assert!(none.is_empty());
+}
+
+#[test]
+fn hydrate_returns_rows_and_tags() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    let mut node = NewNode::new("b1", FactType::Experience, "hydrate me");
+    node.occurred_start = Some(1_700_000_000_000);
+    node.mentioned_at = Some(1_700_000_100_000);
+    node.context = Some("ctx");
+    let id = nodes::insert(&db, node).unwrap();
+    nodes::add_tags(&db, id, &["file:src/lib.rs", "session:abc"]).unwrap();
+    let bare = nodes::insert(&db, NewNode::new("b1", FactType::World, "no tags")).unwrap();
+
+    assert!(search::hydrate(&db, "b1", &[]).unwrap().is_empty());
+
+    let rows = search::hydrate(&db, "b1", &[id, bare, 999_999]).unwrap();
+    assert_eq!(rows.len(), 2, "unknown ids are silently absent");
+
+    let tagged = rows.iter().find(|r| r.id == id).unwrap();
+    assert_eq!(tagged.fact_type, FactType::Experience);
+    assert_eq!(tagged.text, "hydrate me");
+    assert_eq!(tagged.context.as_deref(), Some("ctx"));
+    assert_eq!(tagged.occurred_start, Some(1_700_000_000_000));
+    assert_eq!(tagged.mentioned_at, Some(1_700_000_100_000));
+    assert_eq!(
+        tagged.tags,
+        vec!["file:src/lib.rs", "session:abc"],
+        "tag order is ORDER BY tag, not insertion order"
+    );
+    assert!(!tagged.uuid.is_empty());
+
+    let untagged = rows.iter().find(|r| r.id == bare).unwrap();
+    assert!(untagged.tags.is_empty(), "no tags must be an empty vec, not [\"\"]");
+}
+
+#[test]
+fn hydrate_is_bank_scoped() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    banks::create(&db, "b2", None, None).unwrap();
+    let mine = nodes::insert(&db, NewNode::new("b1", FactType::World, "mine")).unwrap();
+    let theirs = nodes::insert(&db, NewNode::new("b2", FactType::World, "theirs")).unwrap();
+
+    let rows = search::hydrate(&db, "b1", &[mine, theirs]).unwrap();
+    assert_eq!(rows.len(), 1, "another bank's id must not hydrate");
+    assert_eq!(rows[0].id, mine);
+}
+
+/// Review MEDIUM: tags are user-supplied text, so no character is safe as a
+/// concatenation separator. `hydrate` reads them from their own query rather
+/// than splitting a `group_concat`, which is what makes this hold.
+#[test]
+fn hydrate_does_not_split_a_tag_on_a_separator_character() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    let id = nodes::insert(&db, NewNode::new("b1", FactType::World, "n")).unwrap();
+    // U+001F (unit separator) and a comma: the two obvious separator picks.
+    nodes::add_tags(&db, id, &["weird\u{1f}tag", "comma,tag"]).unwrap();
+
+    let rows = search::hydrate(&db, "b1", &[id]).unwrap();
+    assert_eq!(
+        rows[0].tags,
+        vec!["comma,tag", "weird\u{1f}tag"],
+        "each tag must round-trip whole"
     );
 }
