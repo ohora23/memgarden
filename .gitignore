@@ -1,3 +1,6 @@
 /target
 *.db*
 /.env
+
+# Stray image drops in the repo root (hero art lives in assets/)
+/*.png

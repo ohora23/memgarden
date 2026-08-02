@@ -609,6 +609,187 @@ async fn recall_moves_its_metrics() {
 }
 
 // ---------------------------------------------------------------------------
+// CE-8: the temporal arm, end to end
+// ---------------------------------------------------------------------------
+
+fn seed_at(db: &Db, text: &str, mentioned_at: i64) -> i64 {
+    let mut node = NewNode::new("b1", FactType::World, text);
+    node.mentioned_at = Some(mentioned_at);
+    nodes::insert(db, node).unwrap()
+}
+
+fn score_of(v: &Value, id: i64, key: &str) -> f64 {
+    v["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"].as_i64() == Some(id))
+        .unwrap_or_else(|| panic!("node {id} missing from {v}"))["scores"][key]
+        .as_f64()
+        .unwrap()
+}
+
+fn contains_id(v: &Value, id: i64) -> bool {
+    v["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["id"].as_i64() == Some(id))
+}
+
+/// The arm earns its slot: a node the query's *words* cannot reach is pulled
+/// in purely because it falls inside "last week" — and drops back out the
+/// moment the temporal expression leaves the query. Also pins
+/// `scores.temporal` at the three named proximities.
+#[tokio::test]
+async fn temporal_arm_pulls_in_range_and_fills_the_score() {
+    use memgardend::temporal::query::{Constraint, extract_constraint};
+
+    let (app, db) = test_app(|_| {});
+    banks::create(&db, "b1", None, None).unwrap();
+
+    // The window the route will compute for itself (the route reads the real
+    // clock; the exact arithmetic is pinned by the unit tests).
+    let now = memgarden_core::now_ms();
+    let Some(Constraint::Range { start_ms, end_ms }) =
+        extract_constraint("what did we decide last week", now)
+    else {
+        panic!("\"last week\" must yield a range");
+    };
+    let mid = start_ms + (end_ms - start_ms) / 2;
+    let quarter = mid - (end_ms - start_ms) / 4;
+
+    let centre = seed_at(&db, "we decided to pin sqlite-vec", mid);
+    let off_centre = seed_at(&db, "we decided to pin the tokenizer", quarter);
+    let edge = seed_at(&db, "we decided to pin the reranker", start_ms);
+    let long_ago = seed_at(
+        &db,
+        "we decided to pin the model",
+        start_ms - 400 * 86_400_000,
+    );
+    // Reachable ONLY through the temporal arm: no term in common with the query.
+    let unmatched = seed_at(&db, "완전히 다른 주제의 기록", mid);
+
+    let out = recall(&app, json!({ "query": "what did we decide last week" })).await;
+    assert!(
+        contains_id(&out, unmatched),
+        "the temporal arm must contribute a node BM25 cannot reach: {out}"
+    );
+    // proximity 1.0 / 0.5 / 0.0 — the three the plan names.
+    assert_eq!(score_of(&out, centre, "temporal"), 1.0);
+    // The quarter point lands a millisecond off centre-of-half after the
+    // integer halving of an odd-width window, hence the epsilon.
+    assert!((score_of(&out, off_centre, "temporal") - 0.5).abs() < 1e-6);
+    assert!(score_of(&out, edge, "temporal") < 1e-6);
+    assert_eq!(score_of(&out, long_ago, "temporal"), 0.0);
+    // The boost is multiplicative on top of the RRF-derived base, so a
+    // centred node scores above the same-ranked node outside the window.
+    assert!(score_of(&out, centre, "final") > score_of(&out, long_ago, "final"));
+
+    // Drop the temporal expression: no window, no arm, neutral score.
+    let out = recall(&app, json!({ "query": "what did we decide about pinning" })).await;
+    assert!(!contains_id(&out, unmatched), "{out}");
+    assert_eq!(score_of(&out, centre, "temporal"), 0.5);
+
+    // NO_TEMPORAL_CONSTRAINT: recognized, but no window — same as above, and
+    // emphatically not "the range for last week".
+    let out = recall(
+        &app,
+        json!({ "query": "what did we decide every monday last week" }),
+    )
+    .await;
+    assert!(!contains_id(&out, unmatched), "{out}");
+    assert_eq!(score_of(&out, centre, "temporal"), 0.5);
+}
+
+/// Korean, because the banks are: the same arm, driven by 지난주.
+#[tokio::test]
+async fn korean_temporal_query_drives_the_arm() {
+    use memgardend::temporal::query::{Constraint, extract_constraint};
+
+    let (app, db) = test_app(|_| {});
+    banks::create(&db, "b1", None, None).unwrap();
+    let now = memgarden_core::now_ms();
+    let Some(Constraint::Range { start_ms, end_ms }) = extract_constraint("지난주", now) else {
+        panic!("지난주 must yield a range");
+    };
+    let mid = start_ms + (end_ms - start_ms) / 2;
+
+    let inside = seed_at(&db, "sqlite-vec 버전을 고정하기로 결정", mid);
+    let outside = seed_at(&db, "reranker 를 끄기로 결정", start_ms - 90 * 86_400_000);
+
+    let out = recall(&app, json!({ "query": "지난주에 뭘 결정했지" })).await;
+    assert!(contains_id(&out, inside), "{out}");
+    assert_eq!(score_of(&out, inside, "temporal"), 1.0);
+    assert!(!contains_id(&out, outside) || score_of(&out, outside, "temporal") == 0.0);
+    assert!(
+        out["injected_text"]
+            .as_str()
+            .unwrap()
+            .contains("sqlite-vec 버전을 고정하기로 결정"),
+        "{out}"
+    );
+}
+
+/// The arm's own cost, isolated from the rest of the pipeline. Budget: 3ms
+/// (plan PR B6). Run with:
+///   cargo test --release -p memgardend --test recall_api -- --ignored --nocapture temporal_arm_bench
+#[test]
+#[ignore = "seeds 3000 nodes and reports a timing"]
+fn temporal_arm_bench() {
+    use std::time::Instant;
+
+    const N: i64 = 3000;
+    const DAY: i64 = 86_400_000;
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let now = memgarden_core::now_ms();
+    for i in 0..N {
+        let mut node = NewNode::new(
+            "b1",
+            FactType::World,
+            "a seeded fact for the temporal bench",
+        );
+        // Half the bank carries occurred_start, half only mentioned_at, so
+        // the COALESCE is exercised on both branches. Spread over a year.
+        let at = now - (i % 365) * DAY;
+        if i % 2 == 0 {
+            node.occurred_start = Some(at);
+        } else {
+            node.mentioned_at = Some(at);
+        }
+        nodes::insert(&db, node).unwrap();
+    }
+
+    let run = |label: &str, lo: i64, hi: i64| {
+        for _ in 0..5 {
+            memgarden_store::search::temporal_candidates(&db, "b1", lo, hi, 1000).unwrap();
+        }
+        let mut samples: Vec<u128> = Vec::new();
+        let mut hits = 0;
+        for _ in 0..200 {
+            let t = Instant::now();
+            let rows =
+                memgarden_store::search::temporal_candidates(&db, "b1", lo, hi, 1000).unwrap();
+            samples.push(t.elapsed().as_micros());
+            hits = rows.len();
+        }
+        samples.sort_unstable();
+        println!(
+            "temporal arm [{label}] @ {N} nodes: {hits} hits, p50 {}us p95 {}us max {}us",
+            samples[samples.len() / 2],
+            samples[samples.len() * 95 / 100],
+            samples[samples.len() - 1]
+        );
+    };
+    run("one week", now - 7 * DAY, now);
+    // Worst case for this arm: the window covers the whole bank, so the
+    // LIMIT is what stops it rather than the predicate.
+    run("whole year", now - 400 * DAY, now);
+}
+
+// ---------------------------------------------------------------------------
 // AC-2 measurement: recall p50 <= 35ms / p95 <= 60ms on a realistic bank
 // ---------------------------------------------------------------------------
 
@@ -769,12 +950,30 @@ async fn hybrid_recall_bench() {
     // Turn the semantic arm on: the router holds a clone of this very Arc.
     *embedder_slot.write().unwrap() = Some(embedder.clone());
 
+    // CE-8: spread the bank across the last 90 days. The seed helper stamps
+    // one fixed `mentioned_at`, which would leave the temporal arm returning
+    // an empty set for every window — measuring nothing.
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE memory_nodes SET mentioned_at = ?1 - (id % 90) * 86400000
+             WHERE bank_id = 'b1'",
+            rusqlite::params![memgarden_core::now_ms()],
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+
+    // Two of the seven carry a temporal expression, so the fourth arm is
+    // live on ~29% of the run — enough to show up in p95 if it costs.
     let queries = [
         "why did the retain worker change to a single transaction",
         "메모리 회수 파이프라인 하이브리드 검색 지연 시간",
         "what bounds the embedding backlog batch size and the mutex hold",
         "sqlite-vec bank_id partition key",
         "how long is the per job wall clock for a retain job again",
+        "what did we decide last week about the retain worker",
+        "지난주에 결정한 메모리 회수 파이프라인 변경",
     ];
 
     // Critic Revision R7 wants the loaded number too, not just idle.

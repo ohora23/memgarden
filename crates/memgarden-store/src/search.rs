@@ -124,6 +124,50 @@ pub fn fts_candidates_filtered(
         .map_err(store_err)
 }
 
+/// The CE-8 temporal recall arm's entry predicate: nodes whose effective
+/// time falls inside the query's constraint, most recent first (the arm feeds
+/// RRF, which reads position only).
+///
+/// The COALESCE order here — `occurred_start ?? mentioned_at` — is the
+/// **second** of the three orders in this codebase and is deliberately not
+/// the same as the other two; see `recall::scoring` for the full list and the
+/// test that pins them apart.
+///
+/// `event_date` is never in this predicate. It exists for temporal *link*
+/// creation (`links::temporal`) and nothing else; filtering entries on it
+/// would silently exclude every node whose occurred/mentioned pair disagrees
+/// with it.
+///
+/// `// ponytail: the COALESCE defeats idx_memory_nodes_occurred, so this is a
+/// bank-partition scan — measured well under the 3ms arm budget at 3k nodes.
+/// Upgrade path if a bank gets large: a stored generated column
+/// `effective_at` with its own (bank_id, effective_at) index.`
+pub fn temporal_candidates(
+    db: &Db,
+    bank_id: &str,
+    start_ms: i64,
+    end_ms: i64,
+    limit: usize,
+) -> Result<Vec<i64>> {
+    let conn = db.read()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id FROM memory_nodes
+             WHERE bank_id = ?1
+               AND coalesce(occurred_start, mentioned_at) BETWEEN ?2 AND ?3
+             ORDER BY coalesce(occurred_start, mentioned_at) DESC
+             LIMIT ?4",
+        )
+        .map_err(store_err)?;
+    let rows = stmt
+        .query_map(params![bank_id, start_ms, end_ms, limit as i64], |r| {
+            r.get::<_, i64>(0)
+        })
+        .map_err(store_err)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(store_err)
+}
+
 /// Everything the recall pipeline needs about a candidate node, fetched for
 /// the whole fused id set in two queries (no N+1): the union of both arms is
 /// typically 100-200 ids and this measures in the low tens of microseconds.
@@ -372,6 +416,70 @@ mod tests {
             "surviving terms keep query order: {q}"
         );
         assert!(q.ends_with("\"nnnnnnnnnnnnnn\"*"));
+    }
+
+    /// The temporal arm's SQL, exercised for real: the second COALESCE order
+    /// (`occurred_start ?? mentioned_at`), inclusive boundaries, and the
+    /// promise that `event_date` is never part of the predicate.
+    #[test]
+    fn temporal_candidates_range_boundaries_and_coalesce_order() {
+        use crate::models::NewNode;
+        use memgarden_core::types::FactType;
+
+        let db = Db::open_memory().unwrap();
+        crate::banks::create(&db, "b1", None, None).unwrap();
+        crate::banks::create(&db, "b2", None, None).unwrap();
+
+        const DAY: i64 = 86_400_000;
+        let (lo, hi) = (10 * DAY, 20 * DAY);
+        let node = |bank: &str,
+                    label: &str,
+                    start: Option<i64>,
+                    mentioned: Option<i64>,
+                    event: Option<i64>| {
+            let mut n = NewNode::new(bank, FactType::World, label);
+            n.occurred_start = start;
+            n.mentioned_at = mentioned;
+            n.event_date = event;
+            crate::nodes::insert(&db, n).unwrap()
+        };
+        let at_lo = node("b1", "on the lower bound", Some(lo), None, None);
+        let at_hi = node("b1", "on the upper bound", Some(hi), None, None);
+        let inside = node("b1", "well inside", Some(15 * DAY), None, None);
+        let by_mentioned = node("b1", "no occurred_start", None, Some(16 * DAY), None);
+        // occurred_start wins over mentioned_at: this one is OUT even though
+        // its mentioned_at sits in the middle of the window.
+        let start_out = node("b1", "start outside", Some(30 * DAY), Some(15 * DAY), None);
+        // event_date inside, everything else outside: must NOT be selected.
+        let only_event = node(
+            "b1",
+            "event_date only",
+            None,
+            Some(40 * DAY),
+            Some(15 * DAY),
+        );
+        let below = node("b1", "one ms below", Some(lo - 1), None, None);
+        let above = node("b1", "one ms above", Some(hi + 1), None, None);
+        let other_bank = node("b2", "another bank", Some(15 * DAY), None, None);
+        let dateless = node("b1", "no dates at all", None, None, None);
+
+        let hits = temporal_candidates(&db, "b1", lo, hi, 100).unwrap();
+        assert_eq!(
+            hits,
+            vec![at_hi, by_mentioned, inside, at_lo],
+            "most recent first, both bounds inclusive"
+        );
+        for excluded in [start_out, only_event, below, above, other_bank, dateless] {
+            assert!(
+                !hits.contains(&excluded),
+                "node {excluded} must be excluded"
+            );
+        }
+        // The limit keeps the newest, not the first inserted.
+        assert_eq!(
+            temporal_candidates(&db, "b1", lo, hi, 1).unwrap(),
+            vec![at_hi]
+        );
     }
 
     #[test]

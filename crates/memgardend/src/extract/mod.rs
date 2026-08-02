@@ -65,7 +65,7 @@ pub async fn extract(
     } else {
         client.chat_json(&system, &user, &schema).await?
     };
-    Ok(parse::parse_facts(raw.into_facts()))
+    Ok(parse::parse_facts(raw.into_facts(), event_date_ms))
 }
 
 #[cfg(test)]
