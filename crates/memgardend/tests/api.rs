@@ -8,19 +8,32 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 fn test_app() -> axum::Router {
-    let db = memgarden_store::Db::open_memory().unwrap();
+    test_app_with_db().0
+}
+
+fn test_app_with_db() -> (axum::Router, Arc<memgarden_store::Db>) {
+    let db = Arc::new(memgarden_store::Db::open_memory().unwrap());
     let cfg = memgarden_core::config::Config {
         bind: "127.0.0.1:0".to_string(),
         db_path: std::path::PathBuf::from(":memory:"),
         log_level: "info".to_string(),
         metrics_snapshot_interval_secs: 60,
+        embedding: memgarden_core::config::EmbeddingConfig {
+            enabled: false,
+            model_dir: std::path::PathBuf::from("/tmp/memgarden-test-models"),
+            intra_threads: 4,
+            batch_size: 8,
+            backlog_poll_secs: 5,
+            debug_endpoint: false,
+        },
     };
     let state = AppState {
-        db: Arc::new(db),
+        db: db.clone(),
         cfg: Arc::new(cfg),
         started_at_ms: memgarden_core::now_ms(),
+        embedder: Arc::new(std::sync::RwLock::new(None)),
     };
-    routes::router(state)
+    (routes::router(state), db)
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -261,4 +274,59 @@ async fn unknown_route_404_json() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = body_json(response).await;
     assert_eq!(body["error"]["code"], "not_found");
+}
+
+#[tokio::test]
+async fn healthz_reports_embedding_status() {
+    let app = test_app();
+    let response = app.oneshot(get_request("/healthz")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    // The global embed-status static defaults to "loading" and nothing in
+    // these router-only tests advances it (embed_task never spawned).
+    assert_eq!(body["embedding"], "loading");
+}
+
+#[tokio::test]
+async fn embed_debug_disabled_by_default() {
+    let app = test_app();
+    let request = json_request("POST", "/v1/embed", json!({ "text": "hello" }));
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn reindex_bank_rebuilds_vec_index() {
+    use memgarden_core::EMBEDDING_DIM;
+    use memgarden_core::types::FactType;
+    use memgarden_store::models::NewNode;
+    use memgarden_store::{nodes, search};
+
+    let (app, db) = test_app_with_db();
+    memgarden_store::banks::create(&db, "b1", None, None).unwrap();
+    let id = nodes::insert(&db, NewNode::new("b1", FactType::World, "n")).unwrap();
+    let v = vec![0.5f32; EMBEDDING_DIM];
+    nodes::set_embedding(&db, id, "b1", &v).unwrap();
+    db.write(|tx| {
+        tx.execute("DELETE FROM vec_nodes", []).unwrap();
+        Ok(())
+    })
+    .unwrap();
+    assert!(search::knn(&db, "b1", &v, 10).unwrap().is_empty());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/banks/b1/reindex")
+                .header("host", "127.0.0.1:9100")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["rebuilt"], 1);
+    assert_eq!(search::knn(&db, "b1", &v, 10).unwrap()[0].0, id);
 }

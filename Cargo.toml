@@ -26,3 +26,8 @@ anyhow = "1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tempfile = "3"
+fastembed = { version = "=5.17.4", default-features = false, features = [
+    "hf-hub-rustls-tls", "ort-download-binaries-rustls-tls",
+] } # B1. ort 2.0.0-rc.13 underneath. NOT the default features: they add
+    # `image-models` and a second (native) TLS stack.
+jiff = "0.2.35" # B1 (embed augmentation "%B %Y"), later CE-8.

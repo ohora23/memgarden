@@ -1,3 +1,5 @@
+pub mod embed;
+pub mod embed_task;
 pub mod error;
 pub mod metrics_task;
 pub mod middleware;

@@ -95,6 +95,62 @@ pub fn set_embedding(db: &Db, node_id: i64, bank_id: &str, embedding: &[f32]) ->
     })
 }
 
+/// `(id, bank_id, text, occurred_start, occurred_end, mentioned_at)` — the
+/// temporal fields the backlog worker needs for `embed::augment_for_embedding`
+/// (decision #2's `date = occurred_start ?? mentioned_at` and range case).
+pub type PendingEmbeddingRow = (i64, String, String, Option<i64>, Option<i64>, Option<i64>);
+
+/// Nodes with no embedding yet (`embedding IS NULL`), driving
+/// `idx_memory_nodes_embed_backlog` (`0001_init.sql:52`).
+pub fn pending_embeddings(db: &Db, limit: usize) -> Result<Vec<PendingEmbeddingRow>> {
+    let conn = db.read()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, bank_id, text, occurred_start, occurred_end, mentioned_at
+             FROM memory_nodes WHERE embedding IS NULL LIMIT ?1",
+        )
+        .map_err(store_err)?;
+    let rows = stmt
+        .query_map(params![limit as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+            ))
+        })
+        .map_err(store_err)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(store_err)
+}
+
+/// Batch variant of `set_embedding`: one `BEGIN IMMEDIATE` for the whole
+/// batch (called once per backlog-worker tick, not per node), same
+/// delete-then-insert shape since vec0 has no native upsert.
+pub fn set_embeddings_batch(db: &Db, batch: &[(i64, String, Vec<f32>)]) -> Result<()> {
+    let now = now_ms();
+    db.write(|tx| {
+        for (node_id, bank_id, embedding) in batch {
+            let blob = vecblob::encode(embedding)?;
+            tx.execute(
+                "UPDATE memory_nodes SET embedding = ?1, updated_at = ?2 WHERE id = ?3",
+                params![blob, now, node_id],
+            )
+            .map_err(store_err)?;
+            tx.execute("DELETE FROM vec_nodes WHERE rowid = ?1", params![node_id])
+                .map_err(store_err)?;
+            tx.execute(
+                "INSERT INTO vec_nodes (rowid, bank_id, embedding) VALUES (?1, ?2, ?3)",
+                params![node_id, bank_id, blob],
+            )
+            .map_err(store_err)?;
+        }
+        Ok(())
+    })
+}
+
 pub fn add_tags(db: &Db, node_id: i64, tags: &[&str]) -> Result<()> {
     db.write(|tx| {
         for tag in tags {

@@ -1,10 +1,10 @@
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, RwLock};
 
 use memgarden_core::config::Config;
 use memgarden_core::metrics::METRICS;
 use memgarden_store::Db;
-use memgardend::{metrics_task, routes, state::AppState};
+use memgardend::{embed_task, metrics_task, routes, state::AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,9 +23,10 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         cfg: cfg.clone(),
         started_at_ms,
+        embedder: Arc::new(RwLock::new(None)),
     };
 
-    let app = routes::router(state);
+    let app = routes::router(state.clone());
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     tracing::info!(addr = %cfg.bind, "listening");
 
@@ -33,6 +34,10 @@ async fn main() -> anyhow::Result<()> {
         db.clone(),
         cfg.metrics_snapshot_interval_secs,
     ));
+    // Spawned *after* the listener binds (decision #1): a first-run model
+    // download must not delay the port bind.
+    tokio::spawn(embed_task::load_at_startup(state.clone()));
+    let embed_backlog_handle = tokio::spawn(embed_task::run_backlog(db.clone(), state));
 
     axum::serve(listener, app)
         .with_graceful_shutdown(memgardend::shutdown_signal())
@@ -40,6 +45,9 @@ async fn main() -> anyhow::Result<()> {
 
     if let Err(e) = metrics_task_handle.await {
         tracing::warn!(error = %e, "metrics snapshot task join error during shutdown");
+    }
+    if let Err(e) = embed_backlog_handle.await {
+        tracing::warn!(error = %e, "embed backlog task join error during shutdown");
     }
 
     tracing::info!("shutting down: checkpointing WAL");

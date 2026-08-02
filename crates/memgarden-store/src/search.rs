@@ -67,6 +67,69 @@ pub fn knn(db: &Db, bank_id: &str, query_embedding: &[f32], k: usize) -> Result<
         .map_err(store_err)
 }
 
+/// Rebuilds `vec_nodes` from `memory_nodes.embedding` (the source of truth,
+/// `0001_init.sql:81-85`) — the CE-2 deferral. Optionally scoped to one
+/// bank. Deletes the (scoped) index in one transaction, then re-inserts in
+/// chunks of 500, **committing per chunk** (NIT 17) so a large rebuild
+/// doesn't hold the write lock for the whole operation. Returns the number
+/// of rows reinserted.
+pub fn rebuild_vec_index(db: &Db, bank_id: Option<&str>) -> Result<usize> {
+    const CHUNK: usize = 500;
+
+    let rows: Vec<(i64, String, Vec<u8>)> = {
+        let conn = db.read()?;
+        let mapped = |r: &rusqlite::Row| -> rusqlite::Result<(i64, String, Vec<u8>)> {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        };
+        let collected = if let Some(b) = bank_id {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, bank_id, embedding FROM memory_nodes
+                     WHERE bank_id = ?1 AND embedding IS NOT NULL",
+                )
+                .map_err(store_err)?;
+            stmt.query_map(params![b], mapped)
+                .map_err(store_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        } else {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, bank_id, embedding FROM memory_nodes WHERE embedding IS NOT NULL",
+                )
+                .map_err(store_err)?;
+            stmt.query_map([], mapped)
+                .map_err(store_err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        };
+        collected.map_err(store_err)?
+    };
+
+    db.write(|tx| {
+        match bank_id {
+            Some(b) => tx.execute("DELETE FROM vec_nodes WHERE bank_id = ?1", params![b]),
+            None => tx.execute("DELETE FROM vec_nodes", []),
+        }
+        .map_err(store_err)?;
+        Ok(())
+    })?;
+
+    let mut rebuilt = 0usize;
+    for chunk in rows.chunks(CHUNK) {
+        db.write(|tx| {
+            for (id, bank, blob) in chunk {
+                tx.execute(
+                    "INSERT INTO vec_nodes (rowid, bank_id, embedding) VALUES (?1, ?2, ?3)",
+                    params![id, bank, blob],
+                )
+                .map_err(store_err)?;
+            }
+            Ok(())
+        })?;
+        rebuilt += chunk.len();
+    }
+    Ok(rebuilt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,11 +15,20 @@ fn test_app() -> (axum::Router, Arc<Db>) {
         db_path: std::path::PathBuf::from(":memory:"),
         log_level: "info".to_string(),
         metrics_snapshot_interval_secs: 60,
+        embedding: memgarden_core::config::EmbeddingConfig {
+            enabled: false,
+            model_dir: std::path::PathBuf::from("/tmp/memgarden-test-models"),
+            intra_threads: 4,
+            batch_size: 8,
+            backlog_poll_secs: 5,
+            debug_endpoint: false,
+        },
     };
     let state = AppState {
         db: db.clone(),
         cfg: Arc::new(cfg),
         started_at_ms: memgarden_core::now_ms(),
+        embedder: Arc::new(std::sync::RwLock::new(None)),
     };
     (routes::router(state), db)
 }
