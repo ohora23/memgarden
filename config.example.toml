@@ -7,7 +7,7 @@
 # Every value can also be overridden via environment, which wins over both
 # this file and the built-in defaults:
 #   MEMGARDEN_BIND, MEMGARDEN_DB_PATH, MEMGARDEN_LOG_LEVEL,
-#   MEMGARDEN_METRICS_INTERVAL
+#   MEMGARDEN_METRICS_INTERVAL, MEMGARDEN_MODEL_DIR, MEMGARDEN_EMBED_THREADS
 
 [server]
 # Note: ports 9077 (hindsight) and 9090 (memdash) are already in use on
@@ -25,3 +25,25 @@ level = "info"
 
 [metrics]
 snapshot_interval_secs = 60
+
+[embedding]
+# In-binary CPU embeddings (bge-small-en-v1.5 via fastembed/ONNX). Off
+# disables both the startup model load and the backlog worker; recall/retain
+# in later PRs return 503 while this is loading.
+enabled = true
+# Defaults to the XDG data dir: $XDG_DATA_HOME/memgarden/models, or
+# ~/.local/share/memgarden/models if XDG_DATA_HOME is unset. First run
+# downloads ~133MB into this dir; subsequent runs are offline.
+model_dir = "~/.local/share/memgarden/models"
+# ONNX Runtime intra-op threads. 4 is the measured throughput/contention
+# sweet spot on this machine (see the plan's Verified Environment Facts) —
+# 8 buys ~0.7ms and contends with Ollama's CPU use.
+intra_threads = 4
+# Backlog-worker batch size. 8 caps a single batch's ONNX mutex hold to
+# ~18ms so an interactive /v1/embed request never waits long behind a big
+# backlog drain (Critic Revision R9).
+batch_size = 8
+# How often the backlog worker checks memory_nodes for embedding = NULL rows.
+backlog_poll_secs = 5
+# POST /v1/embed (text -> vector) is a debug tool, off by default.
+debug_endpoint = false

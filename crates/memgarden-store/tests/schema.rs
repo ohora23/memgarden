@@ -303,3 +303,113 @@ fn bank_crud() {
 
     assert!(banks::update(&db, "missing", None, None).is_err());
 }
+
+#[test]
+fn pending_embeddings_only_returns_null_embedding_rows() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    let id1 = nodes::insert(&db, NewNode::new("b1", FactType::World, "no embedding yet")).unwrap();
+    let id2 = nodes::insert(&db, NewNode::new("b1", FactType::World, "has embedding")).unwrap();
+    nodes::set_embedding(&db, id2, "b1", &vec![0.1f32; EMBEDDING_DIM]).unwrap();
+
+    let pending = nodes::pending_embeddings(&db, 10).unwrap();
+    let ids: Vec<i64> = pending.iter().map(|(id, ..)| *id).collect();
+    assert_eq!(ids, vec![id1]);
+    assert_eq!(pending[0].1, "b1");
+    assert_eq!(pending[0].2, "no embedding yet");
+}
+
+#[test]
+fn pending_embeddings_respects_limit() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    for i in 0..5 {
+        nodes::insert(&db, NewNode::new("b1", FactType::World, &format!("n{i}"))).unwrap();
+    }
+    assert_eq!(nodes::pending_embeddings(&db, 3).unwrap().len(), 3);
+}
+
+#[test]
+fn set_embeddings_batch_roundtrip() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    let id1 = nodes::insert(&db, NewNode::new("b1", FactType::World, "a")).unwrap();
+    let id2 = nodes::insert(&db, NewNode::new("b1", FactType::World, "b")).unwrap();
+
+    let v1: Vec<f32> = (0..EMBEDDING_DIM).map(|i| i as f32 * 0.001).collect();
+    let v2: Vec<f32> = (0..EMBEDDING_DIM).map(|i| i as f32 * -0.001).collect();
+    nodes::set_embeddings_batch(
+        &db,
+        &[
+            (id1, "b1".to_string(), v1.clone()),
+            (id2, "b1".to_string(), v2.clone()),
+        ],
+    )
+    .unwrap();
+
+    let n1 = nodes::get(&db, id1).unwrap().unwrap();
+    let n2 = nodes::get(&db, id2).unwrap().unwrap();
+    assert_eq!(vecblob::decode(&n1.embedding.unwrap()).unwrap(), v1);
+    assert_eq!(vecblob::decode(&n2.embedding.unwrap()).unwrap(), v2);
+    assert!(nodes::pending_embeddings(&db, 10).unwrap().is_empty());
+
+    let hits = search::knn(&db, "b1", &v1, 10).unwrap();
+    assert_eq!(hits[0].0, id1);
+}
+
+#[test]
+fn set_embeddings_batch_dimension_error() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    let id = nodes::insert(&db, NewNode::new("b1", FactType::World, "a")).unwrap();
+    let wrong_dim = vec![0.0f32; 10];
+    assert!(nodes::set_embeddings_batch(&db, &[(id, "b1".to_string(), wrong_dim)]).is_err());
+}
+
+#[test]
+fn rebuild_vec_index_restores_after_truncate() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    let id = nodes::insert(&db, NewNode::new("b1", FactType::World, "n")).unwrap();
+    let v = vec![0.2f32; EMBEDDING_DIM];
+    nodes::set_embedding(&db, id, "b1", &v).unwrap();
+
+    db.write(|tx| {
+        tx.execute("DELETE FROM vec_nodes", []).unwrap();
+        Ok(())
+    })
+    .unwrap();
+    assert!(search::knn(&db, "b1", &v, 10).unwrap().is_empty());
+
+    let rebuilt = search::rebuild_vec_index(&db, None).unwrap();
+    assert_eq!(rebuilt, 1);
+    let hits = search::knn(&db, "b1", &v, 10).unwrap();
+    assert_eq!(hits[0].0, id);
+}
+
+#[test]
+fn rebuild_vec_index_is_bank_scoped() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    banks::create(&db, "b2", None, None).unwrap();
+    let id1 = nodes::insert(&db, NewNode::new("b1", FactType::World, "n1")).unwrap();
+    let id2 = nodes::insert(&db, NewNode::new("b2", FactType::World, "n2")).unwrap();
+    let v1 = vec![0.3f32; EMBEDDING_DIM];
+    let v2 = vec![0.4f32; EMBEDDING_DIM];
+    nodes::set_embedding(&db, id1, "b1", &v1).unwrap();
+    nodes::set_embedding(&db, id2, "b2", &v2).unwrap();
+
+    db.write(|tx| {
+        tx.execute("DELETE FROM vec_nodes", []).unwrap();
+        Ok(())
+    })
+    .unwrap();
+
+    let rebuilt = search::rebuild_vec_index(&db, Some("b1")).unwrap();
+    assert_eq!(rebuilt, 1);
+    assert_eq!(search::knn(&db, "b1", &v1, 10).unwrap().len(), 1);
+    assert!(
+        search::knn(&db, "b2", &v2, 10).unwrap().is_empty(),
+        "unscoped bank must not be rebuilt"
+    );
+}

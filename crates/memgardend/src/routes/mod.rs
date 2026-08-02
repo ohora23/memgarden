@@ -1,11 +1,12 @@
 mod banks;
+mod embed;
 mod health;
 mod metrics;
 
 use axum::http::StatusCode;
 use axum::middleware::from_fn;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 use tower_http::trace::TraceLayer;
@@ -33,6 +34,8 @@ pub fn router(state: AppState) -> Router {
             "/v1/ledger",
             get(metrics::list_ledger).post(metrics::create_ledger),
         )
+        .route("/v1/banks/{bank_id}/reindex", post(embed::reindex_bank))
+        .route("/v1/embed", post(embed::embed_debug))
         .layer(from_fn(track_http));
 
     unmeasured

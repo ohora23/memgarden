@@ -28,6 +28,16 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    /// A dependency (e.g. the embedding model) isn't ready yet — 503, not
+    /// 500: retrying shortly is the correct client behavior (decision #1).
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "unavailable",
+            message: message.into(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {

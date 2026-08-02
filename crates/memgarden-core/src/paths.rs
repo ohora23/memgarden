@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 const APP_DIR: &str = "memgarden";
 const DB_FILE: &str = "memgarden.db";
 const CONFIG_FILE: &str = "config.toml";
+const MODELS_SUBDIR: &str = "models";
 
 /// Pure resolution of the data directory from explicit env values.
 /// `$XDG_DATA_HOME/memgarden` if set (non-empty), else `$HOME/.local/share/memgarden`.
@@ -40,6 +41,15 @@ pub fn default_db_path_from(xdg_data_home: Option<&str>, home: Option<&str>) -> 
     Ok(data_dir_from(xdg_data_home, home)?.join(DB_FILE))
 }
 
+/// Pure resolution of the embedding-model cache dir: `<data_dir>/models`.
+/// Passed to `fastembed::InitOptions::with_cache_dir` and (CE-11)
+/// `hf_hub::api::sync::ApiBuilder::with_cache_dir` — offline-friendly, since
+/// fastembed's own default (`./.fastembed_cache`, relative to CWD) is
+/// unusable for a daemon (plan decision #1 / Verified Environment Facts).
+pub fn models_dir_from(xdg_data_home: Option<&str>, home: Option<&str>) -> Result<PathBuf> {
+    Ok(data_dir_from(xdg_data_home, home)?.join(MODELS_SUBDIR))
+}
+
 fn non_empty(v: Option<&str>) -> Option<&str> {
     v.filter(|s| !s.is_empty())
 }
@@ -63,6 +73,14 @@ pub fn config_path() -> Result<PathBuf> {
 /// Thin wrapper reading the real process environment.
 pub fn default_db_path() -> Result<PathBuf> {
     default_db_path_from(
+        std::env::var("XDG_DATA_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+/// Thin wrapper reading the real process environment.
+pub fn models_dir() -> Result<PathBuf> {
+    models_dir_from(
         std::env::var("XDG_DATA_HOME").ok().as_deref(),
         std::env::var("HOME").ok().as_deref(),
     )
@@ -130,6 +148,12 @@ mod tests {
     fn default_db_path_is_data_dir_plus_file() {
         let p = default_db_path_from(Some("/x/data"), Some("/home/u")).unwrap();
         assert_eq!(p, PathBuf::from("/x/data/memgarden/memgarden.db"));
+    }
+
+    #[test]
+    fn models_dir_is_data_dir_plus_subdir() {
+        let p = models_dir_from(Some("/x/data"), Some("/home/u")).unwrap();
+        assert_eq!(p, PathBuf::from("/x/data/memgarden/models"));
     }
 
     #[test]

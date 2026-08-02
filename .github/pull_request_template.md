@@ -11,6 +11,7 @@ One-paragraph description of what & why.
 ## Verification
 - [ ] `cargo test` (N passed)
 - [ ] Manual check: <command + observed result>
+- [ ] Design note: docs/design/<file>.md
 - Measured: <metric> = <value> (target <threshold>)
 
 ## Metrics Impact

@@ -16,6 +16,8 @@ const ENV_LOG_LEVEL: &str = "MEMGARDEN_LOG_LEVEL";
 const ENV_METRICS_INTERVAL: &str = "MEMGARDEN_METRICS_INTERVAL";
 const ENV_CONFIG: &str = "MEMGARDEN_CONFIG";
 const ENV_HOME: &str = "HOME";
+const ENV_MODEL_DIR: &str = "MEMGARDEN_MODEL_DIR";
+const ENV_EMBED_THREADS: &str = "MEMGARDEN_EMBED_THREADS";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -23,17 +25,41 @@ pub struct Config {
     pub db_path: PathBuf,
     pub log_level: String,
     pub metrics_snapshot_interval_secs: u64,
+    pub embedding: EmbeddingConfig,
+}
+
+/// `[embedding]` — in-binary CPU embeddings (CE-4). `intra_threads = 4` and
+/// `batch_size = 8` are measured defaults, not arbitrary: see the plan's
+/// Verified Environment Facts (4 threads is the throughput/contention
+/// sweet spot against Ollama) and Critic Revision R9 (batch 8 caps a single
+/// backlog tick's ONNX mutex hold to ~18ms).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmbeddingConfig {
+    pub enabled: bool,
+    pub model_dir: PathBuf,
+    pub intra_threads: usize,
+    pub batch_size: usize,
+    pub backlog_poll_secs: u64,
+    pub debug_endpoint: bool,
 }
 
 impl Config {
     /// Struct defaults: bind 127.0.0.1:9100, db_path = XDG default, log
-    /// info, metrics snapshot every 60s.
+    /// info, metrics snapshot every 60s, embeddings on.
     pub fn defaults() -> Result<Config> {
         Ok(Config {
             bind: "127.0.0.1:9100".to_string(),
             db_path: paths::default_db_path()?,
             log_level: "info".to_string(),
             metrics_snapshot_interval_secs: 60,
+            embedding: EmbeddingConfig {
+                enabled: true,
+                model_dir: paths::models_dir()?,
+                intra_threads: 4,
+                batch_size: 8,
+                backlog_poll_secs: 5,
+                debug_endpoint: false,
+            },
         })
     }
 
@@ -64,6 +90,8 @@ impl Config {
             ENV_LOG_LEVEL,
             ENV_METRICS_INTERVAL,
             ENV_HOME,
+            ENV_MODEL_DIR,
+            ENV_EMBED_THREADS,
         ] {
             if let Ok(v) = std::env::var(key) {
                 env.insert(key.to_string(), v);
@@ -102,6 +130,26 @@ pub fn from_parts(
         if let Some(secs) = parsed.metrics.and_then(|m| m.snapshot_interval_secs) {
             cfg.metrics_snapshot_interval_secs = secs;
         }
+        if let Some(embedding) = parsed.embedding {
+            if let Some(v) = embedding.enabled {
+                cfg.embedding.enabled = v;
+            }
+            if let Some(v) = embedding.model_dir {
+                cfg.embedding.model_dir = expand_tilde(&v, home);
+            }
+            if let Some(v) = embedding.intra_threads {
+                cfg.embedding.intra_threads = v;
+            }
+            if let Some(v) = embedding.batch_size {
+                cfg.embedding.batch_size = v;
+            }
+            if let Some(v) = embedding.backlog_poll_secs {
+                cfg.embedding.backlog_poll_secs = v;
+            }
+            if let Some(v) = embedding.debug_endpoint {
+                cfg.embedding.debug_endpoint = v;
+            }
+        }
     }
 
     if let Some(bind) = env.get(ENV_BIND) {
@@ -117,6 +165,14 @@ pub fn from_parts(
         cfg.metrics_snapshot_interval_secs = secs
             .parse()
             .map_err(|_| Error::Config(format!("invalid {ENV_METRICS_INTERVAL}: {secs}")))?;
+    }
+    if let Some(model_dir) = env.get(ENV_MODEL_DIR) {
+        cfg.embedding.model_dir = expand_tilde(model_dir, home);
+    }
+    if let Some(threads) = env.get(ENV_EMBED_THREADS) {
+        cfg.embedding.intra_threads = threads
+            .parse()
+            .map_err(|_| Error::Config(format!("invalid {ENV_EMBED_THREADS}: {threads}")))?;
     }
 
     Ok(cfg)
@@ -140,6 +196,7 @@ struct TomlConfig {
     storage: Option<TomlStorage>,
     log: Option<TomlLog>,
     metrics: Option<TomlMetrics>,
+    embedding: Option<TomlEmbedding>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -162,6 +219,16 @@ struct TomlMetrics {
     snapshot_interval_secs: Option<u64>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct TomlEmbedding {
+    enabled: Option<bool>,
+    model_dir: Option<String>,
+    intra_threads: Option<usize>,
+    batch_size: Option<usize>,
+    backlog_poll_secs: Option<u64>,
+    debug_endpoint: Option<bool>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +239,14 @@ mod tests {
             db_path: PathBuf::from("/data/memgarden.db"),
             log_level: "info".to_string(),
             metrics_snapshot_interval_secs: 60,
+            embedding: EmbeddingConfig {
+                enabled: true,
+                model_dir: PathBuf::from("/data/models"),
+                intra_threads: 4,
+                batch_size: 8,
+                backlog_poll_secs: 5,
+                debug_endpoint: false,
+            },
         }
     }
 
@@ -238,5 +313,39 @@ mod tests {
         env3.insert(ENV_DB_PATH.to_string(), "~/data/memgarden.db".to_string());
         let cfg3 = from_parts(defaults(), None, &env3).unwrap();
         assert_eq!(cfg3.db_path, PathBuf::from("~/data/memgarden.db"));
+    }
+
+    #[test]
+    fn embedding_precedence() {
+        let toml_str = r#"
+            [embedding]
+            enabled = false
+            batch_size = 16
+        "#;
+        let cfg = from_parts(defaults(), Some(toml_str), &HashMap::new()).unwrap();
+        assert!(!cfg.embedding.enabled);
+        assert_eq!(cfg.embedding.batch_size, 16);
+        // Untouched by TOML: still default.
+        assert_eq!(cfg.embedding.intra_threads, 4);
+
+        let mut env = HashMap::new();
+        env.insert(ENV_HOME.to_string(), "/home/testuser".to_string());
+        env.insert(ENV_MODEL_DIR.to_string(), "~/models".to_string());
+        env.insert(ENV_EMBED_THREADS.to_string(), "8".to_string());
+        let cfg = from_parts(defaults(), Some(toml_str), &env).unwrap();
+        assert_eq!(
+            cfg.embedding.model_dir,
+            PathBuf::from("/home/testuser/models")
+        );
+        assert_eq!(cfg.embedding.intra_threads, 8);
+        // Env doesn't touch batch_size; TOML value survives.
+        assert_eq!(cfg.embedding.batch_size, 16);
+    }
+
+    #[test]
+    fn embed_threads_invalid_env_errors() {
+        let mut env = HashMap::new();
+        env.insert(ENV_EMBED_THREADS.to_string(), "not-a-number".to_string());
+        assert!(from_parts(defaults(), None, &env).is_err());
     }
 }
