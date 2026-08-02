@@ -735,6 +735,37 @@ async fn hybrid_recall_bench() {
         seed_start.elapsed().as_secs_f64()
     );
 
+    // CE-7: give the graph arm something to expand. Every node links to its
+    // 20 nearest successors (what `temporal_links`' per-node cap produces
+    // from a busy session) and shares an entity with a 300-way bucket, so
+    // the arm does real work instead of returning empty.
+    let graph_start = Instant::now();
+    let ids: Vec<i64> = pairs.iter().map(|(id, _)| *id).collect();
+    let mut links = Vec::with_capacity(nodes_n * 20);
+    for (i, &from) in ids.iter().enumerate() {
+        for &to in ids.iter().skip(i + 1).take(20) {
+            links.push(memgarden_store::graph::NewLink {
+                from_node_id: from,
+                to_node_id: to,
+                link_type: "temporal",
+                weight: 0.5,
+            });
+        }
+    }
+    memgarden_store::graph::insert_links(&db, &links, 0).unwrap();
+    let entity_batch: Vec<(i64, Vec<String>)> = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (*id, vec![format!("entity {}", i % 300)]))
+        .collect();
+    memgarden_store::graph::write_entities(&db, "b1", &entity_batch, 0, 0).unwrap();
+    println!(
+        "bench: seeded {} links + {} entity rows in {:.1}s",
+        links.len(),
+        entity_batch.len(),
+        graph_start.elapsed().as_secs_f64()
+    );
+
     // Turn the semantic arm on: the router holds a clone of this very Arc.
     *embedder_slot.write().unwrap() = Some(embedder.clone());
 

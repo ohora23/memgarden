@@ -606,3 +606,320 @@ fn hydrate_does_not_split_a_tag_on_a_separator_character() {
         "each tag must round-trip whole"
     );
 }
+
+// ---------------------------------------------------------------------------
+// CE-7 / PR B5: entities, co-occurrence, links, graph expansion.
+// ---------------------------------------------------------------------------
+
+use memgarden_store::graph::{self, NewLink};
+
+/// The v2-upgrade mirror of `migrate_upgrades_a_v1_database_in_place`: 0003
+/// is the first migration that rewrites an existing table (`links`), so a
+/// database left at v2 with data in it must come out at v3 intact.
+#[test]
+fn migrate_upgrades_a_v2_database_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v2.db");
+
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!("../migrations/0001_init.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../migrations/0002_retain_jobs.sql"))
+            .unwrap();
+        for v in [1, 2] {
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, 0)",
+                rusqlite::params![v],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.execute(
+            "INSERT INTO banks (bank_id, created_at, updated_at) VALUES ('legacy', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory_nodes (uuid, bank_id, fact_type, text, created_at, updated_at)
+             VALUES ('u1', 'legacy', 'world', 'a', 0, 0), ('u2', 'legacy', 'world', 'b', 0, 0)",
+            [],
+        )
+        .unwrap();
+        // A pre-0003 link with an out-of-range weight: the rebuild clamps it
+        // into the new CHECK rather than failing the migration.
+        conn.execute(
+            "INSERT INTO links (from_node_id, to_node_id, link_type, weight, created_at)
+             VALUES (1, 2, 'semantic', 7.5, 0)",
+            [],
+        )
+        .unwrap();
+    }
+
+    let db = Db::open(&path).unwrap();
+    let conn = db.read().unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, memgarden_store::LATEST_VERSION);
+    assert_eq!(memgarden_store::LATEST_VERSION, 3);
+
+    // 0003's table exists, the new entity columns exist...
+    let cooc: i64 = conn
+        .query_row("SELECT count(*) FROM entity_cooccurrences", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(cooc, 0);
+    conn.query_row(
+        "SELECT count(mention_count) + count(first_seen) + count(last_seen) FROM entities",
+        [],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap();
+
+    // ...and the pre-existing link survived, clamped.
+    let (count, weight): (i64, f64) = conn
+        .query_row("SELECT count(*), max(weight) FROM links", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(weight, 1.0, "an out-of-range weight is clamped, not dropped");
+}
+
+#[test]
+fn link_weight_check_rejects_out_of_range() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    let a = nodes::insert(&db, NewNode::new("b1", FactType::World, "a")).unwrap();
+    let b = nodes::insert(&db, NewNode::new("b1", FactType::World, "b")).unwrap();
+
+    for bad in [-0.1f64, 1.1] {
+        let result = db.write(|tx| {
+            tx.execute(
+                "INSERT INTO links (from_node_id, to_node_id, link_type, weight, created_at)
+                 VALUES (?1, ?2, 'semantic', ?3, 0)",
+                rusqlite::params![a, b, bad],
+            )
+            .map_err(store_err)?;
+            Ok(())
+        });
+        assert!(result.is_err(), "weight {bad} must be rejected (NIT 18)");
+    }
+    // insert_links clamps in Rust, so it never trips the CHECK.
+    graph::insert_links(
+        &db,
+        &[NewLink {
+            from_node_id: a,
+            to_node_id: b,
+            link_type: "semantic",
+            weight: 42.0,
+        }],
+        0,
+    )
+    .unwrap();
+    let w: f64 = db
+        .read()
+        .unwrap()
+        .query_row("SELECT weight FROM links", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(w, 1.0);
+}
+
+#[test]
+fn cooccurrence_check_rejects_non_canonical_order() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    db.write(|tx| {
+        tx.execute(
+            "INSERT INTO entities (bank_id, canonical_name, created_at) VALUES ('b1','a',0),('b1','b',0)",
+            [],
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+
+    let insert = |a: i64, b: i64| {
+        db.write(|tx| {
+            tx.execute(
+                "INSERT INTO entity_cooccurrences
+                   (entity_id_1, entity_id_2, cooccurrence_count, last_cooccurred)
+                 VALUES (?1, ?2, 1, 0)",
+                rusqlite::params![a, b],
+            )
+            .map_err(store_err)?;
+            Ok(())
+        })
+    };
+    assert!(insert(1, 2).is_ok());
+    assert!(insert(2, 1).is_err(), "a > b must be rejected");
+    assert!(insert(1, 1).is_err(), "a = b must be rejected");
+}
+
+fn seed_nodes(db: &Db, n: usize) -> Vec<i64> {
+    banks::create(db, "b1", None, None).ok();
+    (0..n)
+        .map(|i| nodes::insert(db, NewNode::new("b1", FactType::World, &format!("n{i}"))).unwrap())
+        .collect()
+}
+
+#[test]
+fn write_entities_upserts_counts_attaches_and_pairs() {
+    let db = Db::open_memory().unwrap();
+    let ids = seed_nodes(&db, 2);
+
+    let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let batch = vec![
+        (ids[0], names(&["ollama", "qwen3"])),
+        (ids[1], names(&["ollama"])),
+    ];
+    let map = graph::write_entities(&db, "b1", &batch, 1_000, 500).unwrap();
+    assert_eq!(map.len(), 2);
+
+    let conn = db.read().unwrap();
+    let (count, first, last): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT mention_count, first_seen, last_seen FROM entities WHERE canonical_name='ollama'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(count, 2, "two mentions in one batch count twice");
+    assert_eq!((first, last), (1_000, 1_000));
+    // entity_type is deliberately never persisted (legacy hardcodes CONCEPT).
+    let typed: i64 = conn
+        .query_row("SELECT count(entity_type) FROM entities", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(typed, 0);
+
+    let attached: i64 = conn
+        .query_row("SELECT count(*) FROM node_entities", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(attached, 3);
+
+    // One pair, canonically ordered, from the fact naming both.
+    let (e1, e2, cooc): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT entity_id_1, entity_id_2, cooccurrence_count FROM entity_cooccurrences",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert!(e1 < e2);
+    assert_eq!(cooc, 1);
+    drop(conn);
+
+    // Second batch: counts accumulate rather than conflicting.
+    graph::write_entities(&db, "b1", &batch, 2_000, 600).unwrap();
+    let conn = db.read().unwrap();
+    let (count, first, last): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT mention_count, first_seen, last_seen FROM entities WHERE canonical_name='ollama'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(count, 4);
+    assert_eq!((first, last), (1_000, 2_000), "first_seen sticks, last_seen advances");
+    let cooc: i64 = conn
+        .query_row("SELECT cooccurrence_count FROM entity_cooccurrences", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(cooc, 2, "ON CONFLICT adds the batch count");
+}
+
+/// Korean names go through `normalize` (trim + lowercase) unchanged, and must
+/// survive the UNIQUE key, the co-occurrence join and the read-back.
+#[test]
+fn korean_entity_names_round_trip() {
+    let db = Db::open_memory().unwrap();
+    let ids = seed_nodes(&db, 1);
+    let batch = vec![(
+        ids[0],
+        vec!["메모리 시스템".to_string(), "제트슨 자비에".to_string()],
+    )];
+    graph::write_entities(&db, "b1", &batch, 1_000, 500).unwrap();
+
+    let ctx = graph::load_resolution_context(&db, "b1").unwrap();
+    let mut got: Vec<&str> = ctx
+        .candidates
+        .iter()
+        .map(|c| c.canonical_name.as_str())
+        .collect();
+    got.sort_unstable();
+    assert_eq!(got, vec!["메모리 시스템", "제트슨 자비에"]);
+    // Each is recorded as the other's co-occurrent, both directions.
+    let by_name = |n: &str| ctx.candidates.iter().find(|c| c.canonical_name == n).unwrap().id;
+    assert!(ctx.cooccurring[&by_name("메모리 시스템")].contains("제트슨 자비에"));
+    assert!(ctx.cooccurring[&by_name("제트슨 자비에")].contains("메모리 시스템"));
+}
+
+#[test]
+fn expand_walks_one_hop_in_both_directions_and_excludes_seeds() {
+    let db = Db::open_memory().unwrap();
+    let ids = seed_nodes(&db, 4);
+    let (seed, out, incoming, far) = (ids[0], ids[1], ids[2], ids[3]);
+
+    graph::insert_links(
+        &db,
+        &[
+            NewLink { from_node_id: seed, to_node_id: out, link_type: "semantic", weight: 0.9 },
+            NewLink { from_node_id: incoming, to_node_id: seed, link_type: "caused_by", weight: 1.0 },
+            // Two hops away: reachable from `out`, not from `seed`.
+            NewLink { from_node_id: out, to_node_id: far, link_type: "semantic", weight: 0.8 },
+        ],
+        0,
+    )
+    .unwrap();
+    // Shared entity between the seed and `far` — the node_entities path.
+    graph::write_entities(
+        &db,
+        "b1",
+        &[(seed, vec!["ollama".to_string()]), (far, vec!["ollama".to_string()])],
+        0,
+        0,
+    )
+    .unwrap();
+
+    let (links, shared) = graph::expand(&db, "b1", &[seed], 100).unwrap();
+    let mut reached: Vec<i64> = links.iter().map(|n| n.node_id).collect();
+    reached.sort_unstable();
+    assert_eq!(reached, vec![out, incoming], "both directions, one hop, no seed");
+    assert!(!reached.contains(&far), "two hops away must not appear via links");
+    assert_eq!(shared, vec![(far, 1)], "entity co-membership reaches `far`");
+
+    // Another bank's node must never be expanded into.
+    banks::create(&db, "b2", None, None).unwrap();
+    let (links, shared) = graph::expand(&db, "b2", &[seed], 100).unwrap();
+    assert!(links.is_empty() && shared.is_empty());
+}
+
+#[test]
+fn graph_view_returns_nodes_entities_and_only_internal_edges() {
+    let db = Db::open_memory().unwrap();
+    let ids = seed_nodes(&db, 3);
+    graph::insert_links(
+        &db,
+        &[NewLink {
+            from_node_id: ids[0],
+            to_node_id: ids[1],
+            link_type: "temporal",
+            weight: 0.5,
+        }],
+        0,
+    )
+    .unwrap();
+    graph::write_entities(&db, "b1", &[(ids[0], vec!["ollama".to_string()])], 0, 0).unwrap();
+
+    let (nodes_out, edges) = graph::graph_view(&db, "b1", 100, &[], None).unwrap();
+    assert_eq!(nodes_out.len(), 3);
+    let first = nodes_out.iter().find(|n| n.id == ids[0]).unwrap();
+    assert_eq!(first.entities, vec!["ollama".to_string()]);
+    assert_eq!(edges.len(), 1);
+
+    // `limit` is newest-first, so a limit of 1 keeps the last node — and the
+    // edge, whose other endpoint fell out of the set, must not come back.
+    let (nodes_out, edges) = graph::graph_view(&db, "b1", 1, &[], None).unwrap();
+    assert_eq!(nodes_out.len(), 1);
+    assert_eq!(nodes_out[0].id, ids[2]);
+    assert!(edges.is_empty(), "no dangling edges");
+}
