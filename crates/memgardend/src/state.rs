@@ -39,6 +39,21 @@ pub struct AppState {
     /// // restart — and nothing needs to, since an abandoned `running` row has
     /// // a NULL watermark and is ignored.
     pub consolidating: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Mental models with a refresh in flight, keyed `"{bank_id}/{mm_id}"`
+    /// (CE-10) — the same single-flight shape as `consolidating`, and there
+    /// for the same class of bug.
+    ///
+    /// A refresh reads `last_refreshed_at`, recalls the facts newer than it,
+    /// spends a minute in the LLM, then writes. Two concurrent refreshes of
+    /// one model read the same watermark and both write: the loser's summary
+    /// is overwritten while its watermark advance stands, so that window's
+    /// facts are never summarised again — a silent lost update on the one path
+    /// whose contract is "never destroy the working document". A second caller
+    /// gets `Conflict` (409).
+    ///
+    /// Keyed per *model*, not per bank: refreshing two different mental models
+    /// at once is fine, and the Ollama semaphore is what serialises the GPU.
+    pub refreshing: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Bounded queue into the background retain worker
     /// (`retain::run_worker`). Capacity is `retain.queue_capacity`; the
     /// endpoint reserves a slot with `try_reserve` and answers 429 when the

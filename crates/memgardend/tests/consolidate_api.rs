@@ -93,6 +93,7 @@ async fn harness() -> Harness {
         embedder: Arc::new(std::sync::RwLock::new(None)),
         ollama,
         consolidating: Default::default(),
+        refreshing: Default::default(),
         retain_tx,
     };
     Harness {
@@ -533,6 +534,7 @@ async fn an_embed_task_tick_regenerates_an_invalidated_embedding() {
             memgardend::ollama::OllamaClient::new(cfg_defaults.ollama.clone()).unwrap(),
         ),
         consolidating: Default::default(),
+        refreshing: Default::default(),
         retain_tx,
     };
 
@@ -588,6 +590,7 @@ async fn live_consolidation_round() {
         embedder: Arc::new(std::sync::RwLock::new(Some(embedder))),
         ollama: Arc::new(memgardend::ollama::OllamaClient::new(cfg_defaults.ollama).unwrap()),
         consolidating: Default::default(),
+        refreshing: Default::default(),
         retain_tx,
     };
 

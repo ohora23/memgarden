@@ -4,6 +4,7 @@ mod embed;
 mod extract;
 mod graph;
 mod health;
+mod mental;
 mod metrics;
 mod recall;
 mod retain;
@@ -70,6 +71,23 @@ pub fn router(state: AppState) -> Router {
             get(consolidate::get_consolidation),
         )
         .route("/v1/banks/{bank_id}/graph", get(graph::get_graph))
+        .route(
+            "/v1/banks/{bank_id}/mental-models",
+            get(mental::list_mental_models).post(mental::create_mental_model),
+        )
+        .route(
+            "/v1/banks/{bank_id}/mental-models/{mm_id}",
+            get(mental::get_mental_model)
+                .patch(mental::patch_mental_model)
+                .delete(mental::delete_mental_model),
+        )
+        // Synchronous, like /consolidate: one LLM call, so callers need a
+        // matching client timeout.
+        .route(
+            "/v1/banks/{bank_id}/mental-models/{mm_id}/refresh",
+            post(mental::refresh_mental_model),
+        )
+        .route("/v1/banks/{bank_id}/reflect", post(mental::reflect_bank))
         .route("/v1/retain/{job_id}", get(retain::get_job))
         .layer(from_fn(track_http));
 

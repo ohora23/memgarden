@@ -1122,7 +1122,7 @@ fn fresh_database_has_the_0004_consolidation_schema() {
     let conn = db.read().unwrap();
 
     // The `LATEST_VERSION` pin lives with the newest migration's test — see
-    // `fresh_database_has_the_0005_embedding_model_column`.
+    // `fresh_database_has_the_0006_mental_model_schema`.
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
@@ -1230,18 +1230,19 @@ fn migrate_upgrades_a_v3_database_in_place() {
 
 // --- 0005 (AX-1): embedding_model, vector-space versioning ---------------
 
-/// A fresh database lands on v5, and the write paths stamp the producer.
+/// A fresh database has 0005's column, and the write paths stamp the
+/// producer. (The `LATEST_VERSION` pin moved to 0006's test — the convention
+/// AX-1 set when it took it off 0004's.)
 #[test]
 fn fresh_database_has_the_0005_embedding_model_column() {
     let db = Db::open_memory().unwrap();
 
-    assert_eq!(memgarden_store::LATEST_VERSION, 5);
     {
         let conn = db.read().unwrap();
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, memgarden_store::LATEST_VERSION);
     }
 
     banks::create(&db, "b1", None, None).unwrap();
@@ -1495,4 +1496,141 @@ fn model_of(db: &Db, id: i64) -> Option<String> {
             |r| r.get(0),
         )
         .unwrap()
+}
+
+// --- 0006 (CE-10): mental models ----------------------------------------
+
+/// A fresh database lands on v6 with every 0006 object in place and its
+/// CHECKs real.
+#[test]
+fn fresh_database_has_the_0006_mental_model_schema() {
+    let db = Db::open_memory().unwrap();
+    let conn = db.read().unwrap();
+
+    assert_eq!(memgarden_store::LATEST_VERSION, 6);
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 6);
+
+    for table in ["mental_models", "vec_mental_models"] {
+        let n: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "{table} exists and is empty");
+    }
+    drop(conn);
+
+    banks::create(&db, "b1", None, None).unwrap();
+    // The JSON CHECK on the audit column is real...
+    let bad_json = db.write(|tx| {
+        tx.execute(
+            "INSERT INTO mental_models (id, bank_id, name, reflect_response, created_at)
+             VALUES ('mm-1', 'b1', 'n', 'not json', 0)",
+            [],
+        )
+        .map_err(store_err)?;
+        Ok(())
+    });
+    assert!(bad_json.is_err(), "reflect_response must be valid JSON");
+
+    // ...as is the embedding length CHECK (1536 bytes = 384 f32s).
+    let bad_vec = db.write(|tx| {
+        tx.execute(
+            "INSERT INTO mental_models (id, bank_id, name, embedding, created_at)
+             VALUES ('mm-2', 'b1', 'n', X'0000', 0)",
+            [],
+        )
+        .map_err(store_err)?;
+        Ok(())
+    });
+    assert!(bad_vec.is_err(), "embedding must be 1536 bytes");
+
+    // ...and so is the FK to banks.
+    let bad_bank = db.write(|tx| {
+        tx.execute(
+            "INSERT INTO mental_models (id, bank_id, name, created_at)
+             VALUES ('mm-3', 'nope', 'n', 0)",
+            [],
+        )
+        .map_err(store_err)?;
+        Ok(())
+    });
+    assert!(bad_bank.is_err(), "bank_id must reference a real bank");
+}
+
+/// The v5-upgrade mirror of the v1/v2/v3/v4 tests: a **populated** v5 database
+/// must come out at v6 with its rows intact and the new objects usable.
+#[test]
+fn migrate_upgrades_a_v5_database_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v5.db");
+
+    {
+        // 0001's `CREATE VIRTUAL TABLE vec_nodes USING vec0` needs the
+        // process-global auto-extension `Db::open` registers; the raw
+        // connection below may be the first in this binary.
+        drop(Db::open_memory().unwrap());
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in [
+            include_str!("../migrations/0001_init.sql"),
+            include_str!("../migrations/0002_retain_jobs.sql"),
+            include_str!("../migrations/0003_entities_graph.sql"),
+            include_str!("../migrations/0004_consolidation.sql"),
+            include_str!("../migrations/0005_embedding_model.sql"),
+        ] {
+            conn.execute_batch(sql).unwrap();
+        }
+        for v in [1, 2, 3, 4, 5] {
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, 0)",
+                rusqlite::params![v],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 5).unwrap();
+        conn.execute(
+            "INSERT INTO banks (bank_id, created_at, updated_at) VALUES ('legacy', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory_nodes (uuid, bank_id, fact_type, text, created_at, updated_at)
+             VALUES ('u1', 'legacy', 'world', 'a fact', 0, 0)",
+            [],
+        )
+        .unwrap();
+    }
+
+    let db = Db::open(&path).unwrap();
+    {
+        let conn = db.read().unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 6);
+        let nodes_n: i64 = conn
+            .query_row("SELECT count(*) FROM memory_nodes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(nodes_n, 1, "the pre-existing row survives the upgrade");
+    }
+
+    // And the new objects work against the pre-existing bank.
+    use memgarden_store::mental_models::{self as mm, NewMentalModel};
+    let vector = vec![0.5f32; EMBEDDING_DIM];
+    mm::insert(
+        &db,
+        &NewMentalModel {
+            id: "mm-upgraded",
+            bank_id: "legacy",
+            name: "after the upgrade",
+            source_query: None,
+            content: "content",
+            max_tokens: None,
+            trigger: None,
+        },
+        Some(&vector),
+    )
+    .unwrap();
+    assert_eq!(mm::knn(&db, "legacy", &vector, 5).unwrap().len(), 1);
 }

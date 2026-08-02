@@ -20,7 +20,8 @@ rusqlite = { version = "0.40", features = ["bundled", "functions", "limits"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.35"
 sqlite-vec = "=0.1.9"
-uuid = { version = "1", features = ["v7", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] } # v4: mental-model ids are
+                                                        # "mm-<uuid4hex>" (CE-10, legacy parity)
 thiserror = "2"
 anyhow = "1"
 tower = { version = "0.5", features = ["util"] }

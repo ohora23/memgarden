@@ -112,6 +112,7 @@ fn build(
         embedder: Arc::new(std::sync::RwLock::new(None)),
         ollama,
         consolidating: Default::default(),
+        refreshing: Default::default(),
         retain_tx,
     };
     let app = routes::router(state.clone());
