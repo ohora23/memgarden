@@ -54,11 +54,18 @@ enum Period {
 /// The recognized period set, **in match order**. English phrases match on
 /// word boundaries; Korean ones by containment (see `contains_expression`).
 ///
-/// Ordering is behaviour in two places:
-/// * weekend before week — Korean `지난주말` *contains* `지난주`, so the
-///   week rule would swallow it. English is safe either way (`\blast week\b`
-///   does not match inside "last weekend"), which is why legacy can afford
-///   the opposite order (`temporal_periods.py:118-137`).
+/// Ordering is behaviour, in both directions, because Korean containment has
+/// no word boundary to stop it:
+/// * **suffix** — `지난주말` *contains* `지난주`, so every weekend rule runs
+///   before its week rule. English is safe either way (`\blast week\b` does
+///   not match inside "last weekend"), which is why legacy can afford the
+///   opposite order (`temporal_periods.py:118-137`).
+/// * **prefix** — `지지난주` *contains* `지난주` and `재작년` contains
+///   `작년`, so a `지지난`/`재작` rule that came *after* its container would
+///   never fire and the query would silently resolve one period too late.
+///   This is the direction legacy guards with `(?<![上下大小])` on every
+///   Chinese period rule (`chinese_temporal_periods.py:551,726,759,825`);
+///   with literal matching the equivalent is to put the longer form first.
 /// * `그저께` before `어제`, `며칠 전` before the bare day rules — same
 ///   containment reason.
 ///
@@ -68,6 +75,7 @@ enum Period {
 /// non-Chinese set is past-only, but its *Chinese* set has 这周/下周, so the
 /// concept is legacy-supported, just not in the Latin-script module.
 const RULES: &[(&[&str], Period)] = &[
+    (&["지지난 주말", "지지난주말"], Period::Weekend(2)),
     (
         &["last weekend", "지난 주말", "지난주말", "저번 주말"],
         Period::Weekend(1),
@@ -84,6 +92,7 @@ const RULES: &[(&[&str], Period)] = &[
         &["few days ago", "며칠 전", "몇 일 전"],
         Period::Days(-5, -2),
     ),
+    (&["지지난 주", "지지난주"], Period::Week(-2)),
     (
         &["last week", "지난주", "지난 주", "저번주", "저번 주"],
         Period::Week(-1),
@@ -95,6 +104,7 @@ const RULES: &[(&[&str], Period)] = &[
         Period::Days(-21, -7),
     ),
     (&["few weeks ago", "몇 주 전"], Period::Days(-35, -14)),
+    (&["지지난 달", "지지난달"], Period::Month(-2)),
     (
         &["last month", "지난달", "지난 달", "저번달", "저번 달"],
         Period::Month(-1),
@@ -112,6 +122,9 @@ const RULES: &[(&[&str], Period)] = &[
         &["few months ago", "몇 달 전", "몇 개월 전"],
         Period::Days(-150, -60),
     ),
+    // `재작` alone is deliberately NOT a literal here: it would also match
+    // `재작업` ("rework"), which is not a date.
+    (&["재작년", "지지난해", "지지난 해"], Period::Year(-2)),
     (
         &["last year", "작년", "지난해", "지난 해"],
         Period::Year(-1),
@@ -120,13 +133,17 @@ const RULES: &[(&[&str], Period)] = &[
 ];
 
 /// Recurrence markers that stand alone (`매주` = "every week").
-/// legacy: the `每/各/隔` family, `chinese_temporal_periods.py:737-763`.
+/// legacy: the `每/各/隔` family, `chinese_temporal_periods.py:540-548`.
+///
+/// Korean only, on purpose. The English adjectives (`weekly`, `monthly`, …)
+/// were here and had to go: they are *nouns' adjectives*, not recurrence
+/// markers, so "the weekly report from last week" and "monthly metrics we
+/// reviewed yesterday" both went `Unconstrainable` and threw away a window
+/// the query also states. Legacy has no counterpart — its sentinel needs
+/// 每/各/隔 *bound to a unit* — and `every|each + unit` below already covers
+/// genuine English recurrence. The Korean markers are unambiguous: `매주`
+/// cannot be an adjective for anything.
 const RECURRING: &[&str] = &[
-    "daily",
-    "weekly",
-    "monthly",
-    "yearly",
-    "annually",
     "매일",
     "매주",
     "매달",
@@ -171,9 +188,12 @@ const RECUR_UNITS: &[&str] = &[
 const BEFORE_MARKERS_EN: &[&str] = &["before", "until", "up to"];
 const BEFORE_MARKERS_KO: &[&str] = &["이전", "까지"];
 
-/// Open-ended *from a point up to now* — that IS a range, `[start, now]`
-/// (legacy `since_constraint`, `chinese_temporal_periods.py:519-523`).
-const SINCE_MARKERS_EN: &[&str] = &["since", "after", "from"];
+/// Open-ended *from a point up to the end of today* — that IS a range
+/// (legacy `since_constraint`, `chinese_temporal_periods.py:451-454`).
+///
+/// `from` is deliberately absent: "notes from yesterday" means yesterday, not
+/// yesterday-onwards, and legacy has no `from` marker at all.
+const SINCE_MARKERS_EN: &[&str] = &["since", "after"];
 const SINCE_MARKERS_KO: &[&str] = &["부터", "이후"];
 
 /// Extracts what `query` says about time, resolved against `now_ms` (UTC).
@@ -199,10 +219,17 @@ pub fn extract_constraint(query: &str, now_ms: i64) -> Option<Constraint> {
         let (start, end) = resolve(period, today)?;
         let start_ms = midnight_ms(start)?;
         if marker_before(&lower, span, SINCE_MARKERS_EN, SINCE_MARKERS_KO) {
-            // `since_constraint`: from the period's start up to now.
+            // `since_constraint`, `chinese_temporal_periods.py:451-454`: from
+            // the period's start to the end of today — and the sentinel, not
+            // a range, when that start is in the future. "since next week"
+            // has no window; building one inverts it (start > end), which the
+            // SQL survives but scoring does not.
+            if start_ms > now_ms {
+                return Some(Constraint::Unconstrainable);
+            }
             return Some(Constraint::Range {
                 start_ms,
-                end_ms: now_ms,
+                end_ms: midnight_ms(today)? + DAY_MS - 1,
             });
         }
         return Some(Constraint::Range {
@@ -423,6 +450,32 @@ mod tests {
         assert_ne!(days("지난주말에 뭐 했지"), days("지난주에 뭐 했지"));
     }
 
+    /// Review round MEDIUM-1: the *prefix* direction of the same containment
+    /// problem. `지지난주` contains `지난주` and `재작년` contains `작년`, so
+    /// before the longer forms were listed first these did not widen into a
+    /// superset — they returned a **wrong** period, one step too late, with
+    /// no signal that anything was off.
+    #[test]
+    fn korean_double_prefix_is_not_swallowed_by_its_container() {
+        assert_eq!(days("지지난주에 뭐 했지"), span("2026-07-13", "2026-07-19"));
+        assert_eq!(days("지지난 주 회의"), span("2026-07-13", "2026-07-19"));
+        assert_eq!(days("지지난달 지표"), span("2026-06-01", "2026-06-30"));
+        assert_eq!(days("지지난 달 지표"), span("2026-06-01", "2026-06-30"));
+        assert_eq!(days("재작년에 정한 규칙"), span("2024-01-01", "2024-12-31"));
+        assert_eq!(days("지지난해 결정"), span("2024-01-01", "2024-12-31"));
+        assert_eq!(days("지지난주말 배포"), span("2026-07-25", "2026-07-26"));
+
+        // Each is exactly one period earlier than its container, which is the
+        // property that broke.
+        assert_ne!(days("지지난주"), days("지난주"));
+        assert_ne!(days("지지난달"), days("지난달"));
+        assert_ne!(days("재작년"), days("작년"));
+        assert_ne!(days("지지난주말"), days("지난주말"));
+
+        // `재작` alone is not a literal: this must not read as a year.
+        assert_eq!(extract_constraint("재작업이 필요한 부분", NOW), None);
+    }
+
     #[test]
     fn a_range_closes_at_the_last_millisecond_of_its_last_day() {
         let (start, end) = range("yesterday").unwrap();
@@ -437,7 +490,6 @@ mod tests {
         for q in [
             "every monday",
             "we sync every week",
-            "the weekly report",
             "매주 월요일 회의",
             "매일 하는 일",
         ] {
@@ -478,6 +530,26 @@ mod tests {
         );
     }
 
+    /// Review round MEDIUM-3: a bare English adjective is not a recurrence
+    /// marker. These queries name a window *and* a cadence, and the window is
+    /// the part the caller can act on.
+    #[test]
+    fn english_recurrence_adjectives_do_not_eat_the_window() {
+        assert_eq!(
+            days("the weekly report from last week"),
+            span("2026-07-20", "2026-07-26")
+        );
+        assert_eq!(
+            days("monthly metrics we reviewed yesterday"),
+            day("2026-08-01")
+        );
+        // Real English recurrence still short-circuits, via `every|each`.
+        assert_eq!(
+            extract_constraint("the report we write every week", NOW),
+            Some(Constraint::Unconstrainable)
+        );
+    }
+
     #[test]
     fn open_ended_before_is_unconstrainable_but_since_is_a_range() {
         assert_eq!(
@@ -488,10 +560,11 @@ mod tests {
             extract_constraint("지난주 이전 결정", NOW),
             Some(Constraint::Unconstrainable)
         );
-        // "since last week" is bounded below and open only up to now.
+        // "since last week" runs from the period's start to the end of today
+        // (legacy closes on the reference *date*, not the reference instant).
         let (start, end) = range("since last week").unwrap();
         assert_eq!(start, "2026-07-20T00:00:00Z");
-        assert_eq!(end, "2026-08-02T04:55:41Z");
+        assert_eq!(end, "2026-08-02T23:59:59.999Z");
         assert_eq!(range("지난주부터의 변경"), range("since last week"));
 
         // Adjacency: a marker that is not next to the period does not change it.
@@ -499,18 +572,51 @@ mod tests {
             days("what did we decide after the meeting last week"),
             span("2026-07-20", "2026-07-26")
         );
+        // `from` is NOT a since-marker: "notes from yesterday" means yesterday.
+        assert_eq!(days("notes from yesterday"), day("2026-08-01"));
+    }
+
+    /// Review round MEDIUM-2: a since-window whose start is in the future has
+    /// no range at all. Building one inverts it (start > end); the SQL
+    /// survives that (BETWEEN matches nothing) but scoring did not — an
+    /// inverted window hit the zero-width shortcut and handed every dated
+    /// candidate a 1.0 proximity, i.e. a uniform boost on a query where the
+    /// arm returned nothing. legacy: `chinese_temporal_periods.py:451-454`.
+    #[test]
+    fn since_a_future_period_is_unconstrainable_not_an_inverted_range() {
+        for q in [
+            "since next week",
+            "since tomorrow",
+            "다음주부터",
+            "내일부터의 계획",
+            "since next month",
+        ] {
+            assert_eq!(
+                extract_constraint(q, NOW),
+                Some(Constraint::Unconstrainable),
+                "{q}"
+            );
+        }
+        // A plain future period is still a perfectly good (forward) window —
+        // only the *since* form is unconstrainable.
+        assert_eq!(days("next week plans"), span("2026-08-03", "2026-08-09"));
     }
 
     /// legacy matches on the lowercased query (`query_analyzer.py:228-229`)
     /// but hands the ORIGINAL to the date parser (`:253`).
     #[test]
     fn matching_is_case_insensitive_and_the_fallback_gets_the_original() {
+        // The matching half: rules run on the lowercased copy, so case in the
+        // query cannot hide a period.
         assert_eq!(days("What Did We Decide LAST WEEK"), days("last week"));
-        // The fallback sees "2026-07-15T09:30:00Z" with its uppercase T/Z
-        // intact — this is the assertion that would break if the lowercased
-        // copy were passed on instead.
+        // The fallback half. Review note: this does NOT prove the fallback
+        // gets the original — `jiff` parses lowercase `t`/`z` identically, so
+        // it would pass either way. It is here as a round trip through the
+        // uppercase form; the call itself (`fallback_date(query)`, not
+        // `fallback_date(&lower)`) is what carries the guarantee, and the
+        // reason it matters is a parser that is not `jiff`.
         assert_eq!(
-            days("Anything from 2026-07-15T09:30:00Z?"),
+            days("Anything about 2026-07-15T09:30:00Z?"),
             day("2026-07-15")
         );
         assert_eq!(days("what shipped on 2026-07-15"), day("2026-07-15"));

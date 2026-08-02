@@ -731,8 +731,10 @@ async fn korean_temporal_query_drives_the_arm() {
     );
 }
 
-/// The arm's own cost, isolated from the rest of the pipeline. Budget: 3ms
-/// (plan PR B6). Run with:
+/// The arm's own cost, isolated from the rest of the pipeline, **in-memory**
+/// — unlike the file-backed AC-2 bench below, so the two numbers are not
+/// directly comparable (this one omits page-cache and WAL effects). Budget:
+/// 3ms (plan PR B6). Run with:
 ///   cargo test --release -p memgardend --test recall_api -- --ignored --nocapture temporal_arm_bench
 #[test]
 #[ignore = "seeds 3000 nodes and reports a timing"]
@@ -950,23 +952,35 @@ async fn hybrid_recall_bench() {
     // Turn the semantic arm on: the router holds a clone of this very Arc.
     *embedder_slot.write().unwrap() = Some(embedder.clone());
 
+    // `MEMGARDEN_BENCH_CONTROL=1` reproduces CE-7's harness exactly — five
+    // queries, none temporal, no date spread — so a run on this build is
+    // comparable with CE-7's recorded numbers and the *harness* change stops
+    // being a confound in the loaded trend line.
+    let control = std::env::var("MEMGARDEN_BENCH_CONTROL").is_ok_and(|v| v == "1");
+
     // CE-8: spread the bank across the last 90 days. The seed helper stamps
     // one fixed `mentioned_at`, which would leave the temporal arm returning
     // an empty set for every window — measuring nothing.
-    db.write(|tx| {
-        tx.execute(
-            "UPDATE memory_nodes SET mentioned_at = ?1 - (id % 90) * 86400000
-             WHERE bank_id = 'b1'",
-            rusqlite::params![memgarden_core::now_ms()],
-        )
+    //
+    // Note for the record: every node here carries `mentioned_at` and no
+    // `occurred_start`, so the loaded run exercises only that branch of the
+    // arm's COALESCE. `temporal_arm_bench` covers both.
+    if !control {
+        db.write(|tx| {
+            tx.execute(
+                "UPDATE memory_nodes SET mentioned_at = ?1 - (id % 90) * 86400000
+                 WHERE bank_id = 'b1'",
+                rusqlite::params![memgarden_core::now_ms()],
+            )
+            .unwrap();
+            Ok(())
+        })
         .unwrap();
-        Ok(())
-    })
-    .unwrap();
+    }
 
     // Two of the seven carry a temporal expression, so the fourth arm is
     // live on ~29% of the run — enough to show up in p95 if it costs.
-    let queries = [
+    let all_queries = [
         "why did the retain worker change to a single transaction",
         "메모리 회수 파이프라인 하이브리드 검색 지연 시간",
         "what bounds the embedding backlog batch size and the mutex hold",
@@ -975,6 +989,11 @@ async fn hybrid_recall_bench() {
         "what did we decide last week about the retain worker",
         "지난주에 결정한 메모리 회수 파이프라인 변경",
     ];
+    let queries = if control {
+        &all_queries[..5]
+    } else {
+        &all_queries[..]
+    };
 
     // Critic Revision R7 wants the loaded number too, not just idle.
     // `MEMGARDEN_BENCH_LOAD=1` runs a background ingest against the same DB
@@ -1048,9 +1067,10 @@ async fn hybrid_recall_bench() {
     let under = |bound: u64| samples.iter().filter(|&&us| us <= bound).count();
 
     println!(
-        "bench: nodes={nodes_n} requests={requests} wall={:.1}s\n\
+        "bench: nodes={nodes_n} requests={requests} queries={} control={control} wall={:.1}s\n\
          bench: p50={p50}us p90={p90}us p95={p95}us p99={p99}us max={}us mean={:.0}us\n\
          bench: under_35ms={} under_60ms={} (of {} samples)",
+        queries.len(),
         wall.as_secs_f64(),
         samples.last().unwrap(),
         samples.iter().sum::<u64>() as f64 / samples.len() as f64,

@@ -67,15 +67,26 @@ pub fn temporal_best_time(
 }
 
 /// How close a node sits to the centre of the query's constraint window
-/// (`retrieval.py:696-702`): 1.0 at the midpoint, 0.0 at either edge and
-/// beyond, `NEUTRAL` for a node carrying no date at all.
+/// (`retrieval.py:698-699`): 1.0 at the midpoint, 0.0 at either edge and
+/// beyond, `NEUTRAL` for a node carrying no date at all (`:701`).
 ///
 /// A zero-width window (a single instant) is 1.0 for anything dated, matching
-/// legacy's `if total_days > 0 else 1.0`.
+/// legacy's `if total_days > 0 else 1.0`. An **inverted** window is not: it
+/// is a bug upstream, and legacy cannot produce one (`since_constraint`
+/// returns the sentinel rather than a backwards range,
+/// `chinese_temporal_periods.py:451-454`, which `extract_constraint` ports).
+/// Returning 1.0 there would hand every dated candidate a uniform +10% over
+/// every dateless one on a query where the arm contributed nothing — so the
+/// zero-width shortcut is spelled `start == end`, and anything backwards is
+/// neutral. Defence in depth: the guard upstream is the fix, this is the
+/// blast radius if it ever regresses.
 pub fn temporal_proximity(best_time: Option<i64>, start_ms: i64, end_ms: i64) -> f64 {
     let Some(best) = best_time else {
         return NEUTRAL;
     };
+    if start_ms > end_ms {
+        return NEUTRAL;
+    }
     let total_ms = (end_ms - start_ms) as f64;
     if total_ms <= 0.0 {
         return 1.0;
@@ -176,6 +187,11 @@ mod tests {
         assert_eq!(temporal_proximity(None, start, end), NEUTRAL);
         // Zero-width window: anything dated is 1.0 (`total_days > 0` guard).
         assert_eq!(temporal_proximity(Some(NOW), NOW, NOW), 1.0);
+        // Inverted window: neutral, NOT the zero-width 1.0. `extract_constraint`
+        // cannot produce one; if it ever does, the damage is nothing rather
+        // than a uniform boost for every dated candidate.
+        assert_eq!(temporal_proximity(Some(NOW), end, start), NEUTRAL);
+        assert_eq!(temporal_proximity(Some(NOW), NOW + 1, NOW), NEUTRAL);
     }
 
     /// The boosts at the three named proximities. `combined` multiplies by
@@ -206,8 +222,12 @@ mod tests {
         assert_eq!(effective_time(start, mentioned, end), Some(1_000));
 
         // 2. the temporal arm's entry predicate (SQL in
-        //    `memgarden_store::search::temporal_candidates`, pinned by its own
-        //    test there): occurred_start ?? mentioned_at
+        //    `memgarden_store::search::temporal_candidates`). This leg is
+        //    written in Rust rather than executed: the SQL's own behaviour —
+        //    the same order, plus boundaries, bank scoping and the
+        //    `event_date` exclusion — is pinned by
+        //    `search::tests::temporal_candidates_range_boundaries_and_coalesce_order`.
+        //    Change one and that test fails, not this one.
         let arm_order = start.or(mentioned);
         assert_eq!(arm_order, Some(1_000));
 
