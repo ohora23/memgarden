@@ -64,7 +64,7 @@ recall
 | Temporal window loaded into Rust | One `event_date BETWEEN` query instead of legacy's LATERAL per-unit top-N. The window is 24 h — one session's facts — and the pairing is O(new × window) with `new` ≤ one chunk's facts. |
 | `idx_node_entities_entity` added | Not in the plan's DDL, but the co-membership join is on `entity_id` and the `(node_id, entity_id)` PK cannot serve it. Legacy has the same index (`idx_unit_entities_entity_unit`). |
 
-## Divergences from legacy
+## Diverged from legacy
 
 - **The canonical name is the display name.** Normalization is trim +
   lowercase, so `Ollama` comes back as `ollama` (NIT 24). Hangul has no case,

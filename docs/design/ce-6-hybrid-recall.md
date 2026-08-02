@@ -60,7 +60,7 @@ query --(<5 chars? -> empty)--> [embed] --> KNN(over-fetch)  --\
 | `hydrate` reads tags from a second query | No character is safe as a `group_concat` separator when the values are user-supplied tags. Two statements, still no N+1, and `ORDER BY tag` makes response bodies deterministic. |
 | No `metrics-off` cargo feature | R8, see AC-6 below. |
 
-## Divergences from legacy
+## Diverged from legacy
 
 - **`recallTypes` defaults to all three.** Legacy's client default is
   `["observation"]` (`lib/config.py:16`); observation-only recall measurably
