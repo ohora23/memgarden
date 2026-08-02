@@ -4,6 +4,7 @@ use memgarden_core::config::Config;
 use memgarden_store::Db;
 
 use crate::embed::Embedder;
+use crate::ollama::OllamaClient;
 
 /// Shared app state, cheap to clone (all fields are `Arc` or `Copy`).
 #[derive(Clone)]
@@ -17,4 +18,9 @@ pub struct AppState {
     /// reports. A `std::sync::RwLock` is enough here — the critical section
     /// is just cloning an `Arc`, never held across an `.await`.
     pub embedder: Arc<RwLock<Option<Arc<Embedder>>>>,
+    /// Always present (unlike `embedder`): building a `reqwest::Client`
+    /// touches no network, so there's no loading state to model. Actual
+    /// reachability lives in `ollama::ollama_status()`, updated by the
+    /// background prober.
+    pub ollama: Arc<OllamaClient>,
 }

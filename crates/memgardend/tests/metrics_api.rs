@@ -23,12 +23,24 @@ fn test_app() -> (axum::Router, Arc<Db>) {
             backlog_poll_secs: 5,
             debug_endpoint: false,
         },
+        ollama: memgarden_core::config::OllamaConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            model: "test-model".to_string(),
+            temperature: 0.1,
+            num_predict: 64,
+            request_timeout_secs: 1,
+            max_retries: 0,
+            keep_alive: "10m".to_string(),
+            max_concurrent: 1,
+        },
     };
+    let ollama = Arc::new(memgardend::ollama::OllamaClient::new(cfg.ollama.clone()).unwrap());
     let state = AppState {
         db: db.clone(),
         cfg: Arc::new(cfg),
         started_at_ms: memgarden_core::now_ms(),
         embedder: Arc::new(std::sync::RwLock::new(None)),
+        ollama,
     };
     (routes::router(state), db)
 }

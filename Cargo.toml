@@ -31,3 +31,8 @@ fastembed = { version = "=5.17.4", default-features = false, features = [
 ] } # B1. ort 2.0.0-rc.13 underneath. NOT the default features: they add
     # `image-models` and a second (native) TLS stack.
 jiff = "0.2.35" # B1 (embed augmentation "%B %Y"), later CE-8.
+reqwest = { version = "0.13.4", default-features = false, features = [
+    "json",
+] } # B2. No TLS stack at all — Ollama is loopback-only HTTP
+    # (http://127.0.0.1:11434), so there is nothing to negotiate a
+    # certificate for. Do not add a tls feature "just in case".

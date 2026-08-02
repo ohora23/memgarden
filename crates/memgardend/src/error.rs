@@ -29,6 +29,17 @@ impl ApiError {
         }
     }
 
+    /// An upstream dependency (Ollama) answered but with garbage or a
+    /// permanent error — 502: not our bug (500) and not worth blind retries
+    /// (503).
+    pub fn bad_gateway(message: impl Into<String>) -> Self {
+        ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            code: "upstream_error",
+            message: message.into(),
+        }
+    }
+
     /// A dependency (e.g. the embedding model) isn't ready yet — 503, not
     /// 500: retrying shortly is the correct client behavior (decision #1).
     pub fn unavailable(message: impl Into<String>) -> Self {
