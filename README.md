@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/hero.png" alt="MemGarden — an agent's memory system as a tended garden: inputs flow in, facts take root, connections form, and knowledge is harvested" width="100%"></p>
+<p align="center"><img src="assets/hero.png" alt="MemGarden — an agent's memory system as a tended garden: inputs flow in, facts take root, connections form, and knowledge is harvested over moments, days, weeks, months, years, a lifetime" width="100%"></p>
 
 # MemGarden
 
