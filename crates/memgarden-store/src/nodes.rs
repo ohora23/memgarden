@@ -128,6 +128,43 @@ pub fn delete(db: &Db, id: i64) -> Result<()> {
     })
 }
 
+/// Replaces a node's text and **invalidates its embedding** (Critic
+/// Revision R4). Without the second half, a text update leaves the old
+/// vector on `memory_nodes.embedding` and the old `vec_nodes` row in the
+/// index forever: the node keeps answering semantic queries about text it
+/// no longer contains, and nothing ever re-embeds it because the backlog
+/// worker only looks at `embedding IS NULL`.
+///
+/// Setting the column NULL puts the node straight back on
+/// `idx_memory_nodes_embed_backlog`, so `embed_task` re-embeds it on its
+/// next tick. The FTS index needs no help — `memory_nodes_fts_au` fires on
+/// the same UPDATE.
+///
+/// Shared by CE-9's dedup merge (in-transaction, via
+/// [`update_text_tx`](self::update_text_tx)), CE-9b's `updates`, and CE-10's
+/// mental-model refresh.
+pub fn update_text(db: &Db, node_id: i64, text: &str) -> Result<()> {
+    db.write(|tx| update_text_tx(tx, node_id, text, now_ms()))
+}
+
+/// `update_text`'s body, for callers that already hold a write transaction
+/// and must not split the update across two of them (the dedup merge).
+pub(crate) fn update_text_tx(
+    tx: &rusqlite::Transaction,
+    node_id: i64,
+    text: &str,
+    now: i64,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE memory_nodes SET text = ?1, embedding = NULL, updated_at = ?2 WHERE id = ?3",
+        params![text, now, node_id],
+    )
+    .map_err(store_err)?;
+    tx.execute("DELETE FROM vec_nodes WHERE rowid = ?1", params![node_id])
+        .map_err(store_err)?;
+    Ok(())
+}
+
 /// Writes the embedding BLOB on `memory_nodes` and upserts the matching
 /// `vec_nodes` row (vec0 has no native upsert, so this deletes then inserts).
 pub fn set_embedding(db: &Db, node_id: i64, bank_id: &str, embedding: &[f32]) -> Result<()> {

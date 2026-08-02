@@ -103,10 +103,11 @@ pub struct RecallParams {
     pub now_ms: i64,
 }
 
-/// Per-result score breakdown. `proof` is still stubbed at
-/// `scoring::NEUTRAL` and filled in by CE-9; `temporal` is live as of CE-8
-/// whenever the query carries a constraint (`scoring::NEUTRAL` when it does
-/// not, which is the same number the stub returned).
+/// Per-result score breakdown. `temporal` is live as of CE-8 whenever the
+/// query carries a constraint, `proof` as of CE-9a whenever the node is an
+/// observation with more than one source fact; both report
+/// `scoring::NEUTRAL` otherwise, which is the same number their stubs
+/// returned.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct Scores {
     #[serde(rename = "final")]
@@ -358,7 +359,12 @@ pub async fn recall(
                 ),
                 None => scoring::NEUTRAL,
             };
-            let final_score = scoring::combined(base, recency, temporal, scoring::NEUTRAL);
+            // CE-9a: `proof_count` is 0 for everything but a sourced
+            // observation, and `proof_norm` maps 0 (and 1) to NEUTRAL — so
+            // this is the same number CE-6 shipped until B8's batch round
+            // starts producing multi-source observations.
+            let proof = scoring::proof_norm(row.proof_count);
+            let final_score = scoring::combined(base, recency, temporal, proof);
             Some((
                 final_score,
                 RecallItem {
@@ -378,7 +384,7 @@ pub async fn recall(
                         rrf: m.rrf_score,
                         recency,
                         temporal,
-                        proof: scoring::NEUTRAL,
+                        proof,
                     },
                 },
             ))

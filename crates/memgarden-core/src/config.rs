@@ -33,7 +33,19 @@ pub struct Config {
     pub ollama: OllamaConfig,
     pub retain: RetainConfig,
     pub recall: RecallConfig,
+    pub consolidation: ConsolidationConfig,
     pub profile: ProfileConfig,
+}
+
+/// `[consolidation]` — fact→observation consolidation (CE-9). Only the
+/// dedup knob exists today; CE-9b (PR B8) adds the batch-round parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConsolidationConfig {
+    /// Cosine at or above which a newly created observation is adjudicated
+    /// against its nearest existing twin by one focused LLM call
+    /// (`DEFAULT_CONSOLIDATION_DEDUP_THRESHOLD`, `config.py:1157`).
+    /// **`>= 1.0` disables the whole dedup path** (`consolidator.py:180-182`).
+    pub dedup_threshold: f64,
 }
 
 /// Hard ceiling on `recall.max_tokens` (config and the per-request
@@ -230,6 +242,9 @@ impl Config {
                 cap_per_source: 0,
                 preamble: String::new(),
             },
+            consolidation: ConsolidationConfig {
+                dedup_threshold: 0.97,
+            },
             profile: ProfileConfig {
                 name: String::new(),
                 bank_mission: String::new(),
@@ -407,6 +422,9 @@ pub fn from_parts(
                 cfg.recall.preamble = v;
             }
         }
+        if let Some(v) = parsed.consolidation.and_then(|c| c.dedup_threshold) {
+            cfg.consolidation.dedup_threshold = v;
+        }
         if let Some(profile) = parsed.profile {
             if let Some(v) = profile.name {
                 cfg.profile.name = v;
@@ -580,7 +598,13 @@ struct TomlConfig {
     ollama: Option<TomlOllama>,
     retain: Option<TomlRetain>,
     recall: Option<TomlRecall>,
+    consolidation: Option<TomlConsolidation>,
     profile: Option<TomlProfile>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TomlConsolidation {
+    dedup_threshold: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -700,6 +724,9 @@ mod tests {
                 max_tokens: 1024,
                 cap_per_source: 0,
                 preamble: String::new(),
+            },
+            consolidation: ConsolidationConfig {
+                dedup_threshold: 0.97,
             },
             profile: ProfileConfig {
                 name: String::new(),

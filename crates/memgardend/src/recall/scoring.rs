@@ -111,6 +111,25 @@ pub fn recency(effective_ms: Option<i64>, now_ms: i64) -> f64 {
     }
 }
 
+/// Evidence strength for an observation, log-normalised (`reranking.py:173-176`).
+///
+/// `min(1, max(0, 0.5 + ln(proof_count)/10))`. One source is `ln(1)/10 = 0`
+/// above the neutral baseline, i.e. **exactly** `NEUTRAL` — an observation
+/// backed by a single fact must not out-rank a plain fact. The clamp bites at
+/// `proof_count = e^5 ≈ 149`, which is what keeps the boost inside its
+/// documented ±5% band.
+///
+/// `proof_count = 0` is "not a sourced observation" (legacy's `is not None
+/// and >= 1`, `:174`) and returns `NEUTRAL`, so every world/experience fact —
+/// where the column is 0 by DDL default — keeps a 1.0 multiplier. CE-9b's
+/// batch round is what gives observations counts above 1.
+pub fn proof_norm(proof_count: i64) -> f64 {
+    if proof_count < 1 {
+        return NEUTRAL;
+    }
+    (0.5 + (proof_count as f64).ln() / 10.0).clamp(0.0, 1.0)
+}
+
 /// `combined = base * recency_boost * temporal_boost * proof_boost`
 /// (`reranking.py:190`). Each boost is `1 + alpha * (signal - 0.5)`, so a
 /// neutral signal contributes exactly 1.0.
@@ -206,6 +225,38 @@ mod tests {
                 "temporal={temporal} -> {got}"
             );
         }
+    }
+
+    /// `proof_norm` at the counts the plan names, plus the edges.
+    #[test]
+    fn proof_norm_curve_and_clamp() {
+        // One source is EXACTLY neutral: 0.5 + ln(1)/10 = 0.5.
+        assert_eq!(proof_norm(1), 0.5);
+        // Three: 0.5 + ln(3)/10 = 0.6098612...
+        assert!((proof_norm(3) - (0.5 + 3f64.ln() / 10.0)).abs() < 1e-12);
+        assert!((proof_norm(3) - 0.609_861_228_866_810_9).abs() < 1e-12);
+        // 150 overshoots (0.5 + 5.0106/10 = 1.00106) and is clamped.
+        assert_eq!(proof_norm(150), 1.0);
+        // The clamp turns on just past e^5 ~= 148.41.
+        assert!(proof_norm(148) < 1.0);
+        assert_eq!(proof_norm(149), 1.0);
+        // Not an observation (or an unsourced one): neutral, never a penalty.
+        assert_eq!(proof_norm(0), NEUTRAL);
+        assert_eq!(proof_norm(-7), NEUTRAL);
+        // Monotone in between.
+        assert!(proof_norm(2) > proof_norm(1) && proof_norm(20) > proof_norm(2));
+    }
+
+    /// `combined` multiplies by `1 + 0.1 * (proof_norm - 0.5)`: the whole
+    /// proof signal is worth ±5%, and one source is worth exactly nothing.
+    #[test]
+    fn proof_boost_at_one_and_at_the_clamp() {
+        let base = 0.8;
+        assert!((combined(base, NEUTRAL, NEUTRAL, proof_norm(1)) - base).abs() < 1e-12);
+        assert!(
+            (combined(base, NEUTRAL, NEUTRAL, proof_norm(150)) - base * 1.05).abs() < 1e-12,
+            "the clamp caps the boost at +5%"
+        );
     }
 
     /// The three COALESCE orders must coexist. Named explicitly, because the

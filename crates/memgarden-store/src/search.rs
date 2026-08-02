@@ -182,6 +182,9 @@ pub struct CandidateRow {
     pub occurred_end: Option<i64>,
     pub mentioned_at: Option<i64>,
     pub tags: Vec<String>,
+    /// Distinct source facts backing an observation (CE-9a). 0 for every
+    /// other fact type, which `recall::scoring::proof_norm` reads as neutral.
+    pub proof_count: i64,
 }
 
 /// Loads `CandidateRow`s for `ids` **within `bank_id`**, in arbitrary order
@@ -210,7 +213,7 @@ pub fn hydrate(db: &Db, bank_id: &str, ids: &[i64]) -> Result<Vec<CandidateRow>>
     let mut stmt = conn
         .prepare(
             "SELECT n.id, n.uuid, n.fact_type, n.text, n.context,
-                    n.occurred_start, n.occurred_end, n.mentioned_at
+                    n.occurred_start, n.occurred_end, n.mentioned_at, n.proof_count
              FROM memory_nodes n
              WHERE n.id IN (SELECT value FROM json_each(?1)) AND n.bank_id = ?2",
         )
@@ -226,6 +229,7 @@ pub fn hydrate(db: &Db, bank_id: &str, ids: &[i64]) -> Result<Vec<CandidateRow>>
                 r.get::<_, Option<i64>>(5)?,
                 r.get::<_, Option<i64>>(6)?,
                 r.get::<_, Option<i64>>(7)?,
+                r.get::<_, i64>(8)?,
             ))
         })
         .map_err(store_err)?
@@ -253,7 +257,7 @@ pub fn hydrate(db: &Db, bank_id: &str, ids: &[i64]) -> Result<Vec<CandidateRow>>
 
     raw.into_iter()
         .map(
-            |(id, uuid, fact_type, text, context, start, end, mentioned)| {
+            |(id, uuid, fact_type, text, context, start, end, mentioned, proof_count)| {
                 Ok(CandidateRow {
                     id,
                     uuid,
@@ -264,6 +268,7 @@ pub fn hydrate(db: &Db, bank_id: &str, ids: &[i64]) -> Result<Vec<CandidateRow>>
                     occurred_end: end,
                     mentioned_at: mentioned,
                     tags: tags_by_node.remove(&id).unwrap_or_default(),
+                    proof_count,
                 })
             },
         )
