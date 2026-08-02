@@ -204,14 +204,14 @@ q11    conclusion       5   0.000   0.000    0.200    1.000   0.143    0.113
 q15    temporal        16   0.000   0.000    0.000    0.625   0.000    0.000
 q17    temporal         4   0.000   0.000    0.250    1.000   0.100    0.149
 q18    graph            9   0.111   0.556    0.556    1.000   1.000    0.612
-q19    graph           15   0.000   0.200    0.267    0.667   0.500    0.459
+q19    graph           15   0.000   0.200    0.267    0.667   0.500    0.486
 
 (5)    memcompare       -   0.000   0.164    0.348    0.875   0.383    0.203
 (4)    identifier       -   0.044   0.246    0.418    0.839   0.688    0.416
 (1)    conclusion       -   0.000   0.000    0.200    1.000   0.143    0.113
 (2)    temporal         -   0.000   0.000    0.125    0.812   0.050    0.074
-(2)    graph            -   0.056   0.378    0.411    0.833   0.750    0.535
-(14)   ALL              -   0.021   0.183    0.335    0.859   0.458    0.287
+(2)    graph            -   0.056   0.378    0.411    0.833   0.750    0.549
+(14)   ALL              -   0.021   0.183    0.335    0.859   0.458    0.289
 ```
 
 ### Reading these numbers
@@ -233,7 +233,7 @@ visible on this axis:
 | stratum | MRR | nDCG@10 |
 |---|---|---|
 | identifier (proper noun) | **0.688** | **0.416** |
-| graph | 0.750 | 0.535 |
+| graph | 0.750 | 0.549 |
 | memcompare | 0.383 | 0.203 |
 | conclusion | 0.143 | 0.113 |
 | temporal | 0.050 | 0.074 |
@@ -252,7 +252,40 @@ un-ported**, and CE-11 must not regress this column while chasing precision.
 * **q05 has MRR 0.500 but recall@10 0.182**: it surfaces one related node early
   and then misses all six core nodes entirely.
 * **conclusion has one scored query out of four.** Its 0.113 is a sample of one
-  and should not be treated as a stratum measurement yet.
+  and should not be treated as a stratum measurement yet. See below — the
+  reason is structural, not a labelling shortfall.
+
+### The conclusion stratum cannot be measured against this corpus, by construction
+
+All four conclusion queries fail to produce a usable measurement, and they fail
+the same way: q12, q13 and q14 have **no answer at all** in the corpus, and q11
+has 23 labels of which **zero are grade 2**. That is the entire stratum.
+
+This is not a gap in the labelling. It follows from what the corpus *is*. The
+corpus is legacy Hindsight's **auto-captured** facts, and under the memory role
+split adopted 2026-08-01 the curated conclusions — decisions, non-obvious
+solutions, project state — are deliberately written to **native `MEMORY.md`
+instead**, a store this export does not touch. Conclusion-type questions are
+answerable from the system as a whole and unanswerable from this half of it.
+
+The same effect was already observed independently: the memcompare A/B found
+that curated saves win on conclusion-type questions while Hindsight wins on
+breadth of specifics. AX-2 reproduces that finding from the other direction and
+puts a number on the half it can see.
+
+Consequences, both binding:
+
+1. **CE-11 must not report a conclusion delta.** Moving 0.113 on a single query
+   with no core answer in reach is noise with a decimal point on it.
+2. **AC-1's transition gate cannot be evaluated on conclusion questions using
+   this corpus** — and conclusion questions are arguably the highest-value class
+   a memory system has. Closing this needs a second corpus covering the curated
+   store, or an explicit decision that AC-1 scopes to auto-captured recall only.
+   Recorded here rather than silently folded into the aggregate.
+
+The four-stratum design still did its job: the stratification is what made this
+visible at all. An aggregate-only harness would have reported 0.287 overall and
+hidden the fact that one of its four axes is unmeasurable.
 
 ### Two temporal findings worth acting on
 
