@@ -19,6 +19,20 @@ CREATE TABLE node_sources (               -- observation -> source facts (legacy
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX idx_node_sources_source ON node_sources(source_id);
 
+-- `proof_count` is derived, so any path that removes provenance must recount.
+-- Rust recounts on the write paths it owns (insert, merge), but a source fact
+-- deleted anywhere — directly, or by a bank/document FK cascade — removes a
+-- node_sources row that no Rust code sees, and the count would stay high
+-- forever. A trigger fires on the cascade too, which is why this is not in
+-- `nodes::delete` (same reasoning as `memory_nodes_vec_ad`, 0001_init.sql:91).
+-- When the observation itself is what was deleted, the UPDATE matches no row
+-- and is a harmless no-op.
+CREATE TRIGGER node_sources_ad AFTER DELETE ON node_sources BEGIN
+  UPDATE memory_nodes
+  SET proof_count = (SELECT count(*) FROM node_sources WHERE observation_id = old.observation_id)
+  WHERE id = old.observation_id;
+END;
+
 CREATE TABLE consolidation_runs (
   id            INTEGER NOT NULL PRIMARY KEY,
   bank_id       TEXT    NOT NULL REFERENCES banks(bank_id) ON DELETE CASCADE,

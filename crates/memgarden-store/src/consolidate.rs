@@ -8,7 +8,7 @@
 //! the array becomes the `node_sources` join table and the merge becomes the
 //! four statements in [`merge_observation`] — still one transaction.
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use memgarden_core::error::Result;
 use memgarden_core::now_ms;
@@ -37,12 +37,17 @@ pub struct ObservationVector {
 ///
 /// `// ponytail: full scan of one bank's observations, decoded in Rust —
 /// observations are consolidated summaries, so there are orders of magnitude
-/// fewer of them than facts. Measured (dedup_probe_bench, release): p95
-/// 0.39ms at 500, 1.61ms at 2000, i.e. linear at ~0.8us per observation, on a
-/// background path with no latency SLO. Upgrade path if a bank ever passes
+/// fewer of them than facts. Measured (dedup_probe_bench, release,
+/// IN-MEMORY — an on-disk WAL database will be slower): p95 0.39ms at 500,
+/// 1.61ms at 2000, i.e. linear at ~0.8us per observation, on a background
+/// path with no latency SLO. Read the ceiling PER ROUND, not per call: this
+/// runs once per created observation, so B8's batch_size = 50 means 50 scans
+/// per round — ~0.4s at the 10k-observation ceiling. Memory matters as much
+/// as time: every call materialises n x (1536-byte vector + text) at once,
+/// ~3MB at 2k and ~15MB at 10k, churned 50 times a round. Upgrade path at
 /// ~10k observations: a second vec0 table partitioned on (bank_id,
 /// fact_type), which is the only way to get a type-filtered KNN out of
-/// sqlite-vec.`
+/// sqlite-vec, and which also removes the allocation.`
 pub fn observation_vectors(
     db: &Db,
     bank_id: &str,
@@ -83,10 +88,14 @@ pub fn observation_vectors(
 /// the matching `proof_count`, in **one** `BEGIN IMMEDIATE`.
 ///
 /// The embedding is written here rather than left to the backlog worker
-/// (Critic Revision R3): dedup probes the new observation's own vector
-/// immediately afterwards, so this path depends on reading its own write.
-/// Taking `embedding` by value rather than embedding internally is what makes
-/// that a compile-time guarantee — there is no way to call this without one.
+/// (Critic Revision R3). The reason is **not** that the dedup probe reads
+/// this row back — [`observation_vectors`] excludes the new id, and the
+/// caller's cosine runs against the slice it already holds. It is that this
+/// observation must be embedded before the **next** one can dedup against
+/// it, and in a batch round the next one is milliseconds away, far inside
+/// `embedding.backlog_poll_secs`. Taking `embedding` by value rather than
+/// embedding internally is what makes that a compile-time guarantee — there
+/// is no way to call this without one.
 ///
 /// `source_ids` are filtered against `bank_id` in SQL, so an id that is
 /// unknown or belongs to another bank is silently dropped rather than
@@ -144,17 +153,43 @@ pub fn insert_observation(
 /// embedding (`consolidator.py:283-285` — "the merged text is >= threshold
 /// similar, so it stays representative and avoids a re-embed"). Here
 /// `nodes::update_text_tx` nulls it so the backlog worker re-embeds, per
-/// Critic Revision R4. See the design note.
+/// Critic Revision R4 — unless the merged text is byte-identical to what the
+/// twin already says, which is what the LLM's empty-`text` fallback produces
+/// and which would queue a re-embed of an unchanged string. See the design
+/// note.
+///
+/// The twin's continued existence is checked **first**, not inferred. `keep_id`
+/// was chosen before an LLM call that takes seconds; if it was deleted in the
+/// meantime and `drop_id` happened to carry no sources, every statement below
+/// would silently no-op and the DELETE would still destroy the new
+/// observation. Failing up front rolls the whole transaction back and the
+/// caller keeps its row.
 pub fn merge_observation(db: &Db, keep_id: i64, drop_id: i64, merged_text: &str) -> Result<i64> {
     let now = now_ms();
     db.write(|tx| {
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT text FROM memory_nodes WHERE id = ?1",
+                params![keep_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_err)?;
+        let Some(current) = current else {
+            return Err(memgarden_core::error::Error::NotFound(format!(
+                "observation {keep_id} vanished before the merge could be applied"
+            )));
+        };
+
         tx.execute(
             "INSERT OR IGNORE INTO node_sources (observation_id, source_id, created_at)
              SELECT ?1, source_id, created_at FROM node_sources WHERE observation_id = ?2",
             params![keep_id, drop_id],
         )
         .map_err(store_err)?;
-        nodes::update_text_tx(tx, keep_id, merged_text, now)?;
+        if current != merged_text {
+            nodes::update_text_tx(tx, keep_id, merged_text, now)?;
+        }
         // `drop_id`'s own node_sources rows go with it (ON DELETE CASCADE);
         // the source facts they referenced do not.
         tx.execute("DELETE FROM memory_nodes WHERE id = ?1", params![drop_id])
@@ -313,18 +348,12 @@ mod tests {
         for &f in &facts {
             assert!(nodes::get(&db, f).unwrap().is_some(), "fact {f} survived");
         }
-        // R4: the stale embedding is gone and the node is back on the backlog.
+        // R4: the stale embedding is nulled and the node is back on the
+        // backlog...
         let merged = nodes::get(&db, keep).unwrap().unwrap();
         assert!(
             merged.embedding.is_none(),
             "merge nulls the stale embedding"
-        );
-        assert!(
-            crate::search::knn(&db, "b1", &vec_at(0.0), 5)
-                .unwrap()
-                .iter()
-                .all(|(id, _)| *id != keep),
-            "stale vec_nodes row deleted too"
         );
         assert!(
             nodes::pending_embeddings(&db, 10)
@@ -332,6 +361,62 @@ mod tests {
                 .iter()
                 .any(|(id, ..)| *id == keep),
             "re-embed is queued"
+        );
+        // ...but the vec row STAYS, so the twin is stale to the vector arm
+        // for the backlog window rather than invisible to it (review MEDIUM).
+        assert!(
+            crate::search::knn(&db, "b1", &vec_at(0.0), 5)
+                .unwrap()
+                .iter()
+                .any(|(id, _)| *id == keep),
+            "the merged twin must stay reachable by KNN until it is re-embedded"
+        );
+    }
+
+    /// The LLM's empty-`text` fallback resolves the merged text to the twin's
+    /// current wording. Re-embedding an unchanged string is pure loss — a
+    /// backlog tick and a window where the vector is stale for no reason.
+    #[test]
+    fn a_merge_that_does_not_change_the_text_keeps_the_embedding() {
+        let (db, facts) = seeded();
+        let keep = insert_observation(&db, "b1", "unchanged", &vec_at(0.0), &facts[..1]).unwrap();
+        let drop = insert_observation(&db, "b1", "twin", &vec_at(0.01), &facts[1..]).unwrap();
+
+        assert_eq!(merge_observation(&db, keep, drop, "unchanged").unwrap(), 3);
+
+        assert!(
+            nodes::get(&db, keep).unwrap().unwrap().embedding.is_some(),
+            "an unchanged text must not queue a re-embed"
+        );
+        assert!(
+            nodes::pending_embeddings(&db, 10)
+                .unwrap()
+                .iter()
+                .all(|(id, ..)| *id != keep)
+        );
+    }
+
+    /// Security review LOW 6: `keep_id` is chosen before an LLM call that
+    /// takes seconds. If it is deleted meanwhile AND the candidate carries no
+    /// sources, every statement in the merge no-ops except the DELETE — which
+    /// would destroy the new observation and merge nothing. The guard must
+    /// fail the whole transaction instead.
+    #[test]
+    fn a_merge_into_a_vanished_twin_fails_without_touching_the_candidate() {
+        let (db, _facts) = seeded();
+        let keep = insert_observation(&db, "b1", "twin", &vec_at(0.0), &[]).unwrap();
+        let drop = insert_observation(&db, "b1", "candidate", &vec_at(0.01), &[]).unwrap();
+        nodes::delete(&db, keep).unwrap();
+
+        let err = merge_observation(&db, keep, drop, "merged").unwrap_err();
+
+        assert!(
+            matches!(err, memgarden_core::error::Error::NotFound(_)),
+            "expected NotFound, got {err:?}"
+        );
+        assert!(
+            nodes::get(&db, drop).unwrap().is_some(),
+            "the candidate must survive a merge that could not happen"
         );
     }
 
@@ -355,17 +440,51 @@ mod tests {
     }
 
     /// The other cascade direction: deleting a *source fact* must not leave a
-    /// dangling provenance row, and must drop the observation's proof by one
-    /// on the next recount.
+    /// dangling provenance row, and `proof_count` must follow it down — the
+    /// value is derived, so a cascade no Rust code sees still has to recount
+    /// (security review LOW 5; the `node_sources_ad` trigger).
     #[test]
-    fn deleting_a_source_fact_cascades_its_provenance_row() {
+    fn deleting_a_source_fact_cascades_and_recounts_proof() {
         let (db, facts) = seeded();
         let id = insert_observation(&db, "b1", "obs", &vec_at(0.0), &facts).unwrap();
+        assert_eq!(proof_count(&db, id).unwrap(), 3);
 
         nodes::delete(&db, facts[0]).unwrap();
 
         assert_eq!(sources_of(&db, id).unwrap(), facts[1..]);
+        assert_eq!(
+            proof_count(&db, id).unwrap(),
+            2,
+            "proof_count must not drift above the surviving evidence"
+        );
         assert!(nodes::get(&db, id).unwrap().is_some());
+    }
+
+    /// R4's first half, on the public wrapper B8/B9 will call: text replaced,
+    /// embedding nulled, node re-queued, vec row retained.
+    #[test]
+    fn update_text_nulls_the_embedding_and_requeues_without_unindexing() {
+        let (db, _facts) = seeded();
+        let id = insert_observation(&db, "b1", "before", &vec_at(0.0), &[]).unwrap();
+
+        nodes::update_text(&db, id, "after").unwrap();
+
+        let node = nodes::get(&db, id).unwrap().unwrap();
+        assert_eq!(node.text, "after");
+        assert!(node.embedding.is_none());
+        assert!(
+            nodes::pending_embeddings(&db, 10)
+                .unwrap()
+                .iter()
+                .any(|(pending, ..)| *pending == id)
+        );
+        assert!(
+            crate::search::knn(&db, "b1", &vec_at(0.0), 5)
+                .unwrap()
+                .iter()
+                .any(|(hit, _)| *hit == id),
+            "stale-but-present beats invisible for the backlog window"
+        );
     }
 
     #[test]

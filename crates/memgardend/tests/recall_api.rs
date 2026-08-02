@@ -1083,10 +1083,15 @@ async fn hybrid_recall_bench() {
     assert!(p95 <= 60_000, "AC-2: p95 {p95}us > 60ms");
 }
 
-/// CE-9a: `scores.proof` stops being a stub. A well-evidenced observation
-/// reports its log-normalised proof and outranks an identically-matched fact
-/// carrying no evidence; a single-source observation reports exactly the
-/// neutral 0.5, so it gets no free lift over a plain fact.
+/// CE-9a: `scores.proof` stops being a stub — a well-evidenced observation
+/// reports its log-normalised proof end to end, and a single-source
+/// observation reports exactly the neutral 0.5, so it gets no free lift over
+/// a plain fact.
+///
+/// Scope: this asserts the value *reaches the response*. That the value moves
+/// `final` is `scoring::proof_boost_at_one_and_at_the_clamp`'s job — isolating
+/// the proof factor here would need `passthrough_base`'s pre-sort rank, which
+/// the response deliberately does not expose.
 #[tokio::test]
 async fn proof_count_reaches_the_score_breakdown() {
     let (app, db) = test_app(|_| {});
