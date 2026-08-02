@@ -164,6 +164,21 @@ pub fn build_consolidation_system_prompt() -> String {
 ///
 /// `escape_for_prompt` (`prompts.py:185`) is not ported: it exists only to
 /// survive Python's `str.format`, which nothing here runs.
+///
+/// **The mission is interpolated raw, and that is intended** (security review
+/// LOW). Unlike [`fact_line`]'s text it is not JSON-encoded, so a mission
+/// carrying a newline and a forged `## OUTPUT FORMAT` header really would open
+/// a section — but a mission
+/// that steers the model is a mission doing its job:
+/// [`MISSION_PRIORITY_NOTE`] tells the model in as many words that the MISSION
+/// outranks the rules below it. It is operator-set through
+/// `PATCH /v1/banks/{id}`, never ingested from a transcript, so it sits on the
+/// same trust boundary as the config file. Encoding it would render an
+/// instruction block as a quoted JSON string, which legacy does not do either
+/// (`escape_for_prompt` only doubles braces). The escalation that would matter
+/// — forging an observation entry to induce a delete — is closed downstream
+/// instead: `validate` only accepts an `observation_id` that is actually in
+/// the pool `assemble` returned, so a forged entry names nothing.
 pub fn build_consolidation_input(
     mission: &str,
     facts_text: &str,
@@ -224,18 +239,40 @@ pub fn fact_line(
     line
 }
 
+/// One source fact behind a pooled observation, as `source_memories` entries
+/// are shaped (`consolidator.py:2344-2354`).
+#[derive(Debug, Clone, Copy)]
+pub struct SourceFact<'a> {
+    pub text: &'a str,
+    pub context: Option<&'a str>,
+    pub occurred_start: Option<i64>,
+    pub occurred_end: Option<i64>,
+    pub mentioned_at: Option<i64>,
+}
+
 /// One pooled observation, as `_build_observations_for_llm`
 /// (`consolidator.py:2323-2358`) shapes it.
 ///
-/// `source_memories` is **deliberately never populated** — the one field of
-/// legacy's shape this port omits, and the omission is the incident guard
-/// rather than laziness. The 2026-08-02 GPU pin came from exactly this term:
-/// `consolidation_source_facts_max_tokens = 4096` of embedded source facts,
-/// multiplied by an LLM batch size of 8, is a 32k-token prompt against a
-/// 16k-token window. The field's own documented contract already says it "may
-/// be partial or absent … the count above remains the true total", so
-/// `proof_count` still tells the model how well-evidenced an observation is
-/// and the prompt stays truthful. See the design note.
+/// `source_memories` **is** populated, under a hard per-observation token cap
+/// the caller applies (`round::SOURCE_FACTS_MAX_TOKENS_PER_OBSERVATION` —
+/// legacy's own `config.py:1171`, here a `const`). It was omitted in the first
+/// cut of this PR on the theory that deleting the 2026-08-02 incident's
+/// multiplier beat capping it; review demolished that with the numbers —
+/// legacy already shipped the 256-token per-observation cap, and six pooled
+/// observations at 256 is 1,536 on top of a measured 3,075, comfortably inside
+/// the 6,144 budget `assemble` would shed against anyway.
+///
+/// The cost of omitting them showed up in the first live round: an observation
+/// with `proof_count` 10, built by successive UPDATEs, had drifted to
+/// "Multiple components commit one chunk per BEGIN IMMEDIATE transaction to
+/// manage data processing" — ten facts naming five distinct subjects dissolved
+/// into "Multiple components" plus a vacuous clause. Source facts are the
+/// anchor that keeps a summary tied to what it summarises, and an UPDATE that
+/// cannot see them is rewriting blind.
+///
+/// An empty `sources` omits the key entirely, which legacy's own field
+/// documentation explicitly allows ("may be partial or absent … the count
+/// above remains the true total").
 pub fn observation_entry(
     uuid: &str,
     text: &str,
@@ -243,6 +280,7 @@ pub fn observation_entry(
     occurred_start: Option<i64>,
     occurred_end: Option<i64>,
     mentioned_at: Option<i64>,
+    sources: &[SourceFact],
 ) -> Value {
     let mut entry = serde_json::Map::new();
     entry.insert("id".to_string(), Value::String(uuid.to_string()));
@@ -256,6 +294,29 @@ pub fn observation_entry(
         if let Some(v) = value {
             entry.insert(key.to_string(), Value::from(v));
         }
+    }
+    if !sources.is_empty() {
+        let memories: Vec<Value> = sources
+            .iter()
+            .map(|s| {
+                let mut m = serde_json::Map::new();
+                m.insert("text".to_string(), Value::String(s.text.to_string()));
+                if let Some(c) = s.context {
+                    m.insert("context".to_string(), Value::String(c.to_string()));
+                }
+                for (key, value) in [
+                    ("occurred_start", s.occurred_start),
+                    ("occurred_end", s.occurred_end),
+                    ("mentioned_at", s.mentioned_at),
+                ] {
+                    if let Some(v) = value {
+                        m.insert(key.to_string(), Value::from(v));
+                    }
+                }
+                Value::Object(m)
+            })
+            .collect();
+        entry.insert("source_memories".to_string(), Value::Array(memories));
     }
     Value::Object(entry)
 }
@@ -353,6 +414,47 @@ mod tests {
         }
     }
 
+    /// The anchor against summary drift: source facts reach the prompt with
+    /// their own temporal fields, and only the ones present.
+    #[test]
+    fn source_memories_are_rendered_when_present() {
+        let e = observation_entry(
+            "o1",
+            "the retain worker commits per chunk",
+            2,
+            None,
+            None,
+            None,
+            &[
+                SourceFact {
+                    text: "the retain worker was changed to one BEGIN IMMEDIATE per chunk",
+                    context: Some("PR B3 review"),
+                    occurred_start: Some(10),
+                    occurred_end: None,
+                    mentioned_at: Some(30),
+                },
+                SourceFact {
+                    text: "the retain worker holds one permit",
+                    context: None,
+                    occurred_start: None,
+                    occurred_end: None,
+                    mentioned_at: None,
+                },
+            ],
+        );
+
+        let sources = e["source_memories"].as_array().unwrap();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0]["context"], "PR B3 review");
+        assert_eq!(sources[0]["occurred_start"], 10);
+        assert!(sources[0].get("occurred_end").is_none());
+        // A source with nothing but text carries nothing but text.
+        assert_eq!(
+            sources[1].as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["text"]
+        );
+    }
+
     #[test]
     fn fact_lines_carry_the_uuid_and_only_the_temporal_fields_present() {
         assert_eq!(
@@ -410,13 +512,13 @@ mod tests {
     fn observation_entries_omit_absent_temporal_fields_and_empty_pools_render_as_a_bare_array() {
         assert_eq!(build_observations_json(&[]), "[]");
 
-        let e = observation_entry("o1", "text", 3, None, None, Some(30));
+        let e = observation_entry("o1", "text", 3, None, None, Some(30), &[]);
         assert_eq!(e["id"], "o1");
         assert_eq!(e["proof_count"], 3);
         assert_eq!(e["mentioned_at"], 30);
         assert!(e.get("occurred_start").is_none());
         assert!(e.get("occurred_end").is_none());
-        // The incident guard: source facts are never embedded here.
+        // An empty source list omits the key, as legacy's field docs allow.
         assert!(e.get("source_memories").is_none());
 
         let json = build_observations_json(&[e]);

@@ -626,6 +626,24 @@ pub fn from_parts(
             return Err(Error::Config(format!("{name} must be > 0")));
         }
     }
+    // Upper bounds on the two knobs that reproduce the incident's wall-clock
+    // term. `batch_size`'s LIMIT materialises every selected row into memory
+    // and multiplies the per-round LLM call count; `max_attempts` multiplies
+    // the per-batch wall clock directly (attempts x the client's 600s total
+    // deadline). Neither has a legitimate value near these ceilings — they
+    // exist so a typo cannot turn a 300s tick into an hour.
+    if cfg.consolidation.batch_size > 500 {
+        return Err(Error::Config(format!(
+            "consolidation.batch_size must be <= 500: {}",
+            cfg.consolidation.batch_size
+        )));
+    }
+    if cfg.consolidation.max_attempts > 10 {
+        return Err(Error::Config(format!(
+            "consolidation.max_attempts must be <= 10: {}",
+            cfg.consolidation.max_attempts
+        )));
+    }
     if !matches!(
         cfg.consolidation.recall_budget.as_str(),
         "low" | "mid" | "high"

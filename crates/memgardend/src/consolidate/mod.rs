@@ -39,7 +39,7 @@ use serde_json::{Value, json};
 
 use memgarden_core::config::ConsolidationConfig;
 use memgarden_core::error::{Error, Result};
-use memgarden_store::{Db, consolidate as store};
+use memgarden_store::{Db, consolidate as store, nodes};
 
 use crate::ollama::OllamaClient;
 use crate::retain::token_count;
@@ -224,7 +224,15 @@ fn rank_candidates(
 }
 
 /// The nearest above-threshold twin whose prompt fits the budget, as
-/// `(id, text)`.
+/// `(twin_uuid, twin_text, own_uuid)`.
+///
+/// **Uuids, not rowids, and both of them.** Everything this returns is
+/// consumed *after* an adjudication that can run for minutes, and
+/// `merge_observation` mutates on it. SQLite recycles the rowid of a deleted
+/// max row, so a rowid captured here can name a different observation by the
+/// time the merge runs. The caller's own uuid is resolved here, before the
+/// call, for the same reason — resolving it afterwards would read whatever
+/// took its rowid.
 ///
 /// Everything here is off the reactor (security review LOW 3): the SQL, the
 /// O(n) cosine scan over the bank's observations, **and** the BPE encode of
@@ -255,7 +263,7 @@ async fn select_twin(
     new_text: &str,
     embedding: &[f32],
     threshold: f64,
-) -> Result<Option<(i64, String)>> {
+) -> Result<Option<(String, String, String)>> {
     let (db, bank, new_text, embedding) = (
         db.clone(),
         bank_id.to_string(),
@@ -264,11 +272,18 @@ async fn select_twin(
     );
     blocking(move || {
         let candidates = store::observation_vectors(&db, &bank, new_id)?;
-        Ok(rank_candidates(candidates, &embedding, threshold)
+        let Some((_, twin)) = rank_candidates(candidates, &embedding, threshold)
             .into_iter()
             .find(|(_, c)| prompt_tokens(&new_text, &c.text) <= DEDUP_PROMPT_MAX_TOKENS)
             .inspect(|(sim, c)| tracing::debug!(twin = c.id, sim = *sim, "dedup adjudicating"))
-            .map(|(_, c)| (c.id, c.text)))
+        else {
+            return Ok(None);
+        };
+        // Only looked up once a merge is actually possible.
+        let own_uuid = nodes::get(&db, new_id)?
+            .ok_or_else(|| Error::NotFound(format!("observation {new_id} vanished")))?
+            .uuid;
+        Ok(Some((twin.uuid, twin.text, own_uuid)))
     })
     .await
 }
@@ -368,7 +383,9 @@ pub async fn store_observation(
         );
         blocking(move || store::insert_observation(&db, &bank, &text, &embedding, &sources)).await?
     };
-    dedup_created(db, ollama, cfg, bank_id, id, text, embedding).await
+    Ok(dedup_created(db, ollama, cfg, bank_id, id, text, embedding)
+        .await?
+        .0)
 }
 
 /// The dedup half of [`store_observation`], for an observation that is
@@ -381,6 +398,12 @@ pub async fn store_observation(
 ///
 /// `embedding` must be the vector actually stored for `id`: the probe
 /// compares against this slice rather than reading the row back.
+///
+/// Returns `(outcome, adjudicated)` — `adjudicated` is true **only** if an
+/// LLM call was actually made. The two early returns below (dedup disabled,
+/// and no above-threshold twin, which is the normal case on a bank of
+/// distinct observations) cost nothing, and a caller rationing GPU must not
+/// pay for them. CE-9b's per-round cap does exactly that accounting.
 pub async fn dedup_created(
     db: &Arc<Db>,
     ollama: &OllamaClient,
@@ -389,30 +412,35 @@ pub async fn dedup_created(
     id: i64,
     text: &str,
     embedding: &[f32],
-) -> Result<Outcome> {
+) -> Result<(Outcome, bool)> {
     // `>= 1.0` disables the whole path (`consolidator.py:180-182`).
     if cfg.dedup_threshold >= 1.0 {
-        return Ok(Outcome::Created { id });
+        return Ok((Outcome::Created { id }, false));
     }
 
-    let Some((twin_id, twin_text)) =
+    let Some((twin_uuid, twin_text, own_uuid)) =
         select_twin(db, bank_id, id, text, embedding, cfg.dedup_threshold).await?
     else {
-        return Ok(Outcome::Created { id });
+        return Ok((Outcome::Created { id }, false));
     };
 
     match adjudicate(ollama, text, &twin_text).await {
         Decision::Merge { text } => {
-            let db = db.clone();
-            let proof_count =
-                blocking(move || store::merge_observation(&db, twin_id, id, &text)).await?;
-            Ok(Outcome::Merged {
-                into: twin_id,
-                dropped: id,
-                proof_count,
+            let (db, bank) = (db.clone(), bank_id.to_string());
+            let (into, proof_count) = blocking(move || {
+                store::merge_observation(&db, &bank, &twin_uuid, &own_uuid, &text)
             })
+            .await?;
+            Ok((
+                Outcome::Merged {
+                    into,
+                    dropped: id,
+                    proof_count,
+                },
+                true,
+            ))
         }
-        Decision::Keep => Ok(Outcome::Created { id }),
+        Decision::Keep => Ok((Outcome::Created { id }, true)),
     }
 }
 
@@ -631,6 +659,57 @@ mod tests {
             panic!("expected Created, got {out:?}")
         };
         assert_ne!(id, existing, "the duplicate was stored as its own node");
+    }
+
+    /// CE-9b's per-round cap rations **GPU**, so `dedup_created` has to say
+    /// whether it spent any. Both no-call paths must report `false`: dedup
+    /// disabled, and — far more often — nothing clearing the threshold, which
+    /// is the normal case on a bank of distinct observations. Charging for
+    /// those let a round exhaust its cap without once reaching the model,
+    /// silently skipping the probe on every later write, permanently.
+    #[tokio::test]
+    async fn only_a_real_llm_call_counts_as_an_adjudication() {
+        // 1. Nothing above the threshold: no twin, no call, not charged.
+        let db = db_with_bank();
+        let s = stub(r#"{"action":"keep","text":"","reason":"x"}"#).await;
+        store::insert_observation(&db, "b1", "unrelated", &vec_at(1.0), &[]).unwrap();
+        let id = store::insert_observation(&db, "b1", "new", &vec_at(0.0), &[]).unwrap();
+
+        let (_, adjudicated) =
+            dedup_created(&db, &s.client, &cfg(0.97), "b1", id, "new", &vec_at(0.0))
+                .await
+                .unwrap();
+        assert!(
+            !adjudicated,
+            "no candidate cleared 0.97, so nothing was spent"
+        );
+        assert_eq!(s.calls.load(Ordering::SeqCst), 0);
+
+        // 2. Dedup disabled: no call, not charged.
+        let db = db_with_bank();
+        let s = stub(r#"{"action":"keep","text":"","reason":"x"}"#).await;
+        store::insert_observation(&db, "b1", "twin", &vec_at(0.0), &[]).unwrap();
+        let id = store::insert_observation(&db, "b1", "new", &vec_at(0.0), &[]).unwrap();
+
+        let (_, adjudicated) =
+            dedup_created(&db, &s.client, &cfg(1.0), "b1", id, "new", &vec_at(0.0))
+                .await
+                .unwrap();
+        assert!(!adjudicated);
+        assert_eq!(s.calls.load(Ordering::SeqCst), 0);
+
+        // 3. A real adjudication IS charged — otherwise the cap caps nothing.
+        let db = db_with_bank();
+        let s = stub(r#"{"action":"keep","text":"","reason":"distinct"}"#).await;
+        store::insert_observation(&db, "b1", "twin", &vec_at(0.0), &[]).unwrap();
+        let id = store::insert_observation(&db, "b1", "new", &vec_at(0.0), &[]).unwrap();
+
+        let (_, adjudicated) =
+            dedup_created(&db, &s.client, &cfg(0.97), "b1", id, "new", &vec_at(0.0))
+                .await
+                .unwrap();
+        assert!(adjudicated);
+        assert_eq!(s.calls.load(Ordering::SeqCst), 1);
     }
 
     // --- Merge / keep end to end -----------------------------------------
@@ -883,6 +962,7 @@ mod tests {
         let candidates: Vec<store::ObservationVector> = (0..12)
             .map(|i| store::ObservationVector {
                 id: i,
+                uuid: format!("obs-uuid-{i}"),
                 // Similarities 0.9999 down to 0.9889 — all above 0.97.
                 embedding: vec_with_similarity(0.9999 - i as f64 * 0.001),
                 text: format!("obs {i}"),

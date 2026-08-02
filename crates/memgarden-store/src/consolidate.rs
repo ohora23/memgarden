@@ -17,9 +17,13 @@ use memgarden_core::types::FactType;
 use crate::{Db, nodes, store_err, vecblob};
 
 /// One existing observation, as the dedup probe needs it.
+///
+/// Carries the `uuid` as well as the rowid because the probe's result is used
+/// **after** an LLM call that can run for minutes: see [`merge_observation`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObservationVector {
     pub id: i64,
+    pub uuid: String,
     pub text: String,
     pub embedding: Vec<f32>,
 }
@@ -56,7 +60,7 @@ pub fn observation_vectors(
     let conn = db.read()?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, text, embedding FROM memory_nodes
+            "SELECT id, uuid, text, embedding FROM memory_nodes
              WHERE bank_id = ?1 AND fact_type = 'observation'
                AND embedding IS NOT NULL AND id <> ?2",
         )
@@ -66,7 +70,8 @@ pub fn observation_vectors(
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
-                r.get::<_, Vec<u8>>(2)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
             ))
         })
         .map_err(store_err)?
@@ -74,9 +79,10 @@ pub fn observation_vectors(
         .map_err(store_err)?;
 
     rows.into_iter()
-        .map(|(id, text, blob)| {
+        .map(|(id, uuid, text, blob)| {
             Ok(ObservationVector {
                 id,
+                uuid,
                 text,
                 embedding: vecblob::decode(&blob)?,
             })
@@ -170,26 +176,64 @@ pub(crate) fn insert_observation_tx(
 /// and which would queue a re-embed of an unchanged string. See the design
 /// note.
 ///
-/// The twin's continued existence is checked **first**, not inferred. `keep_id`
-/// was chosen before an LLM call that takes seconds; if it was deleted in the
-/// meantime and `drop_id` happened to carry no sources, every statement below
-/// would silently no-op and the DELETE would still destroy the new
-/// observation. Failing up front rolls the whole transaction back and the
-/// caller keeps its row.
-pub fn merge_observation(db: &Db, keep_id: i64, drop_id: i64, merged_text: &str) -> Result<i64> {
+/// **Keyed by uuid, not rowid, and this is load-bearing.** Both nodes are
+/// named seconds — up to the Ollama client's whole deadline — before this runs:
+/// `select_twin` picks the survivor and the caller inserted the candidate,
+/// then an adjudication happens, and only then do we mutate. `memory_nodes.id`
+/// is `INTEGER PRIMARY KEY` with no `AUTOINCREMENT`, so SQLite recycles the
+/// rowid of a deleted max row; an existence check on a recycled rowid passes
+/// while pointing at a *different* observation, which would rewrite one
+/// stranger's text and delete another's. The uuid is `NOT NULL UNIQUE` and is
+/// never reused. Both are resolved to rowids **inside** this transaction, so
+/// the identity that is checked is the identity that is mutated.
+///
+/// The twin's continued existence is checked **first**, not inferred. If it was
+/// deleted in the meantime and the candidate happened to carry no sources,
+/// every statement below would silently no-op and the DELETE would still
+/// destroy the new observation. Failing up front rolls the whole transaction
+/// back and the caller keeps its row.
+///
+/// Returns `(keep_id, proof_count)` — the survivor's rowid resolved under the
+/// transaction, which is the only place it is safe to read.
+pub fn merge_observation(
+    db: &Db,
+    bank_id: &str,
+    keep_uuid: &str,
+    drop_uuid: &str,
+    merged_text: &str,
+) -> Result<(i64, i64)> {
     let now = now_ms();
     db.write(|tx| {
-        let current: Option<String> = tx
+        let keep: Option<(i64, String)> = tx
             .query_row(
-                "SELECT text FROM memory_nodes WHERE id = ?1",
-                params![keep_id],
+                "SELECT id, text FROM memory_nodes
+                 WHERE uuid = ?1 AND bank_id = ?2 AND fact_type = 'observation'",
+                params![keep_uuid, bank_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(store_err)?;
+        let Some((keep_id, current)) = keep else {
+            return Err(memgarden_core::error::Error::NotFound(format!(
+                "observation {keep_uuid} vanished before the merge could be applied"
+            )));
+        };
+        // The candidate is resolved the same way. A merge that cannot find
+        // what it was told to drop must not proceed: the union would attach
+        // the wrong provenance and the DELETE would hit nothing (or, on a
+        // recycled rowid, the wrong row).
+        let drop_id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM memory_nodes
+                 WHERE uuid = ?1 AND bank_id = ?2 AND fact_type = 'observation'",
+                params![drop_uuid, bank_id],
                 |r| r.get(0),
             )
             .optional()
             .map_err(store_err)?;
-        let Some(current) = current else {
+        let Some(drop_id) = drop_id else {
             return Err(memgarden_core::error::Error::NotFound(format!(
-                "observation {keep_id} vanished before the merge could be applied"
+                "observation {drop_uuid} vanished before the merge could be applied"
             )));
         };
 
@@ -206,8 +250,27 @@ pub fn merge_observation(db: &Db, keep_id: i64, drop_id: i64, merged_text: &str)
         // the source facts they referenced do not.
         tx.execute("DELETE FROM memory_nodes WHERE id = ?1", params![drop_id])
             .map_err(store_err)?;
-        recount_proof_tx(tx, keep_id)
+        Ok((keep_id, recount_proof_tx(tx, keep_id)?))
     })
+}
+
+/// An observation's current text, scoped to its bank — what
+/// `consolidate::round` reads back to re-embed a twin a merge just rewrote.
+///
+/// The bank and fact-type predicates are the point: without them a rowid
+/// recycled between the merge committing and the re-embed would hand back
+/// another bank's node, and the caller would stamp its vector into *this*
+/// bank's `vec_nodes` partition.
+pub fn observation_text_in_bank(db: &Db, bank_id: &str, id: i64) -> Result<Option<String>> {
+    db.read()?
+        .query_row(
+            "SELECT text FROM memory_nodes
+             WHERE id = ?1 AND bank_id = ?2 AND fact_type = 'observation'",
+            params![id, bank_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_err)
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +372,10 @@ pub struct ObservationUpdate<'a> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Applied {
     pub created: Vec<i64>,
-    pub updated: usize,
+    /// `(rowid, uuid)` of each update that actually landed — resolved under
+    /// the transaction, so these rowids are safe to use afterwards. The
+    /// caller needs them to re-embed and dedup the rewritten observations.
+    pub updated: Vec<(i64, String)>,
     pub deleted: usize,
 }
 
@@ -372,7 +438,7 @@ pub fn apply_plan(
             }
             link_sources_tx(tx, id, bank_id, u.source_ids, now)?;
             recount_proof_tx(tx, id)?;
-            applied.updated += 1;
+            applied.updated.push((id, u.uuid.to_string()));
         }
         for uuid in deletes {
             applied.deleted += tx
@@ -466,6 +532,28 @@ pub fn finish_run(
         )
         .map_err(store_err)?;
         Ok(())
+    })
+}
+
+/// Closes out `running` rows left behind by a process that died mid-round.
+///
+/// Same job as `retain_jobs::fail_stale` at startup (`main.rs`), and it became
+/// load-bearing the moment CE-9b added a per-bank in-flight guard: the guard
+/// itself is in-memory and dies with the process, but a `running` ledger row
+/// survives and would otherwise sit there forever claiming a round is
+/// underway. Their watermark is NULL, so
+/// [`watermark`](self::watermark) already ignores them and the facts are
+/// simply re-selected — this only stops the ledger from lying.
+pub fn fail_stale_runs(db: &Db, reason: &str) -> Result<usize> {
+    let now = now_ms();
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE consolidation_runs
+             SET status = 'failed', error = ?1, finished_at = ?2
+             WHERE status = 'running'",
+            params![reason, now],
+        )
+        .map_err(store_err)
     })
 }
 
@@ -653,8 +741,16 @@ mod tests {
         // Overlapping source (facts[1]) proves the union is a set, not a concat.
         let drop = insert_observation(&db, "b1", "drop", &vec_at(0.01), &facts[1..]).unwrap();
 
-        let count = merge_observation(&db, keep, drop, "merged text").unwrap();
+        let (into, count) = merge_observation(
+            &db,
+            "b1",
+            &uuid_of(&db, keep),
+            &uuid_of(&db, drop),
+            "merged text",
+        )
+        .unwrap();
 
+        assert_eq!(into, keep);
         assert_eq!(count, 3, "union of {{0,1}} and {{1,2}}");
         assert_eq!(proof_count(&db, keep).unwrap(), 3);
         assert_eq!(sources_of(&db, keep).unwrap(), facts);
@@ -701,7 +797,17 @@ mod tests {
         let keep = insert_observation(&db, "b1", "unchanged", &vec_at(0.0), &facts[..1]).unwrap();
         let drop = insert_observation(&db, "b1", "twin", &vec_at(0.01), &facts[1..]).unwrap();
 
-        assert_eq!(merge_observation(&db, keep, drop, "unchanged").unwrap(), 3);
+        assert_eq!(
+            merge_observation(
+                &db,
+                "b1",
+                &uuid_of(&db, keep),
+                &uuid_of(&db, drop),
+                "unchanged"
+            )
+            .unwrap(),
+            (keep, 3)
+        );
 
         assert!(
             nodes::get(&db, keep).unwrap().unwrap().embedding.is_some(),
@@ -725,9 +831,10 @@ mod tests {
         let (db, _facts) = seeded();
         let keep = insert_observation(&db, "b1", "twin", &vec_at(0.0), &[]).unwrap();
         let drop = insert_observation(&db, "b1", "candidate", &vec_at(0.01), &[]).unwrap();
+        let (keep_uuid, drop_uuid) = (uuid_of(&db, keep), uuid_of(&db, drop));
         nodes::delete(&db, keep).unwrap();
 
-        let err = merge_observation(&db, keep, drop, "merged").unwrap_err();
+        let err = merge_observation(&db, "b1", &keep_uuid, &drop_uuid, "merged").unwrap_err();
 
         assert!(
             matches!(err, memgarden_core::error::Error::NotFound(_)),
@@ -869,7 +976,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(applied.created.len(), 1);
-        assert_eq!((applied.updated, applied.deleted), (1, 1));
+        assert_eq!((applied.updated.len(), applied.deleted), (1, 1));
 
         let created = nodes::get(&db, applied.created[0]).unwrap().unwrap();
         assert_eq!(created.text, "a brand new observation");
@@ -968,7 +1075,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(applied.updated, 1, "only the surviving target counted");
+        assert_eq!(
+            applied.updated.len(),
+            1,
+            "only the surviving target counted"
+        );
         assert_eq!(nodes::get(&db, alive).unwrap().unwrap().text, "y");
         assert_eq!(
             nodes::get(&db, applied.created[0]).unwrap().unwrap().text,

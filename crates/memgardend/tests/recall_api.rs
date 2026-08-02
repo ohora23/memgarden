@@ -59,6 +59,7 @@ fn test_app_on(
         started_at_ms: memgarden_core::now_ms(),
         embedder: embedder.clone(),
         ollama,
+        consolidating: Default::default(),
         retain_tx,
     };
     (routes::router(state.clone()), db, embedder, state)
@@ -1112,7 +1113,20 @@ async fn hybrid_recall_bench() {
             // blocking loop would hang the whole test binary instead of
             // reporting the failure.
             let deadline = Instant::now() + std::time::Duration::from_secs(600);
+            // **Rate-paced, not a busy loop** (CE-9b). Unpaced, this thread
+            // simply consumes whatever CPU is going, so anything else running
+            // — a consolidation round, say — *displaces* ingest instead of
+            // adding to it, and the two arms of an A/B end up offering
+            // different load. That is not a subtle bias: the CE-9b
+            // consolidating arm wrote ~33k background nodes against the
+            // baseline's ~36k, and p95 correlates with node count at roughly
+            // 2us/node, so the unpaced comparison flattered consolidation by
+            // several milliseconds. A fixed period makes offered load a
+            // property of the harness rather than of the thing under test.
+            let period = std::time::Duration::from_micros(12_000);
+            let mut next = Instant::now();
             while !stop.load(std::sync::atomic::Ordering::Relaxed) && Instant::now() < deadline {
+                next += period;
                 let batch_texts: Vec<String> = (0..8)
                     .map(|i| format!("background ingest fact {n}-{i} touching the write lock"))
                     .collect();
@@ -1130,6 +1144,14 @@ async fn hybrid_recall_bench() {
                     .collect();
                 nodes::set_embeddings_batch(&db, &batch).unwrap();
                 n += 1;
+                let now = Instant::now();
+                if next > now {
+                    std::thread::sleep(next - now);
+                } else {
+                    // Fell behind: re-base rather than accumulate debt and
+                    // then sprint, which would just move the load around.
+                    next = now;
+                }
             }
             n * 8
         })
@@ -1175,9 +1197,18 @@ async fn hybrid_recall_bench() {
         );
     }
     if let Some(task) = load_task {
-        println!(
-            "bench: LOADED run — {} background nodes written+embedded during the loop",
-            task.await.unwrap()
+        let written = task.await.unwrap();
+        println!("bench: LOADED run — {written} background nodes written+embedded during the loop");
+        // **The gate that would have caught the CE-9b measurement bias.** The
+        // pacer offers one batch of 8 every 12ms; if the loop could not keep
+        // up, the arms are not comparable and any A/B across them is
+        // meaningless. Fail loudly rather than publish a number whose load
+        // level nobody checked.
+        let offered = (wall.as_secs_f64() / 0.012) * 8.0;
+        assert!(
+            written as f64 >= 0.90 * offered,
+            "load generator fell behind: wrote {written} of an offered {offered:.0} background \
+             nodes, so this run's offered load is not comparable with another's"
         );
     }
     samples.sort_unstable();

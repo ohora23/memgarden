@@ -3,13 +3,29 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use memgarden_store::{banks, consolidate as store};
 
 use crate::consolidate::round::{self, RoundSummary};
 use crate::error::{ApiError, join_err};
+use crate::json::ApiJson;
 use crate::state::AppState;
+
+/// Deliberately empty, and deliberately **required**.
+///
+/// Security review LOW 5 (CSRF shape): a POST with no body and no content type
+/// is a CORS *simple* request, so any page the user visits can fire
+/// `fetch(url, {method: "POST", mode: "no-cors"})` at the daemon. The Host
+/// guard does not help — the browser sends `Host: 127.0.0.1:PORT` itself. The
+/// attacker cannot read the response, but the round still mutates memory and
+/// burns GPU. Requiring `Content-Type: application/json` makes it a
+/// *preflighted* request, and the preflight is what the Host guard can refuse.
+///
+/// Callers send `{}`. `/v1/banks/{id}/reindex` has the same shape and is not
+/// fixed here — it is a pre-existing route and a separate change.
+#[derive(Debug, Deserialize, Default)]
+pub struct ConsolidateRequest {}
 
 /// The run ledger row, as the status endpoint reports it.
 #[derive(Debug, Serialize)]
@@ -65,9 +81,13 @@ pub struct StatusResponse {
 /// One round is bounded by `consolidation.batch_size` facts, so the wall
 /// clock is bounded too — but it is minutes, not milliseconds, and callers
 /// need a matching client timeout.
+///
+/// 409 if a round is already running on the bank (the background tick counts).
+/// Takes a JSON body — see [`ConsolidateRequest`].
 pub async fn consolidate_bank(
     State(state): State<AppState>,
     Path(bank_id): Path<String>,
+    ApiJson(_): ApiJson<ConsolidateRequest>,
 ) -> Result<Json<RoundSummary>, ApiError> {
     require_bank(&state, &bank_id).await?;
     Ok(Json(round::run_round(&state, &bank_id).await?))

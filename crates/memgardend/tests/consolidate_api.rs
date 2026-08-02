@@ -5,10 +5,16 @@
 //! = false`), so the observation pool comes from the BM25 arm and the plans
 //! under test carry no `creates` — an observation must be embedded
 //! synchronously when it is created (CE-9a's R3), and that needs the 133MB
-//! model. `creates` are covered three other ways: `store::apply_plan`'s unit
-//! tests (the write), `round::validate`'s (the contract), and the
+//! model. `creates` are covered four other ways: `store::apply_plan`'s unit
+//! tests (the write), `round::validate`'s (the contract),
+//! `recall_api`'s `MEMGARDEN_BENCH_CONSOLIDATE=1` arm (real creates through a
+//! real embedder against a stub Ollama, ~50 rounds a run), and the
 //! `#[ignore]`d `live_consolidation_round` below (the whole thing, against
 //! the real Ollama and the real model).
+//!
+//! The gap is a missing seam rather than a physical constraint: `Embedder` is
+//! a concrete struct, so there is nothing to stub. Flagged for B9 in the
+//! design note.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -28,11 +34,15 @@ const DIM: usize = memgarden_core::EMBEDDING_DIM;
 struct Harness {
     app: axum::Router,
     db: Arc<Db>,
+    /// For the tests that drive `run_round` directly rather than over HTTP.
+    state: AppState,
     /// What the stub `/api/chat` answers with. Set after seeding, because a
     /// realistic plan has to name the uuids the round will actually show the
     /// model.
     reply: Arc<std::sync::Mutex<String>>,
     calls: Arc<AtomicUsize>,
+    /// Installed by `block_stub`: the stub waits on this before answering.
+    gate: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
 }
 
 async fn harness() -> Harness {
@@ -40,13 +50,18 @@ async fn harness() -> Harness {
         r#"{"creates":[],"updates":[],"deletes":[]}"#.to_string(),
     ));
     let calls = Arc::new(AtomicUsize::new(0));
-    let (r, c) = (reply.clone(), calls.clone());
+    let gate: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
+    let (r, c, g) = (reply.clone(), calls.clone(), gate.clone());
     let stub = axum::Router::new().route(
         "/api/chat",
         axum::routing::post(move |axum::Json(_): axum::Json<Value>| {
-            let (r, c) = (r.clone(), c.clone());
+            let (r, c, g) = (r.clone(), c.clone(), g.clone());
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
+                if let Some(rx) = g.lock().await.take() {
+                    let _ = rx.await;
+                }
                 let body = r.lock().unwrap().clone();
                 axum::Json(json!({ "message": { "content": body } }))
             }
@@ -77,17 +92,27 @@ async fn harness() -> Harness {
         started_at_ms: memgarden_core::now_ms(),
         embedder: Arc::new(std::sync::RwLock::new(None)),
         ollama,
+        consolidating: Default::default(),
         retain_tx,
     };
     Harness {
-        app: routes::router(state),
+        app: routes::router(state.clone()),
         db,
+        state,
         reply,
         calls,
+        gate,
     }
 }
 
 impl Harness {
+    /// Makes the next stub call block until the returned sender fires.
+    async fn block_stub(&self) -> tokio::sync::oneshot::Sender<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.gate.lock().await = Some(rx);
+        tx
+    }
+
     fn set_reply(&self, body: Value) {
         *self.reply.lock().unwrap() = body.to_string();
     }
@@ -106,7 +131,22 @@ impl Harness {
     }
 
     async fn consolidate(&self) -> (StatusCode, Value) {
-        self.send("POST", "/v1/banks/b1/consolidate").await
+        self.post("/v1/banks/b1/consolidate").await
+    }
+
+    /// The mutating route requires a JSON body (`{}`) so a browser must
+    /// preflight it — see `routes::consolidate::ConsolidateRequest`.
+    async fn post(&self, uri: &str) -> (StatusCode, Value) {
+        self.request(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("host", "127.0.0.1:9100")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
     }
 
     async fn status(&self) -> Value {
@@ -116,12 +156,18 @@ impl Harness {
     }
 
     async fn send(&self, method: &str, uri: &str) -> (StatusCode, Value) {
-        let request = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("host", "127.0.0.1:9100")
-            .body(Body::empty())
-            .unwrap();
+        self.request(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("host", "127.0.0.1:9100")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
+    async fn request(&self, request: Request<Body>) -> (StatusCode, Value) {
         let response = self.app.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -255,7 +301,6 @@ async fn duplicate_observation_ids_in_updates_reject_the_batch() {
     let (code, summary) = h.consolidate().await;
 
     assert_eq!(code, StatusCode::OK, "{summary}");
-    assert_eq!(summary["skipped_batches"], 1);
     assert_eq!(summary["batches"], 0);
     assert_eq!(summary["updated"], 0);
     assert_eq!(
@@ -263,10 +308,16 @@ async fn duplicate_observation_ids_in_updates_reject_the_batch() {
         "the sqlite-vec index partitions on bank_id",
         "neither plan was applied — no silent overwrite"
     );
+    // A rejection is content-dependent, so the batch BISECTS rather than
+    // taking its whole fact range down with it (HIGH-1): the 2-fact batch is
+    // halved and each single fact is tried on its own before being abandoned.
+    // The blast radius of an un-consolidatable reply is one fact, matching
+    // legacy's per-row `consolidation_failed_at`.
+    assert_eq!(summary["skipped_batches"], 2, "one per bisected half");
     assert_eq!(
         h.calls.load(Ordering::SeqCst),
-        3,
-        "consolidation.max_attempts fresh tries before the batch is abandoned"
+        9,
+        "max_attempts on the pair, then max_attempts on each half"
     );
     // Forward progress: the run closes and the mark moves, so the next tick
     // does not re-send the identical payload forever.
@@ -360,12 +411,81 @@ async fn facts_are_batched_at_llm_batch_size() {
 async fn both_endpoints_404_on_an_unknown_bank() {
     let h = harness().await;
     assert_eq!(
-        h.send("POST", "/v1/banks/nope/consolidate").await.0,
+        h.post("/v1/banks/nope/consolidate").await.0,
         StatusCode::NOT_FOUND
     );
     let (code, body) = h.send("GET", "/v1/banks/nope/consolidation").await;
     assert_eq!(code, StatusCode::NOT_FOUND);
     assert_eq!(body["error"]["code"], "not_found");
+}
+
+/// One round per bank at a time. Two overlapping rounds read the same
+/// watermark, select the same facts and both apply plans — duplicate
+/// observations that the advanced watermark then guarantees are never
+/// revisited. The loser gets `Conflict` (409), not a second round.
+///
+/// Deterministic, not a race: the stub blocks until this test releases it, so
+/// the first round is provably still inside its LLM call — which is exactly
+/// the multi-second window the three-transaction TOCTOU sits in.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_round_on_the_same_bank_is_refused() {
+    let h = harness().await;
+    h.fact("the migration runner applied the 0004 migration");
+    let release = h.block_stub().await;
+
+    let state = h.state.clone();
+    let first =
+        tokio::spawn(async move { memgardend::consolidate::round::run_round(&state, "b1").await });
+    // Wait until the round is provably inside the LLM call.
+    while h.calls.load(Ordering::SeqCst) == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let loser = memgardend::consolidate::round::run_round(&h.state, "b1").await;
+    match loser {
+        Err(memgarden_core::Error::Conflict(msg)) => {
+            assert!(msg.contains("already running"), "{msg}")
+        }
+        other => panic!("the second round must be refused, got {other:?}"),
+    }
+
+    let _ = release.send(());
+    first
+        .await
+        .unwrap()
+        .expect("the first round still finishes");
+
+    // Exactly one ledger row, so exactly one round happened.
+    let runs: i64 =
+        h.db.read()
+            .unwrap()
+            .query_row("SELECT count(*) FROM consolidation_runs", [], |r| r.get(0))
+            .unwrap();
+    assert_eq!(runs, 1);
+
+    // And the slot is released, so the bank is not locked out forever.
+    assert!(
+        memgardend::consolidate::round::run_round(&h.state, "b1")
+            .await
+            .is_ok()
+    );
+}
+
+/// Security review LOW 5 (CSRF shape). A bodyless POST is a CORS *simple*
+/// request, so any page the user visits could fire one at the daemon and burn
+/// GPU. Requiring a JSON content type forces a preflight, which the Host guard
+/// can refuse. This test is the guard: deleting `ApiJson<ConsolidateRequest>`
+/// from the handler turns the 415 back into a 200.
+#[tokio::test]
+async fn a_bodyless_post_is_refused_so_the_browser_must_preflight() {
+    let h = harness().await;
+    h.fact("the recall pipeline fuses four arms");
+
+    let (code, body) = h.send("POST", "/v1/banks/b1/consolidate").await;
+
+    assert_eq!(code, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{body}");
+    assert_eq!(h.calls.load(Ordering::SeqCst), 0, "no LLM call, no GPU");
+    assert!(h.status().await["latest_run"].is_null(), "and no round ran");
 }
 
 /// Status on a bank that has never consolidated: real numbers, no run.
@@ -412,6 +532,7 @@ async fn an_embed_task_tick_regenerates_an_invalidated_embedding() {
         ollama: Arc::new(
             memgardend::ollama::OllamaClient::new(cfg_defaults.ollama.clone()).unwrap(),
         ),
+        consolidating: Default::default(),
         retain_tx,
     };
 
@@ -466,6 +587,7 @@ async fn live_consolidation_round() {
         started_at_ms: memgarden_core::now_ms(),
         embedder: Arc::new(std::sync::RwLock::new(Some(embedder))),
         ollama: Arc::new(memgardend::ollama::OllamaClient::new(cfg_defaults.ollama).unwrap()),
+        consolidating: Default::default(),
         retain_tx,
     };
 
