@@ -320,14 +320,23 @@ fn prepare(
         Some(&detail),
     )?;
 
-    let mut tags = sanitize_tags(&body.tags);
-    // Critic Revision R15: the session tag is the data path AC-4's session
-    // filter (and B5's `/graph?session=`) reads. legacy template parity:
-    // `retain.py:201-206`.
+    // Every tag source goes through `sanitize_tags` together, not just the
+    // caller-supplied ones (review MEDIUM): `session_id` is raw request
+    // input and a `file:` path is transcript-derived, so both can carry
+    // control characters or absurd lengths, and sanitizing only `body.tags`
+    // left the per-tag caps AND the total count cap bypassable.
+    //
+    // Order is priority under the count cap: the session tag is AC-4's
+    // filter data path (Critic Revision R15, legacy template parity
+    // `retain.py:201-206`) and the `file:` tags are the feature, so a caller
+    // who floods `body.tags` loses their own tags first, not ours.
+    let mut tags: Vec<String> = Vec::new();
     if let Some(session_id) = &body.session_id {
         tags.push(format!("session:{session_id}"));
     }
     tags.extend(plan.file_tags.iter().cloned());
+    tags.extend(body.tags.iter().cloned());
+    let tags = sanitize_tags(&tags);
 
     let task = RetainTask {
         job_id: job_id.to_string(),

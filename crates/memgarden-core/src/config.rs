@@ -36,6 +36,11 @@ pub struct Config {
     pub profile: ProfileConfig,
 }
 
+/// Hard ceiling on `recall.max_tokens` (config and the per-request
+/// `maxTokens` override). Well past any sane injection: the whole point of
+/// recall is to spend fewer tokens than the memory saves.
+pub const MAX_RECALL_TOKENS: usize = 8192;
+
 /// `[recall]` — hybrid retrieval (CE-6, B4). The token budget itself is not
 /// here: it is `[profile] recall_budget`, because it is part of the ported
 /// profile preset.
@@ -51,6 +56,17 @@ pub struct RecallConfig {
     /// Over-fetch is derived from it (`max(limit*5, 100)`,
     /// `engine/search/retrieval.py:225`).
     pub limit: usize,
+    /// Token ceiling on the recalled text actually returned — the fork
+    /// hook's `recallMaxTokens` (`scripts/lib/config.py:15`, passed at
+    /// `scripts/recall.py:190`), overridable per request as `maxTokens`.
+    ///
+    /// Deliberately NOT the same knob as `[profile] recall_budget`: legacy
+    /// sends both, `budget` steering how many candidates get reranked
+    /// (`rerank_limit = thinking_budget * 2`) and `max_tokens` capping the
+    /// injection. Collapsing them made `budget = "low"` cut the injection to
+    /// 100 tokens, which would have invalidated the AC-1 A/B against the
+    /// live fork (whose coding profile sends `low` *and* 1024).
+    pub max_tokens: usize,
     /// Per-arm truncation applied *before* fusion (`engine/search/fusion.py:8`)
     /// so one over-expanding arm cannot crowd out the others. `0` disables,
     /// matching legacy's default (`config.py:940`).
@@ -210,6 +226,7 @@ impl Config {
             recall: RecallConfig {
                 types: vec![FactType::World, FactType::Observation, FactType::Experience],
                 limit: 20,
+                max_tokens: 1024,
                 cap_per_source: 0,
                 preamble: String::new(),
             },
@@ -380,6 +397,9 @@ pub fn from_parts(
             if let Some(v) = recall.limit {
                 cfg.recall.limit = v;
             }
+            if let Some(v) = recall.max_tokens {
+                cfg.recall.max_tokens = v;
+            }
             if let Some(v) = recall.cap_per_source {
                 cfg.recall.cap_per_source = v;
             }
@@ -494,6 +514,12 @@ pub fn from_parts(
             cfg.recall.limit
         )));
     }
+    if !(1..=MAX_RECALL_TOKENS).contains(&cfg.recall.max_tokens) {
+        return Err(Error::Config(format!(
+            "recall.max_tokens must be 1..={MAX_RECALL_TOKENS}: {}",
+            cfg.recall.max_tokens
+        )));
+    }
     if cfg.retain.chunk_size == 0 {
         return Err(Error::Config("retain.chunk_size must be > 0".to_string()));
     }
@@ -574,6 +600,7 @@ struct TomlRetain {
 struct TomlRecall {
     types: Option<Vec<FactType>>,
     limit: Option<usize>,
+    max_tokens: Option<usize>,
     cap_per_source: Option<usize>,
     preamble: Option<String>,
 }
@@ -670,6 +697,7 @@ mod tests {
             recall: RecallConfig {
                 types: vec![FactType::World, FactType::Observation, FactType::Experience],
                 limit: 20,
+                max_tokens: 1024,
                 cap_per_source: 0,
                 preamble: String::new(),
             },
@@ -908,6 +936,13 @@ mod tests {
         let mut huge_limit = defaults();
         huge_limit.recall.limit = 5000;
         assert!(from_parts(huge_limit, None, &HashMap::new()).is_err());
+
+        let mut zero_tokens = defaults();
+        zero_tokens.recall.max_tokens = 0;
+        assert!(from_parts(zero_tokens, None, &HashMap::new()).is_err());
+        let mut huge_tokens = defaults();
+        huge_tokens.recall.max_tokens = MAX_RECALL_TOKENS + 1;
+        assert!(from_parts(huge_tokens, None, &HashMap::new()).is_err());
     }
 
     #[test]
@@ -919,6 +954,10 @@ mod tests {
             "server default is all three, NOT legacy's observation-only client default"
         );
         assert_eq!(cfg.recall.limit, 20);
+        assert_eq!(
+            cfg.recall.max_tokens, 1024,
+            "fork parity: scripts/lib/config.py:15 recallMaxTokens"
+        );
         assert_eq!(cfg.recall.cap_per_source, 0, "0 = disabled, legacy config.py:940");
         assert_eq!(cfg.recall.preamble, "");
 
@@ -926,12 +965,14 @@ mod tests {
             [recall]
             types = ["observation"]
             limit = 5
+            max_tokens = 256
             cap_per_source = 40
             preamble = "Relevant memories:"
         "#;
         let cfg = from_parts(defaults(), Some(toml_str), &HashMap::new()).unwrap();
         assert_eq!(cfg.recall.types, vec![FactType::Observation]);
         assert_eq!(cfg.recall.limit, 5);
+        assert_eq!(cfg.recall.max_tokens, 256);
         assert_eq!(cfg.recall.cap_per_source, 40);
         assert_eq!(cfg.recall.preamble, "Relevant memories:");
 

@@ -139,9 +139,11 @@ fn fts_korean_prefix() {
             .is_empty()
     );
 
-    // fts_query_string appends '*', which matches via the prefix='2 3 4' index.
+    // fts_query_string quotes each term and appends '*', which matches via
+    // the prefix='2 3 4' index. (Quoting neutralizes FTS5's bareword
+    // operators; a quoted phrase still takes a prefix suffix.)
     let query = search::fts_query_string("데몬");
-    assert_eq!(query, "데몬*");
+    assert_eq!(query, "\"데몬\"*");
     assert_eq!(
         search::fts_candidates(&db, "b1", &query, 10).unwrap(),
         vec![id]
@@ -551,9 +553,9 @@ fn hydrate_returns_rows_and_tags() {
     nodes::add_tags(&db, id, &["file:src/lib.rs", "session:abc"]).unwrap();
     let bare = nodes::insert(&db, NewNode::new("b1", FactType::World, "no tags")).unwrap();
 
-    assert!(search::hydrate(&db, &[]).unwrap().is_empty());
+    assert!(search::hydrate(&db, "b1", &[]).unwrap().is_empty());
 
-    let rows = search::hydrate(&db, &[id, bare, 999_999]).unwrap();
+    let rows = search::hydrate(&db, "b1", &[id, bare, 999_999]).unwrap();
     assert_eq!(rows.len(), 2, "unknown ids are silently absent");
 
     let tagged = rows.iter().find(|r| r.id == id).unwrap();
@@ -562,11 +564,45 @@ fn hydrate_returns_rows_and_tags() {
     assert_eq!(tagged.context.as_deref(), Some("ctx"));
     assert_eq!(tagged.occurred_start, Some(1_700_000_000_000));
     assert_eq!(tagged.mentioned_at, Some(1_700_000_100_000));
-    let mut tags = tagged.tags.clone();
-    tags.sort();
-    assert_eq!(tags, vec!["file:src/lib.rs", "session:abc"]);
+    assert_eq!(
+        tagged.tags,
+        vec!["file:src/lib.rs", "session:abc"],
+        "tag order is ORDER BY tag, not insertion order"
+    );
     assert!(!tagged.uuid.is_empty());
 
     let untagged = rows.iter().find(|r| r.id == bare).unwrap();
     assert!(untagged.tags.is_empty(), "no tags must be an empty vec, not [\"\"]");
+}
+
+#[test]
+fn hydrate_is_bank_scoped() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    banks::create(&db, "b2", None, None).unwrap();
+    let mine = nodes::insert(&db, NewNode::new("b1", FactType::World, "mine")).unwrap();
+    let theirs = nodes::insert(&db, NewNode::new("b2", FactType::World, "theirs")).unwrap();
+
+    let rows = search::hydrate(&db, "b1", &[mine, theirs]).unwrap();
+    assert_eq!(rows.len(), 1, "another bank's id must not hydrate");
+    assert_eq!(rows[0].id, mine);
+}
+
+/// Review MEDIUM: tags are user-supplied text, so no character is safe as a
+/// concatenation separator. `hydrate` reads them from their own query rather
+/// than splitting a `group_concat`, which is what makes this hold.
+#[test]
+fn hydrate_does_not_split_a_tag_on_a_separator_character() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    let id = nodes::insert(&db, NewNode::new("b1", FactType::World, "n")).unwrap();
+    // U+001F (unit separator) and a comma: the two obvious separator picks.
+    nodes::add_tags(&db, id, &["weird\u{1f}tag", "comma,tag"]).unwrap();
+
+    let rows = search::hydrate(&db, "b1", &[id]).unwrap();
+    assert_eq!(
+        rows[0].tags,
+        vec!["comma,tag", "weird\u{1f}tag"],
+        "each tag must round-trip whole"
+    );
 }

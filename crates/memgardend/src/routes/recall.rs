@@ -7,6 +7,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use serde::Deserialize;
 
+use memgarden_core::config::MAX_RECALL_TOKENS;
 use memgarden_core::metrics::METRICS;
 use memgarden_core::types::FactType;
 use memgarden_store::banks;
@@ -21,6 +22,10 @@ use crate::state::AppState;
 /// reaches the embedder.
 const MAX_QUERY_BYTES: usize = 8 * 1024;
 const MAX_TAGS: usize = 32;
+/// The preamble is echoed verbatim into every injection. Uncapped, one
+/// oversized request would keep re-serializing megabytes into a response the
+/// caller pays for. 4KB is far more prose than a preamble needs.
+const MAX_PREAMBLE_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Deserialize)]
 pub struct RecallRequest {
@@ -29,9 +34,15 @@ pub struct RecallRequest {
     /// `[recall] limit`.
     #[serde(default)]
     pub limit: Option<usize>,
-    /// `low | mid | high`. Defaults to `[profile] recall_budget`.
+    /// `low | mid | high`. Defaults to `[profile] recall_budget`. Controls
+    /// how many candidates are reranked, NOT how much text is injected —
+    /// that is `maxTokens`.
     #[serde(default)]
     pub budget: Option<String>,
+    /// Token ceiling on the injected text. Defaults to `[recall] max_tokens`
+    /// (1024, fork parity). `1..=MAX_RECALL_TOKENS`.
+    #[serde(default, rename = "maxTokens")]
+    pub max_tokens: Option<usize>,
     /// Defaults to `[recall] types` — all three, unlike legacy's
     /// observation-only client default (see `RecallConfig::types`).
     #[serde(default, rename = "recallTypes")]
@@ -98,6 +109,22 @@ async fn recall_inner(
         Some(t) => t,
         None => state.cfg.recall.types.clone(),
     };
+    if let Some(preamble) = &body.preamble
+        && preamble.len() > MAX_PREAMBLE_BYTES
+    {
+        return Err(memgarden_core::Error::Invalid(format!(
+            "preamble too long: {} bytes (max {MAX_PREAMBLE_BYTES})",
+            preamble.len()
+        ))
+        .into());
+    }
+    let max_tokens = body.max_tokens.unwrap_or(state.cfg.recall.max_tokens);
+    if !(1..=MAX_RECALL_TOKENS).contains(&max_tokens) {
+        return Err(memgarden_core::Error::Invalid(format!(
+            "maxTokens must be 1..={MAX_RECALL_TOKENS}: {max_tokens}"
+        ))
+        .into());
+    }
     let budget = body
         .budget
         .unwrap_or_else(|| state.cfg.profile.recall_budget.clone());
@@ -121,6 +148,7 @@ async fn recall_inner(
         query: body.query,
         limit: body.limit.unwrap_or(state.cfg.recall.limit).clamp(1, 200),
         budget,
+        max_tokens,
         fact_types,
         tags: body.tags,
         tags_match: body.tags_match,

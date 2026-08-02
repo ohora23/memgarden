@@ -86,8 +86,11 @@ impl TagsMatch {
 pub struct RecallParams {
     pub query: String,
     pub limit: usize,
-    /// `low | mid | high`.
+    /// `low | mid | high`. Steers `rerank_limit` only — see `max_tokens`.
     pub budget: String,
+    /// Token ceiling on the returned text (`[recall] max_tokens`, or the
+    /// request's `maxTokens`).
+    pub max_tokens: usize,
     pub fact_types: Vec<FactType>,
     pub tags: Vec<String>,
     pub tags_match: TagsMatch,
@@ -164,7 +167,11 @@ pub async fn recall(
     bank_id: String,
     p: RecallParams,
 ) -> Result<RecallOutcome, ApiError> {
-    if p.query.chars().count() < MIN_QUERY_CHARS {
+    // Trim first, then measure — `scripts/recall.py:126-128` strips before
+    // the length gate, so a whitespace-only prompt never reaches the
+    // embedder. The trimmed form is what both arms search.
+    let query = p.query.trim().to_string();
+    if query.chars().count() < MIN_QUERY_CHARS {
         return Ok(RecallOutcome::empty());
     }
 
@@ -175,14 +182,17 @@ pub async fn recall(
     // or if loading failed. Recall degrades to BM25-only rather than 503:
     // a keyword-only answer beats no answer, and the FTS arm is the one
     // that carries Korean (Phase A decision #7).
+    // A poisoned lock means some other task panicked while holding it; the
+    // guarded value is just an `Option<Arc<_>>` and cannot be torn, so
+    // recovering beats turning one panic into every subsequent request's.
     let embedder = state
         .embedder
         .read()
-        .expect("embedder lock poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .clone();
     let query_embedding = match embedder {
         Some(e) => {
-            let query = p.query.clone();
+            let query = query.clone();
             let vectors = tokio::task::spawn_blocking(move || e.embed_batch(&[query]))
                 .await
                 .map_err(join_err)?
@@ -195,7 +205,7 @@ pub async fn recall(
     // --- All DB work in one blocking hop. -------------------------------
     let db = state.db.clone();
     let bank = bank_id.clone();
-    let match_query = search::fts_query_string(&p.query);
+    let match_query = search::fts_query_string(&query);
     let types = p.fact_types.clone();
     let (semantic_raw, keyword_raw, rows) = tokio::task::spawn_blocking(move || {
         let semantic = match &query_embedding {
@@ -211,7 +221,7 @@ pub async fn recall(
         ids.extend(keyword.iter().map(|(id, _)| *id));
         ids.sort_unstable();
         ids.dedup();
-        let rows = search::hydrate(&db, &ids)?;
+        let rows = search::hydrate(&db, &bank, &ids)?;
         Ok::<_, memgarden_core::Error>((semantic, keyword, rows))
     })
     .await
@@ -292,12 +302,16 @@ pub async fn recall(
     // Stable sort: candidates whose boosts leave them tied keep RRF order.
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    let thinking_budget = budget::budget_tokens(&p.budget);
-    scored.truncate(budget::rerank_limit(thinking_budget));
+    // Two distinct knobs (architect recommendation A): `budget` decides how
+    // deep the candidate list is carried, `max_tokens` decides how much text
+    // is injected. Legacy sends both and the fork's coding profile sends
+    // `low` + 1024 — collapsing them would have capped the injection at 100
+    // tokens and invalidated the AC-1 comparison.
+    scored.truncate(budget::rerank_limit(budget::budget_tokens(&p.budget)));
 
     let mut results: Vec<RecallItem> = scored.into_iter().map(|(_, item)| item).collect();
     let texts: Vec<String> = results.iter().map(|r| r.text.clone()).collect();
-    let (kept, tokens) = budget::fit_to_budget(&texts, thinking_budget, token_count);
+    let (kept, tokens) = budget::fit_to_budget(&texts, p.max_tokens, token_count);
     results.truncate(kept.min(p.limit));
     // `limit` can cut below what the budget allowed, so recount rather than
     // reporting the budget's total.
@@ -309,9 +323,13 @@ pub async fn recall(
 
     let injected_text = build_injection(&results, &p.preamble, p.now_ms);
 
+    // The meter counts the whole injected block — framing, preamble and
+    // timestamp included — because that is what the client actually pays
+    // for. `counts.tokens` stays text-only, which is the number the budget
+    // enforces and the number legacy reports (AC-1 parity).
     METRICS
         .recall_injected_tokens
-        .fetch_add(tokens, Ordering::Relaxed);
+        .fetch_add(token_count(&injected_text), Ordering::Relaxed);
     METRICS
         .recall_injected_memories
         .fetch_add(results.len() as u64, Ordering::Relaxed);
@@ -337,6 +355,31 @@ fn format_utc(unix_ms: i64) -> String {
     jiff::fmt::strtime::format("%Y-%m-%d %H:%M UTC", &zoned).unwrap_or_else(|_| unix_ms.to_string())
 }
 
+/// Neutralizes any `<memgarden_memories` / `</memgarden_memories` sequence
+/// inside recalled text before it goes into the container.
+///
+/// Fact text is model-extracted from a transcript, i.e. attacker-influenced:
+/// anything that can get a string into a retained conversation can get it
+/// into a fact. A fact carrying `</memgarden_memories>` would close the block
+/// early and everything after it would read to the client model as
+/// out-of-band instruction rather than recalled memory. A zero-width space
+/// after the `<` keeps the text legible to a human and to the model while
+/// making the sequence no longer the tag.
+///
+/// Borrowed unless a `<` is actually present, which is the overwhelmingly
+/// common case.
+fn defang(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('<') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    // Closing form first: after it runs, its output no longer contains the
+    // opening form, so the second replace cannot double-process it.
+    std::borrow::Cow::Owned(
+        text.replace("</memgarden_memories", "<\u{200b}/memgarden_memories")
+            .replace("<memgarden_memories", "<\u{200b}memgarden_memories"),
+    )
+}
+
 /// The block the Phase C hook injects verbatim, reproducing
 /// `scripts/recall.py:252-258` + `content.py:203-219`: item lines
 /// `- {text} [{type}] ({mentioned_at})` joined by a blank line. Only the tag
@@ -355,7 +398,7 @@ fn build_injection(results: &[RecallItem], preamble: &str, now_ms: i64) -> Strin
                 .mentioned_at
                 .map(|ms| format!(" ({})", format_utc(ms)))
                 .unwrap_or_default();
-            format!("- {} [{}]{}", r.text, r.fact_type.as_str(), date)
+            format!("- {} [{}]{}", defang(&r.text), r.fact_type.as_str(), date)
         })
         .collect();
     format!(

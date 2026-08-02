@@ -42,7 +42,11 @@ pub fn fts_query_string(raw: &str) -> String {
 
     terms
         .iter()
-        .map(|tok| format!("{tok}*"))
+        // Quoted: FTS5 lexes bare uppercase AND/OR/NOT as operators even
+        // though they survive the alphanumeric split ("cats AND dogs" →
+        // syntax error). A quoted string is always a phrase term, and `"`
+        // itself cannot survive the split, so this closes the injection.
+        .map(|tok| format!("\"{tok}\"*"))
         .collect::<Vec<_>>()
         .join(" OR ")
 }
@@ -118,7 +122,7 @@ pub fn fts_candidates_filtered(
 }
 
 /// Everything the recall pipeline needs about a candidate node, fetched for
-/// the whole fused id set in ONE query (no N+1): the union of both arms is
+/// the whole fused id set in two queries (no N+1): the union of both arms is
 /// typically 100-200 ids and this measures in the low tens of microseconds.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CandidateRow {
@@ -133,15 +137,18 @@ pub struct CandidateRow {
     pub tags: Vec<String>,
 }
 
-/// Tags are concatenated with U+001F (unit separator) rather than a comma:
-/// tags are user-supplied and a comma inside one would corrupt the split.
-/// Control characters are rejected at the retain boundary, so U+001F cannot
-/// occur inside a tag.
-const TAG_SEP: char = '\u{1f}';
-
-/// Loads `CandidateRow`s for `ids`, in arbitrary order (callers index by
-/// id). Unknown ids are silently absent.
-pub fn hydrate(db: &Db, ids: &[i64]) -> Result<Vec<CandidateRow>> {
+/// Loads `CandidateRow`s for `ids` **within `bank_id`**, in arbitrary order
+/// (callers index by id). Unknown or other-bank ids are silently absent —
+/// the bank predicate is defence in depth: both arms already scope to the
+/// bank, so an id from another bank reaching here would be a bug, and this
+/// makes that bug return nothing instead of leaking a row.
+///
+/// Tags come back from a **second** query rather than a `group_concat`: any
+/// separator character can legally appear inside a tag, and an ambiguous
+/// split is a data-integrity bug waiting for the one tag that contains it.
+/// Two statements, still no N+1. `ORDER BY` makes the tag order
+/// deterministic, so response bodies and test fixtures are stable.
+pub fn hydrate(db: &Db, bank_id: &str, ids: &[i64]) -> Result<Vec<CandidateRow>> {
     if ids.is_empty() {
         return Ok(vec![]);
     }
@@ -159,15 +166,13 @@ pub fn hydrate(db: &Db, ids: &[i64]) -> Result<Vec<CandidateRow>> {
     let mut stmt = conn
         .prepare(
             "SELECT n.id, n.uuid, n.fact_type, n.text, n.context,
-                    n.occurred_start, n.occurred_end, n.mentioned_at,
-                    (SELECT group_concat(t.tag, char(31))
-                       FROM node_tags t WHERE t.node_id = n.id)
+                    n.occurred_start, n.occurred_end, n.mentioned_at
              FROM memory_nodes n
-             WHERE n.id IN (SELECT value FROM json_each(?1))",
+             WHERE n.id IN (SELECT value FROM json_each(?1)) AND n.bank_id = ?2",
         )
         .map_err(store_err)?;
     let raw = stmt
-        .query_map(params![ids_json], |r| {
+        .query_map(params![ids_json, bank_id], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
@@ -177,15 +182,33 @@ pub fn hydrate(db: &Db, ids: &[i64]) -> Result<Vec<CandidateRow>> {
                 r.get::<_, Option<i64>>(5)?,
                 r.get::<_, Option<i64>>(6)?,
                 r.get::<_, Option<i64>>(7)?,
-                r.get::<_, Option<String>>(8)?,
             ))
         })
         .map_err(store_err)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(store_err)?;
 
+    let mut stmt = conn
+        .prepare(
+            "SELECT node_id, tag FROM node_tags
+             WHERE node_id IN (SELECT value FROM json_each(?1))
+             ORDER BY node_id, tag",
+        )
+        .map_err(store_err)?;
+    let mut tags_by_node: std::collections::HashMap<i64, Vec<String>> =
+        std::collections::HashMap::new();
+    let tag_rows = stmt
+        .query_map(params![ids_json], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(store_err)?;
+    for row in tag_rows {
+        let (node_id, tag) = row.map_err(store_err)?;
+        tags_by_node.entry(node_id).or_default().push(tag);
+    }
+
     raw.into_iter()
-        .map(|(id, uuid, fact_type, text, context, start, end, mentioned, tags)| {
+        .map(|(id, uuid, fact_type, text, context, start, end, mentioned)| {
             Ok(CandidateRow {
                 id,
                 uuid,
@@ -195,9 +218,7 @@ pub fn hydrate(db: &Db, ids: &[i64]) -> Result<Vec<CandidateRow>> {
                 occurred_start: start,
                 occurred_end: end,
                 mentioned_at: mentioned,
-                tags: tags
-                    .map(|t| t.split(TAG_SEP).map(str::to_string).collect())
-                    .unwrap_or_default(),
+                tags: tags_by_node.remove(&id).unwrap_or_default(),
             })
         })
         .collect()
@@ -206,6 +227,13 @@ pub fn hydrate(db: &Db, ids: &[i64]) -> Result<Vec<CandidateRow>> {
 /// K-nearest-neighbor node ids (with cosine distance, best first) for
 /// `bank_id`, via the `vec_nodes` vec0 partitioned index. Brute-force
 /// (no ANN) — fine at current scale, see Trade-offs in the plan.
+///
+/// `// ponytail: brute-force scan of the whole bank partition. Measured on
+/// the CE-6 bench: recall p95 9.7ms at 3k nodes, 40.7ms at ~32k against a
+/// 60ms budget — this scan is most of that growth. Upgrade path when a bank
+/// approaches ~50k nodes: sqlite-vec ANN once it ships, or pre-filter the
+/// partition (e.g. a fact_type/recency-scoped shadow vec0 table) so the
+/// scan is over a slice rather than the bank.`
 pub fn knn(db: &Db, bank_id: &str, query_embedding: &[f32], k: usize) -> Result<Vec<(i64, f64)>> {
     let blob = vecblob::encode(query_embedding)?;
     let conn = db.read()?;
@@ -294,10 +322,35 @@ mod tests {
 
     #[test]
     fn fts_query_string_tokenizes_and_appends_star() {
-        assert_eq!(fts_query_string("데몬"), "데몬*");
+        assert_eq!(fts_query_string("데몬"), "\"데몬\"*");
         // R1: OR, not whitespace-AND.
-        assert_eq!(fts_query_string("hello world"), "hello* OR world*");
-        assert_eq!(fts_query_string("  foo,bar  "), "foo* OR bar*");
+        assert_eq!(fts_query_string("hello world"), "\"hello\"* OR \"world\"*");
+        assert_eq!(fts_query_string("  foo,bar  "), "\"foo\"* OR \"bar\"*");
+    }
+
+    /// Review HIGH: FTS5 lexes bare uppercase `AND`/`OR`/`NOT` as operators.
+    /// They are alphanumeric, so the tokenizer split leaves them intact —
+    /// unquoted, `cats AND dogs` became `cats* OR AND* OR dogs*`, an FTS5
+    /// syntax error (a 500 on any prompt containing a capitalised AND/OR/NOT).
+    /// Quoting makes every term a phrase, which is never an operator.
+    #[test]
+    fn fts_query_string_neutralizes_fts5_keywords() {
+        assert_eq!(
+            fts_query_string("cats AND dogs"),
+            "\"cats\"* OR \"AND\"* OR \"dogs\"*"
+        );
+        assert_eq!(fts_query_string("a OR b"), "\"a\"* OR \"OR\"* OR \"b\"*");
+        assert_eq!(
+            fts_query_string("NOT NEAR cats"),
+            "\"NOT\"* OR \"NEAR\"* OR \"cats\"*"
+        );
+        // The quote character itself is stripped by the alphanumeric split
+        // (it is a token boundary, like any other punctuation), so a term
+        // can never terminate its own quoting.
+        assert_eq!(
+            fts_query_string("say \"hi\" now"),
+            "\"say\"* OR \"hi\"* OR \"now\"*"
+        );
     }
 
     #[test]
@@ -307,10 +360,10 @@ mod tests {
                    jjjjjjjjjj kkkkkkkkkkk llllllllllll mmmmmmmmmmmmm nnnnnnnnnnnnnn";
         let q = fts_query_string(raw);
         assert_eq!(q.matches(" OR ").count(), MAX_QUERY_TERMS - 1);
-        assert!(!q.contains("a*"), "the two shortest terms must be dropped: {q}");
-        assert!(!q.contains("bb*"));
-        assert!(q.starts_with("ccc*"), "surviving terms keep query order: {q}");
-        assert!(q.ends_with("nnnnnnnnnnnnnn*"));
+        assert!(!q.contains("\"a\"*"), "the two shortest terms must be dropped: {q}");
+        assert!(!q.contains("\"bb\"*"));
+        assert!(q.starts_with("\"ccc\"*"), "surviving terms keep query order: {q}");
+        assert!(q.ends_with("\"nnnnnnnnnnnnnn\"*"));
     }
 
     #[test]
