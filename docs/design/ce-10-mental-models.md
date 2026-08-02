@@ -11,7 +11,9 @@ no-new-facts skip), `:11724-11743` (the empty render), `maintenance.py:417-425`
 
 ## What this adds
 
-* `0006_mental_models.sql` — `mental_models` (composite PK `(bank_id, id)`),
+* `0006_mental_models.sql` — `mental_models` (legacy's composite key as
+  `UNIQUE (bank_id, id)` over a **declared** `rowid INTEGER PRIMARY KEY`, so
+  VACUUM cannot renumber the key `vec_mental_models` joins on),
   `vec_mental_models` (a second vec0 space, `bank_id` partition key), the
   refresh index, and `mental_models_vec_ad`, the AFTER DELETE trigger that
   keeps the vector table clean on the FK-cascade path Rust cannot see
@@ -30,7 +32,9 @@ no-new-facts skip), `:11724-11743` (the empty render), `maintenance.py:417-425`
   `POST /v1/banks/{id}/reflect`. `?q=` on the list turns it into a KNN search.
 * `OllamaClient::chat_json_bounded` — the interactive acquire path with the
   per-call `num_predict`/`num_ctx` ceilings the background path already had.
-* `docs/parity-gaps.md` (Critic Revision NIT 26).
+* `nodes::created_after` — the refresh window's write-time predicate.
+* `docs/parity-gaps.md` (Critic Revision NIT 26), including what AC-1 does and
+  does not cover for reflect.
 
 ## The prompt is token-bounded by construction
 
@@ -58,11 +62,30 @@ rather than trusting it.
 
 ## Key decisions
 
-* **Refresh uses the background acquire, reflect the interactive one.** Refresh
-  mutates stored memory on an explicit request, like `/consolidate`: queueing
-  behind a busy GPU beats losing the write. Reflect is the route Critic
-  Revision R11 named as fail-fast, so it takes `ACQUIRE_TIMEOUT` and answers
-  503.
+* **Two clocks on every mental model.** `last_refreshed_at` is wall clock and
+  answers "has the cron fired since we last ran"; `refresh_watermark` is
+  `max(memory_nodes.created_at)` of the rows actually summarised and answers
+  "which facts have we already folded in". They cannot be one column, and the
+  data one must not be `now()` — `memory_engine.py:11475-11485` says exactly
+  why, and review round 1 caught this codebase doing it wrong (see the
+  divergence ledger's first entry).
+* **Both LLM routes use the interactive acquire.** Refresh started on the
+  background one, matching `/consolidate` — but consolidation also runs off a
+  300 s tick with nobody waiting, while every refresh is a caller blocked on an
+  HTTP response. The background path waits untimed and can hold the size-1
+  permit for the 600 s total deadline, so N refreshes queue N × up-to-600 s of
+  GPU ahead of the retain worker and of `/reflect` (which gives up at 15 s).
+  Failing fast bounds the queue by construction.
+* **One refresh per model at a time**, the same claim shape `run_round` uses:
+  the watermark read, the recall and the write straddle an LLM call, so two
+  overlapping refreshes both read the same watermark and the loser's summary is
+  overwritten while its watermark advance stands. A second caller gets 409.
+* **A text change without a new vector invalidates the old one** (Critic
+  Revision R4). `mental_models::update`'s `clear_embedding` nulls the blob, the
+  producer tag and the `vec_mental_models` row together. B7's `nodes::update_text`
+  resolves the same trade-off the other way (stale hit beats invisibility)
+  because a node lands back on the embed backlog within a tick; a mental model
+  has no backlog, so "stale until re-embedded" would mean "stale forever".
 * **Mental models are embedded inline, not through CE-4's backlog.** The
   backlog exists to keep retain's write transaction short; a mental model is
   created one at a time by a human decision. If the embedder is still loading
@@ -94,11 +117,21 @@ rather than trusting it.
   `{"refresh_after_consolidation": false}` in `trigger` and keeps the cron in a
   separate routine; the plan's DDL says cron expression, and one column that
   means one thing beats two that disagree.
-* **`since` is filtered in Rust, not SQL.** `_get_supporting_facts` passes
-  `since=last_refreshed_at` into its query; `recall` here is the whole hybrid
-  pipeline and has no `since` axis, so the recalled rows are filtered on
-  `occurred_start ?? mentioned_at` afterwards. A memory with neither timestamp
-  is not "new since" anything and is excluded.
+* **`since` is filtered in Rust, not SQL** — but on the **same axis** legacy
+  uses. `_get_supporting_facts` passes `since` into its query; `recall` here is
+  the whole hybrid pipeline and has no `since` axis, and `search::hydrate` does
+  not select `created_at`, so the window is a second indexed read over the
+  recalled ids (`nodes::created_after`) instead. Only the *location* differs.
+  Round-1 review caught the first attempt comparing `occurred_start ??
+  mentioned_at` — an **event** time the extractor reads out of the text — against
+  a wall-clock watermark, which silently and permanently dropped any fact
+  retained today about a past event. Fixed, and pinned by
+  `a_fact_about_an_old_event_retained_after_the_last_refresh_is_still_seen`.
+* **The no-facts path is cheaper than legacy's, not equal to it.** Legacy calls
+  `reflect_async` at `:11543` *before* the `:11646-11660` skip, so that skip
+  only avoids the second, delta call. Here a refresh with no new supporting
+  facts makes **no LLM call at all**. Outcome parity holds (content preserved,
+  audit written); the cost saving is a deliberate improvement, not a port.
 * **The refresh and reflect prompts are ours.** Legacy's 822 lines of reflect
   prompt describe tools this PR does not ship.
 * **PATCH sets, never clears.** One COALESCE'd UPDATE, one statement shape;
@@ -115,8 +148,12 @@ rather than trusting it.
   loads stays out of KNN until its next write. Tens of rows, human-triggered —
   a backlog table would be more machinery than the problem.
 * The cron subset is minute/hour/dom/month/dow with `*`, `*/n`, ranges and
-  lists. `@daily`, `L`, `#`, `?` and month/day *names* are rejected at write
-  time rather than silently mis-scheduled.
+  lists, capped at 256 bytes. `@daily`, `L`, `#`, `?` and month/day *names* are
+  rejected at write time rather than silently mis-scheduled. Swap the
+  hand-rolled parser for a crate the day a scheduler exists.
+* `trigger` and `due` are **advisory** — validated, stored and reported, acted
+  on by nobody. Said on the list route so an HTTP client sees it, not only in a
+  Rust doc comment.
 * Reflect with an unavailable embedder still answers, from recalled memories
   alone; mental models simply do not join the payload.
 * KNN over `vec_mental_models` is brute force, like `vec_nodes`. Measured
@@ -124,8 +161,8 @@ rather than trusting it.
 
 ## Verification
 
-`cargo test --workspace`: **401 passed, 13 ignored** (master: 367 / 11), fmt
-and clippy `-D warnings` clean.
+`cargo test --workspace --no-fail-fast`: **408 passed, 0 failed, 13 ignored**
+(master: 367 / 11), fmt and clippy `-D warnings` clean.
 
 Tests that pin the ported behaviour, by name:
 
@@ -152,6 +189,26 @@ Tests that pin the ported behaviour, by name:
 * `fresh_database_has_the_0006_mental_model_schema`,
   `migrate_upgrades_a_v5_database_in_place`.
 
+Added in review round 1:
+
+* `a_fact_about_an_old_event_retained_after_the_last_refresh_is_still_seen` —
+  the event-time/write-time defect, top of the divergence ledger.
+* `a_second_concurrent_refresh_of_one_model_is_a_conflict` — the single-flight
+  claim, driven through a gated stub.
+* `the_reply_bounds_reach_the_ollama_request` — asserts `num_predict`,
+  `num_ctx` and the schema's `maxLength` **on the wire**, so replacing
+  `reply_cap` with a literal fails a test instead of sailing through a stub
+  that discards the body.
+* `a_text_update_without_a_new_vector_invalidates_the_old_one` and
+  `a_metadata_patch_leaves_the_vector_alone` — R4 on this table.
+* `knn_returns_only_active_producer_vectors` — the AX-1 pin for the new vector
+  surface: deleting the `embedding_model` predicate now fails a test.
+* `no_payload_slot_can_escape_its_field` — reflect's payload, including the
+  mental-model `name`/`content` slots this PR introduces.
+* `write_routes_reject_bad_input` grew the oversized-trigger and
+  empty-content cases; `list_orders_by_last_refreshed_desc_and_pages` grew the
+  `offset = usize::MAX` case.
+
 **Measured** (Ryzen 7 9800X3D, 16 threads, release):
 
 * Reflect end to end against the real Ollama (`qwen3-14b-nothink`) and the real
@@ -164,15 +221,20 @@ Tests that pin the ported behaviour, by name:
   `MEMGARDEN_BENCH_CONTROL=1 MEMGARDEN_BENCH_LOAD=1
   MEMGARDEN_BENCH_NODES=3000 MEMGARDEN_BENCH_REQUESTS=2000`:
 
-  | | mean paired delta | median | per-pair spread |
-  |---|---|---|---|
-  | p50 | **+0.09 ms** | +0.08 ms | −0.57 … +1.32 ms |
-  | p95 | **+0.32 ms** | +0.43 ms | −2.13 … +3.73 ms |
+  Primary result, the **7 fully interleaved pairs**:
 
-  Honest note on the data: pairs 1-7 are fully interleaved; pair 8's base arm
-  produced no output line (harness capture, not a failed run) and was
-  re-measured on its own immediately after, so it is a reconstructed pair.
-  Dropping it entirely gives p95 +0.24 ms / p50 +0.11 ms — the same answer.
+  | | mean paired delta | median | SD | per-pair spread |
+  |---|---|---|---|---|
+  | p50 | **+0.10 ms** | +0.08 ms | 0.63 ms | −0.57 … +1.32 ms |
+  | p95 | **+0.24 ms** | +0.18 ms | 1.92 ms | −2.13 … +3.73 ms |
+
+  Pair 8 is excluded from the primary figure and reported only as a footnote:
+  its base arm produced no capture line (a harness bug, not a failed run) and
+  was re-measured on its own afterwards, which destroys the one property that
+  makes pairing work — adjacent-in-time arms sharing thermal and scheduler
+  state. Including it moves p95 to +0.32 ms and p50 to +0.09 ms, i.e. it buys
+  nothing either way. The SD column is the point: the resolution of this
+  measurement is ~1.7 ms, so a 0.24 ms delta is not distinguishable from zero.
 
   Levels for context: base p95 43.2 ms, lever p95 43.6 ms. Absolute levels
   drift on this machine (re-benching an identical commit moved +1.5 ms), so the

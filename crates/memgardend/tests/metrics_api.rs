@@ -31,6 +31,7 @@ fn test_app() -> (axum::Router, Arc<Db>) {
         embedder: Arc::new(std::sync::RwLock::new(None)),
         ollama,
         consolidating: Default::default(),
+        refreshing: Default::default(),
         retain_tx,
     };
     (routes::router(state), db)

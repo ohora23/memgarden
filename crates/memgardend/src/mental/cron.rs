@@ -14,11 +14,14 @@
 //! when the schedule fired still sees the model as due the moment it comes
 //! back, with no catch-up bookkeeping.
 //!
-//! // ponytail: a hand-rolled 5-field parser instead of a cron crate. It is
-//! // ~40 lines against a new dependency for one call site, and the subset it
-//! // refuses (`@daily`, `L`, `#`, `JAN`/`MON` names, seconds, `?`) is refused
-//! // loudly at write time rather than silently mis-scheduled. Swap in a crate
-//! // the day a second caller needs the rest of the syntax.
+//! // ponytail: a hand-rolled 5-field parser instead of a cron crate, for one
+//! // call site whose only consumer (a scheduler) is not shipped. Flagged as
+//! // mild scope creep in review and accepted: the subset it refuses
+//! // (`@daily`, `L`, `#`, `JAN`/`MON` names, seconds, `?`) is refused loudly
+//! // at write time rather than silently mis-scheduled, and a crate is a
+//! // dependency the workspace's containment rule would have to argue about.
+//! // **Swap it for a maintained crate the day a scheduler exists** — that is
+//! // the point at which the rest of the syntax starts mattering.
 
 use jiff::civil::Date;
 use jiff::{Timestamp, tz::TimeZone};
@@ -288,7 +291,9 @@ mod tests {
         // strictly greater-than.
         assert!(!is_due("0 3 * * *", Some(at("2026-08-03T03:00:00Z")), NOW));
 
-        // A schedule that has never fired in the lookback window.
+        // A yearly schedule that DID fire (2026-01-01) but is not due,
+        // because the watermark is newer than that fire. (Review round 1,
+        // B9-5: the assertion was right, the old comment was not.)
         assert!(!is_due("0 0 1 1 *", Some(NOW), NOW));
     }
 

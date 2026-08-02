@@ -60,6 +60,7 @@ fn test_app_on(
         embedder: embedder.clone(),
         ollama,
         consolidating: Default::default(),
+        refreshing: Default::default(),
         retain_tx,
     };
     (routes::router(state.clone()), db, embedder, state)

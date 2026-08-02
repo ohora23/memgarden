@@ -195,7 +195,12 @@ pub async fn patch(
 ) -> Result<MentalModel, ApiError> {
     let current = load(state, bank_id, id).await?;
 
-    let embedding = if fields.name.is_some() || fields.content.is_some() {
+    // R4: if the embedded text changed, the stored vector is stale from this
+    // moment on — so either it is replaced or it is dropped. Keeping it would
+    // leave KNN answering for text the model no longer contains, with no
+    // backlog worker to repair it.
+    let text_changed = fields.name.is_some() || fields.content.is_some();
+    let embedding = if text_changed {
         let text = embedding_text(
             fields.name.unwrap_or(&current.name),
             fields.content.unwrap_or(&current.content),
@@ -224,6 +229,7 @@ pub async fn patch(
                 content: content.as_deref(),
                 max_tokens,
                 trigger: trigger.as_deref(),
+                clear_embedding: text_changed,
                 ..Default::default()
             },
             embedding.as_deref(),
@@ -245,25 +251,45 @@ pub async fn load(state: &AppState, bank_id: &str, id: &str) -> Result<MentalMod
 }
 
 /// Regenerates one mental model's content from the memories its
-/// `source_query` recalls since the last refresh.
+/// `source_query` recalls, restricted to those written since the last refresh.
 ///
-/// Three outcomes, all ported:
+/// **Two clocks, deliberately.** `last_refreshed_at` is wall clock and answers
+/// "has the schedule fired since we last ran"; `refresh_watermark` is
+/// `max(memory_nodes.created_at)` of the rows actually summarised and answers
+/// "which facts have we already folded in" (`memory_engine.py:11475-11485`:
+/// *"persist the watermark as the newest in-scope memory actually visible at
+/// the snapshot — NOT now()"*). See [`supporting_facts`].
 ///
-/// 1. **No supporting facts → no LLM call at all** (`:11646-11660`). Only the
-///    `last_refreshed_at` watermark moves, so the next refresh looks at the
-///    same window's successors rather than re-reading everything. Content is
-///    preserved byte for byte. This is the common case for a scheduled
-///    refresh on a quiet bank, and paying a 14B model to re-summarise
-///    unchanged input is exactly the GPU spend this system is trying not to
-///    make.
+/// Three outcomes:
+///
+/// 1. **No supporting facts → no LLM call at all.** Content preserved byte for
+///    byte, `last_refreshed_at` moves (the schedule *did* run),
+///    `refresh_watermark` does **not** (nothing was processed — ratcheting it
+///    here is what would silently orphan the next fact). This is the common
+///    case for a scheduled refresh on a quiet bank, and paying a 14B model to
+///    re-summarise unchanged input is exactly the GPU spend this system is
+///    trying not to make. Outcome parity with legacy's `:11646-11660`, though
+///    the saving is strictly larger — see the design note's divergence ledger.
 /// 2. **Empty generated content → the previous content survives, and this
 ///    returns an error** (`:11724-11743`). Writing `""` would destroy the
 ///    working document; silently returning the old one would hide an upstream
 ///    failure from the caller. So: persist the audit in `reflect_response`,
-///    leave `content` and the watermark alone, and fail loudly.
-/// 3. Otherwise the new content is written, re-embedded, and the watermark
-///    advances.
+///    leave `content` and **both** clocks alone, and fail loudly.
+/// 3. Otherwise the new content is written, re-embedded, and both clocks move.
 pub async fn refresh(state: &AppState, bank_id: &str, id: &str) -> Result<MentalModel, ApiError> {
+    // **One refresh per model at a time** (review round 1, MUST FIX 2), the
+    // same claim shape `consolidate::round::run_round` uses and for the same
+    // reason: the watermark read, the recall and the write are separate steps
+    // with an LLM call between them, so two overlapping refreshes both read
+    // `last_refreshed_at = T`, both summarise the facts after T, and the
+    // loser's summary is overwritten while its watermark advance stands.
+    // Enforced here rather than at the route so any future caller inherits it.
+    let Some(_guard) = claim(state, bank_id, id) else {
+        return Err(memgarden_core::Error::Conflict(format!(
+            "a refresh is already running for mental model {id}"
+        ))
+        .into());
+    };
     let model = load(state, bank_id, id).await?;
     let now = memgarden_core::now_ms();
     let query = model
@@ -271,24 +297,26 @@ pub async fn refresh(state: &AppState, bank_id: &str, id: &str) -> Result<Mental
         .clone()
         .unwrap_or_else(|| model.name.clone());
 
-    let facts = supporting_facts(state, bank_id, &query, &model, now).await?;
+    let (facts, data_watermark) = supporting_facts(state, bank_id, &query, &model, now).await?;
 
     if facts.is_empty() {
-        // Outcome 1: the watermark moves, nothing else. No prompt is built and
-        // no permit is taken, so this path cannot touch the GPU at all.
+        // Outcome 1: the wall clock moves, the data watermark does not. No
+        // prompt is built and no permit is taken, so this path cannot touch
+        // the GPU at all.
         tracing::info!(mental_model = %id, "refresh: no new supporting facts, preserving content");
         write_refresh(
             state,
             bank_id,
             id,
-            None,
-            audit(json!({
-                "refresh_skipped": "no_new_facts",
-                "supporting_facts": 0,
-                "at": now,
-            })),
-            Some(now),
-            None,
+            RefreshWrite {
+                audit: audit(json!({
+                    "refresh_skipped": "no_new_facts",
+                    "supporting_facts": 0,
+                    "at": now,
+                })),
+                last_refreshed_at: Some(now),
+                ..Default::default()
+            },
         )
         .await?;
         return load(state, bank_id, id).await;
@@ -303,13 +331,19 @@ pub async fn refresh(state: &AppState, bank_id: &str, id: &str) -> Result<Mental
         )));
     };
 
-    // Background acquire, like consolidation and for the same reason: this
-    // mutates stored memory on a caller's explicit request, so queueing behind
-    // a busy GPU is better than losing the refresh. The interactive fail-fast
-    // path is `reflect`'s (Critic Revision R11).
+    // **Interactive acquire** (review round 1, MUST FIX 2). This was the
+    // background one, matching consolidation — but consolidation also runs off
+    // a 300 s tick with nobody waiting, while every refresh is a caller
+    // blocked on an HTTP response. The background path waits *untimed* for the
+    // size-1 permit and can hold it for `TOTAL_DEADLINE_CAP` (600 s), so N
+    // refreshes of N different models queued N × up-to-600 s of GPU ahead of
+    // the retain worker and of `/reflect`, which gives up at 15 s. Failing
+    // fast at `ACQUIRE_TIMEOUT` bounds the queue by construction; the caller
+    // can retry, and the single-flight claim above stops a retry storm from
+    // duplicating work on one model.
     let reply: RefreshReply = state
         .ollama
-        .chat_json_background_bounded(
+        .chat_json_bounded(
             &system,
             &user,
             &refresh_schema(),
@@ -317,7 +351,12 @@ pub async fn refresh(state: &AppState, bank_id: &str, id: &str) -> Result<Mental
             Some(REFRESH_NUM_CTX),
         )
         .await
-        .map_err(|e| ApiError::bad_gateway(format!("mental model refresh failed: {e}")))?;
+        .map_err(|e| match e {
+            crate::ollama::OllamaError::Busy => {
+                ApiError::unavailable("ollama is busy; retry shortly")
+            }
+            other => ApiError::bad_gateway(format!("mental model refresh failed: {other}")),
+        })?;
 
     let content = reply.content.trim().to_string();
     if content.is_empty() {
@@ -327,14 +366,14 @@ pub async fn refresh(state: &AppState, bank_id: &str, id: &str) -> Result<Mental
             state,
             bank_id,
             id,
-            None,
-            audit(json!({
-                "refresh_skipped": "empty_candidate",
-                "supporting_facts": used.len(),
-                "at": now,
-            })),
-            None,
-            None,
+            RefreshWrite {
+                audit: audit(json!({
+                    "refresh_skipped": "empty_candidate",
+                    "supporting_facts": used.len(),
+                    "at": now,
+                })),
+                ..Default::default()
+            },
         )
         .await?;
         return Err(ApiError::bad_gateway(format!(
@@ -349,19 +388,52 @@ pub async fn refresh(state: &AppState, bank_id: &str, id: &str) -> Result<Mental
         "refreshed": true,
         "supporting_facts": used.len(),
         "cited": used.iter().map(|f| f.uuid.clone()).collect::<Vec<_>>(),
+        "watermark": data_watermark,
         "at": now,
     }));
     write_refresh(
         state,
         bank_id,
         id,
-        Some(content),
-        audit,
-        Some(now),
-        embedding,
+        RefreshWrite {
+            content: Some(content),
+            audit,
+            last_refreshed_at: Some(now),
+            // From the data, never `now` — see the doc comment above.
+            refresh_watermark: data_watermark,
+            embedding,
+        },
     )
     .await?;
     load(state, bank_id, id).await
+}
+
+/// Holds one mental model's refresh slot for as long as it is alive.
+struct RefreshGuard {
+    set: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    key: String,
+}
+
+impl Drop for RefreshGuard {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
+/// Claims the slot, or `None` if a refresh is already in flight for this
+/// model. Released on drop — including on every `?` path in [`refresh`], on
+/// panic, and if the caller's future is dropped mid-flight.
+fn claim(state: &AppState, bank_id: &str, id: &str) -> Option<RefreshGuard> {
+    let set = state.refreshing.clone();
+    let key = format!("{bank_id}/{id}");
+    let claimed = set
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key.clone());
+    claimed.then(|| RefreshGuard { set, key })
 }
 
 /// `num_predict` for one refresh: the model's own document budget, clamped to
@@ -374,26 +446,35 @@ fn reply_cap(model: &MentalModel) -> u32 {
         .min(REFRESH_REPLY_MAX_TOKENS)
 }
 
-/// The memories a refresh summarises: one recall over `source_query`, then
-/// **only those newer than the last refresh** (`_get_supporting_facts`,
-/// `memory_engine.py:12680-12686`, which passes `since=last_refreshed_at`).
+/// The memories a refresh summarises — one recall over `source_query`, cut to
+/// those **written** since the last refresh — and the watermark to store if
+/// they are used (`_get_supporting_facts`, `memory_engine.py:12680-12686`).
 ///
-/// The `since` filter runs in Rust over the recalled rows rather than in SQL:
-/// `recall` is the whole hybrid pipeline and has no `since` parameter, and
-/// adding one to reach a handful of rows would put a new axis into the arm
-/// that every other caller pays for. Documented divergence.
+/// **The axis is `memory_nodes.created_at`, the row's write time** (review
+/// round 1, B9-1). It was `occurred_start ?? mentioned_at`, which is an
+/// *event* time the extractor reads out of the text
+/// (`extract/prompts.rs:110`, `extract/parse.rs:176-184`) — so a fact retained
+/// today about a 2024 event was already older than the watermark and was
+/// excluded from every future refresh, permanently and silently (a 200 with
+/// `no_new_facts`). Two different clocks were being compared.
 ///
-/// The effective time is `occurred_start ?? mentioned_at` — the **second** of
-/// this codebase's three COALESCE orders, the same one `search::temporal_candidates`
-/// uses (see `recall::scoring` for the list and the test that pins them apart).
-/// A memory with neither is not "new since" anything and is excluded.
+/// **The returned watermark comes from the data**, not from `now`
+/// (`memory_engine.py:11475-11485`: *"now() can sit ahead of the real data …
+/// such a straddling commit stays newer than the watermark and is caught next
+/// time, instead of being stamped 'already processed' and dropped forever"*).
+///
+/// The window is applied in a second query over the recalled ids rather than
+/// inside recall: `recall` is the whole hybrid pipeline and has no `since`
+/// axis, and `search::hydrate` does not select `created_at`, so carrying it on
+/// `RecallItem` would change the recall response for every caller to serve one.
+/// One extra indexed read on a path that is about to make an LLM call.
 async fn supporting_facts(
     state: &AppState,
     bank_id: &str,
     query: &str,
     model: &MentalModel,
     now_ms: i64,
-) -> Result<Vec<RecallItem>, ApiError> {
+) -> Result<(Vec<RecallItem>, Option<i64>), ApiError> {
     let max_tokens = usize::try_from(model.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS))
         .unwrap_or(DEFAULT_MAX_TOKENS as usize)
         .clamp(1, MAX_RECALL_TOKENS);
@@ -412,18 +493,31 @@ async fn supporting_facts(
         now_ms,
     };
     let out = crate::recall::recall(state, bank_id.to_string(), params).await?;
-    Ok(match model.last_refreshed_at {
-        None => out.results,
-        Some(since) => out
-            .results
-            .into_iter()
-            .filter(|r| {
-                r.occurred_start
-                    .or(r.mentioned_at)
-                    .is_some_and(|t| t > since)
-            })
-            .collect(),
+    if out.results.is_empty() {
+        return Ok((vec![], None));
+    }
+
+    // `-1` for a never-refreshed model: `created_at` is unix-ms and always
+    // positive, so everything recalled is in scope on the first pass.
+    let since = model.refresh_watermark.unwrap_or(-1);
+    let ids: Vec<i64> = out.results.iter().map(|r| r.id).collect();
+    let (db, bank) = (state.db.clone(), bank_id.to_string());
+    let in_scope = tokio::task::spawn_blocking(move || {
+        memgarden_store::nodes::created_after(&db, &bank, &ids, since)
     })
+    .await
+    .map_err(join_err)??;
+
+    let watermark = in_scope.iter().map(|(_, at)| *at).max();
+    let keep: std::collections::HashSet<i64> = in_scope.into_iter().map(|(id, _)| id).collect();
+    // Recall's ranking order is preserved — the shed order in
+    // `assemble_refresh` depends on it.
+    let facts: Vec<RecallItem> = out
+        .results
+        .into_iter()
+        .filter(|r| keep.contains(&r.id))
+        .collect();
+    Ok((facts, watermark))
 }
 
 /// The rules half of the prompt. Ours, not ported: legacy's reflect prompt set
@@ -531,18 +625,24 @@ fn audit(value: Value) -> String {
     serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string())
 }
 
-/// The one write path out of [`refresh`], covering all three outcomes: the
-/// audit is always written, `content`/`embedding` only when the model
-/// actually produced something, and `last_refreshed_at` only when the
-/// watermark is allowed to move.
+/// What one refresh outcome writes. Every field but `audit` is optional
+/// because the three outcomes differ precisely in which of them move.
+#[derive(Debug, Default)]
+struct RefreshWrite {
+    content: Option<String>,
+    /// Always written — a refresh that changed nothing still records why.
+    audit: String,
+    last_refreshed_at: Option<i64>,
+    refresh_watermark: Option<i64>,
+    embedding: Option<Vec<f32>>,
+}
+
+/// The one write path out of [`refresh`].
 async fn write_refresh(
     state: &AppState,
     bank_id: &str,
     id: &str,
-    content: Option<String>,
-    audit: String,
-    last_refreshed_at: Option<i64>,
-    embedding: Option<Vec<f32>>,
+    w: RefreshWrite,
 ) -> Result<(), ApiError> {
     let (db, bank, id_owned) = (state.db.clone(), bank_id.to_string(), id.to_string());
     tokio::task::spawn_blocking(move || {
@@ -551,12 +651,18 @@ async fn write_refresh(
             &bank,
             &id_owned,
             &Patch {
-                content: content.as_deref(),
-                reflect_response: Some(&audit),
-                last_refreshed_at,
+                // R4 again: outcome 3 changes `content`, so a refresh that
+                // could not embed drops the vector rather than leaving it
+                // describing the previous summary. The audit-only outcomes
+                // pass `content: None` and therefore clear nothing.
+                clear_embedding: w.content.is_some(),
+                content: w.content.as_deref(),
+                reflect_response: Some(&w.audit),
+                last_refreshed_at: w.last_refreshed_at,
+                refresh_watermark: w.refresh_watermark,
                 ..Default::default()
             },
-            embedding.as_deref(),
+            w.embedding.as_deref(),
         )
     })
     .await
@@ -580,6 +686,7 @@ mod tests {
             max_tokens: Some(DEFAULT_MAX_TOKENS),
             trigger: None,
             last_refreshed_at: None,
+            refresh_watermark: None,
             created_at: 0,
         }
     }

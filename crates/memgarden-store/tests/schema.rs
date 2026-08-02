@@ -1122,7 +1122,7 @@ fn fresh_database_has_the_0004_consolidation_schema() {
     let conn = db.read().unwrap();
 
     // The `LATEST_VERSION` pin lives with the newest migration's test — see
-    // `fresh_database_has_the_0005_embedding_model_column`.
+    // `fresh_database_has_the_0006_mental_model_schema`.
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();

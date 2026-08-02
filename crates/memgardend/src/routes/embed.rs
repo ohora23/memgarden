@@ -17,6 +17,13 @@ pub struct ReindexResponse {
 /// from `memory_nodes.embedding` (the CE-2 deferral). 200, not 202 (NIT 17):
 /// the rebuild commits per 500-row chunk and this handler awaits the whole
 /// thing before responding.
+///
+/// `// ponytail: rebuilds `vec_nodes` only. `vec_mental_models` (CE-10) is
+/// equally derived — `mental_models.embedding` is its source of truth — so it
+/// is equally repairable, but this route silently skips it and there is no
+/// other repair path. ~15 lines to add when something actually corrupts a
+/// vector index; until then the CE-10 write paths keep the two in one
+/// transaction, which is why nothing has needed repairing.`
 pub async fn reindex_bank(
     State(state): State<AppState>,
     Path(bank_id): Path<String>,

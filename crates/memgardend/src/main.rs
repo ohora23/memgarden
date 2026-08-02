@@ -57,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
         embedder: Arc::new(RwLock::new(None)),
         ollama: ollama_client.clone(),
         consolidating: Default::default(),
+        refreshing: Default::default(),
         retain_tx,
     };
 

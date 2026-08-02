@@ -10,6 +10,14 @@
 -- `o0j1k2l3m4n5_migrate_mental_models_data.py:83`).
 
 CREATE TABLE mental_models (
+  -- A **declared** rowid, not an implicit one (review round 1, L10).
+  -- `vec_mental_models` keys off this table's rowid, and SQLite documents
+  -- VACUUM as free to renumber *implicit* rowids — which would silently
+  -- repoint every vector at a different mental model. An `INTEGER PRIMARY
+  -- KEY` is the rowid, so it is stable across VACUUM, and `UNIQUE (bank_id,
+  -- id)` below enforces exactly what the composite PK enforced. Every other
+  -- vec0/fts5 mapping in this tree keys off a declared INTEGER PRIMARY KEY.
+  rowid              INTEGER NOT NULL PRIMARY KEY,
   id                 TEXT    NOT NULL,          -- "mm-<uuid4hex>" (memory_engine.py:11269)
   bank_id            TEXT    NOT NULL REFERENCES banks(bank_id) ON DELETE CASCADE,
   name               TEXT    NOT NULL,
@@ -31,9 +39,24 @@ CREATE TABLE mental_models (
   -- `memory_nodes.embedding_model`. NULL means "unknown producer" and is
   -- excluded from KNN, exactly as it is for nodes.
   embedding_model    TEXT,
-  last_refreshed_at  INTEGER,                   -- the cron watermark (maintenance.py:417-425)
+  last_refreshed_at  INTEGER,                   -- wall clock: when a refresh last RAN (maintenance.py:417-425)
+  -- The highest `memory_nodes.created_at` a refresh has actually summarised.
+  -- Deliberately a **second** column and deliberately not `now()`
+  -- (`memory_engine.py:11475-11485`): "persist the watermark as the newest
+  -- in-scope memory actually visible at the snapshot — NOT now(). now() can
+  -- sit ahead of the real data."
+  --
+  -- The two clocks cannot be one column because they answer different
+  -- questions. `last_refreshed_at` answers "has the schedule fired since we
+  -- last ran", so it must be wall clock. This answers "which facts have we
+  -- already folded in", so it must be a write time taken *from the rows*.
+  -- Conflating them drops facts forever: `occurred_start` is an event date the
+  -- extractor reads out of the text (`extract/prompts.rs:110`), so a fact
+  -- retained today about a 2024 event is already older than any wall-clock
+  -- watermark and would never be seen again.
+  refresh_watermark  INTEGER,
   created_at         INTEGER NOT NULL,
-  PRIMARY KEY (bank_id, id)                     -- legacy composite PK
+  UNIQUE (bank_id, id)                          -- legacy's composite PK, as a constraint
 ) STRICT;
 
 -- The list order (`memory_engine.py:11077`: ORDER BY last_refreshed_at DESC).

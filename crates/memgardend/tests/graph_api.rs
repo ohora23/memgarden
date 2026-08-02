@@ -83,6 +83,7 @@ fn build(
         embedder: Arc::new(std::sync::RwLock::new(None)),
         ollama,
         consolidating: Default::default(),
+        refreshing: Default::default(),
         retain_tx,
     };
     (routes::router(state.clone()), db, state, retain_rx)

@@ -49,6 +49,7 @@ fn test_app_parts(
         embedder: Arc::new(std::sync::RwLock::new(None)),
         ollama,
         consolidating: Default::default(),
+        refreshing: Default::default(),
         retain_tx,
     };
     (routes::router(state), db, retain_rx)

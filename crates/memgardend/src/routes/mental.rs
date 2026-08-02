@@ -25,6 +25,20 @@ const MAX_SOURCE_QUERY_BYTES: usize = 8 * 1024;
 const MAX_CONTENT_BYTES: usize = 64 * 1024;
 /// Page size ceiling for the list endpoint.
 const MAX_LIST_LIMIT: usize = 200;
+/// A 5-field cron expression. The longest sensible one — every field a
+/// comma list — is a few dozen bytes; 256 is roomy and still tiny.
+///
+/// This bound is load-bearing, not cosmetic (review round 1, MUST FIX 1).
+/// `cron::parse_field` expands each comma part into its values with no
+/// per-part cap, so an unbounded field is a Vec allocation and a sort
+/// proportional to the *input length × 60*, and `MentalModelResponse::new`
+/// re-parses the stored expression for **every row of every read** to compute
+/// `due`. Unbounded, a 2MB trigger measured 98.8 ms per parse — a 200-row page
+/// would block a worker for ~20 s. Bounding the input is the fix; caching the
+/// derived `due` is not, because the cost would still be paid once on write
+/// and once per row on any cache miss. At 256 bytes a parse is microseconds
+/// and the amplification is gone.
+const MAX_TRIGGER_BYTES: usize = 256;
 
 #[derive(Debug, Serialize)]
 pub struct MentalModelResponse {
@@ -46,6 +60,9 @@ pub struct MentalModelResponse {
     /// Parsed back from the JSON column; `null` if it was never written.
     pub reflect_response: Option<Value>,
     pub last_refreshed_at: Option<i64>,
+    /// The highest `memory_nodes.created_at` a refresh has folded in. Distinct
+    /// from `last_refreshed_at` on purpose — see 0006's comment.
+    pub refresh_watermark: Option<i64>,
     pub created_at: i64,
 }
 
@@ -71,6 +88,7 @@ impl MentalModelResponse {
                 .reflect_response
                 .and_then(|raw| serde_json::from_str(&raw).ok()),
             last_refreshed_at: m.last_refreshed_at,
+            refresh_watermark: m.refresh_watermark,
             created_at: m.created_at,
         }
     }
@@ -131,6 +149,17 @@ pub struct ReflectRequest {
     pub limit: Option<usize>,
 }
 
+/// `GET /v1/banks/{bank_id}/mental-models` — the recency page, or the KNN
+/// neighbourhood of `?q=`.
+///
+/// **`trigger` and `due` are advisory.** MemGarden validates a cron
+/// expression, stores it, and reports on every read whether it has fired since
+/// `last_refreshed_at` — but **nothing in the daemon acts on it**: CE-10 ships
+/// no background refresh task, so `due` stays `true` until a client calls
+/// `POST …/{mm_id}/refresh` itself. A scheduler is a caller's job for now (see
+/// `docs/parity-gaps.md`). Stated here rather than only in a Rust doc comment
+/// because an HTTP client sees `"due": true` and would otherwise reasonably
+/// assume something is going to act on it.
 pub async fn list_mental_models(
     State(state): State<AppState>,
     Path(bank_id): Path<String>,
@@ -348,13 +377,23 @@ fn validate(
             q.len()
         )));
     }
-    if let Some(c) = content
-        && c.len() > MAX_CONTENT_BYTES
-    {
-        return Err(invalid(format!(
-            "content too long: {} bytes (max {MAX_CONTENT_BYTES})",
-            c.len()
-        )));
+    if let Some(c) = content {
+        if c.len() > MAX_CONTENT_BYTES {
+            return Err(invalid(format!(
+                "content too long: {} bytes (max {MAX_CONTENT_BYTES})",
+                c.len()
+            )));
+        }
+        // Empty content is the exact value `refresh` refuses to write
+        // (`mental::refresh` outcome 2) and the reason
+        // `MENTAL_MODEL_PENDING_CONTENT` exists — a caller must not be able to
+        // put the document into that state through the front door either
+        // (review round 1, L5).
+        if c.trim().is_empty() {
+            return Err(invalid(
+                "content must not be empty (omit it to keep the current text)".to_string(),
+            ));
+        }
     }
     if let Some(t) = max_tokens
         && !(1..=i64::from(mental::REFRESH_REPLY_MAX_TOKENS)).contains(&t)
@@ -364,10 +403,18 @@ fn validate(
             mental::REFRESH_REPLY_MAX_TOKENS
         )));
     }
-    if let Some(t) = trigger
-        && let Err(e) = cron::Cron::parse(t)
-    {
-        return Err(invalid(format!("invalid trigger: {e}")));
+    if let Some(t) = trigger {
+        // Length first: `Cron::parse` is the expensive half, and the whole
+        // point of the bound is that it never runs on a huge input.
+        if t.len() > MAX_TRIGGER_BYTES {
+            return Err(invalid(format!(
+                "trigger too long: {} bytes (max {MAX_TRIGGER_BYTES})",
+                t.len()
+            )));
+        }
+        if let Err(e) = cron::Cron::parse(t) {
+            return Err(invalid(format!("invalid trigger: {e}")));
+        }
     }
     Ok(())
 }

@@ -110,6 +110,43 @@ pub fn get(db: &Db, id: i64) -> Result<Option<MemoryNode>> {
     raw.map(NodeRow::into_node).transpose()
 }
 
+/// Of `ids`, the ones in `bank_id` **written** after `since`, as
+/// `(id, created_at)`.
+///
+/// `created_at` is the row's write time, which is the only timestamp on a node
+/// that a watermark can safely be compared against. `occurred_start` and
+/// `mentioned_at` are *event* times the extractor reads out of the text
+/// (`extract/prompts.rs:110`), so a fact retained today about a 2024 event
+/// carries a 2024 timestamp — comparing that against a watermark drops it
+/// forever. CE-10's refresh window is the caller; see `mental::supporting_facts`.
+pub fn created_after(db: &Db, bank_id: &str, ids: &[i64], since: i64) -> Result<Vec<(i64, i64)>> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    // i64s formatted into a JSON array: no injection surface, one statement
+    // shape for any number of ids (the same trick `search::hydrate` uses).
+    let ids_json = format!(
+        "[{}]",
+        ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+    );
+    let conn = db.read()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, created_at FROM memory_nodes
+             WHERE bank_id = ?1
+               AND id IN (SELECT value FROM json_each(?2))
+               AND created_at > ?3",
+        )
+        .map_err(store_err)?;
+    let rows = stmt
+        .query_map(params![bank_id, ids_json, since], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })
+        .map_err(store_err)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(store_err)
+}
+
 pub fn count(db: &Db, bank_id: &str) -> Result<i64> {
     let conn = db.read()?;
     conn.query_row(
@@ -153,8 +190,16 @@ pub fn delete(db: &Db, id: i64) -> Result<()> {
 /// puts it straight back.
 ///
 /// Shared by CE-9's dedup merge (in-transaction, via
-/// [`update_text_tx`](self::update_text_tx)), CE-9b's `updates`, and CE-10's
-/// mental-model refresh.
+/// [`update_text_tx`](self::update_text_tx)) and CE-9b's `updates`.
+///
+/// **Not** CE-10's mental-model refresh, which the plan's R4 also names: a
+/// mental model is a row in `mental_models`, not in `memory_nodes`, so it
+/// cannot route through here. It honours the same invariant on its own table —
+/// `mental_models::update` with `clear_embedding` — but with the opposite
+/// resolution of the trade-off above: it *deletes* the stale
+/// `vec_mental_models` row rather than leaving it, because there is no backlog
+/// worker to re-embed a mental model, so "stale hit until the next tick" would
+/// be "stale hit forever".
 pub fn update_text(db: &Db, node_id: i64, text: &str) -> Result<()> {
     db.write(|tx| update_text_tx(tx, node_id, text, now_ms()).map(|_| ()))
 }

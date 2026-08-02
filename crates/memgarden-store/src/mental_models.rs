@@ -13,7 +13,7 @@ use memgarden_core::error::Result;
 use crate::{Db, store_err, vecblob};
 
 const SELECT_COLUMNS: &str = "id, bank_id, name, source_query, content, reflect_response, \
-     max_tokens, trigger, last_refreshed_at, created_at";
+     max_tokens, trigger, last_refreshed_at, refresh_watermark, created_at";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MentalModel {
@@ -27,7 +27,11 @@ pub struct MentalModel {
     pub max_tokens: Option<i64>,
     /// 5-field cron expression, UTC — see `memgardend::mental::cron`.
     pub trigger: Option<String>,
+    /// Wall clock: when a refresh last ran. The cron watermark.
     pub last_refreshed_at: Option<i64>,
+    /// Data clock: the highest `memory_nodes.created_at` already summarised.
+    /// See 0006's comment for why this is not `last_refreshed_at`.
+    pub refresh_watermark: Option<i64>,
     pub created_at: i64,
 }
 
@@ -42,7 +46,8 @@ fn from_row(r: &Row) -> rusqlite::Result<MentalModel> {
         max_tokens: r.get(6)?,
         trigger: r.get(7)?,
         last_refreshed_at: r.get(8)?,
-        created_at: r.get(9)?,
+        refresh_watermark: r.get(9)?,
+        created_at: r.get(10)?,
     })
 }
 
@@ -81,6 +86,11 @@ pub struct Patch<'a> {
     /// JSON text; the caller has already serialized it.
     pub reflect_response: Option<&'a str>,
     pub last_refreshed_at: Option<i64>,
+    pub refresh_watermark: Option<i64>,
+    /// Drop the stored vector instead of keeping it (Critic Revision R4;
+    /// review round 1, HIGH 2). Set by a caller that changed the embedded text
+    /// but could not produce a new vector — see [`update`].
+    pub clear_embedding: bool,
 }
 
 /// Inserts one mental model, optionally with its vector.
@@ -127,6 +137,16 @@ pub fn insert(db: &Db, new: &NewMentalModel, embedding: Option<&[f32]>) -> Resul
 /// row left over from the previous content is a KNN hit that returns text the
 /// query never matched.
 ///
+/// **`patch.clear_embedding` is the other half of that promise** (Critic
+/// Revision R4, which names B9's refresh; review round 1, HIGH 2). A caller
+/// that changed `name` or `content` but got `None` from the embedder — it
+/// loads asynchronously at startup, so any write in that window — must not
+/// leave the old vector describing the new text. There is no backlog worker
+/// for mental models to repair it later, so the row would stay desynced for
+/// the life of the database. Clearing drops it out of KNN exactly as an
+/// un-embedded create does: invisible to the dense arm, fully visible to
+/// `get`/`list`, and repaired by the next write that carries a vector.
+///
 /// Returns the number of rows changed (0 = no such model in this bank).
 pub fn update(
     db: &Db,
@@ -136,6 +156,7 @@ pub fn update(
     embedding: Option<&[f32]>,
 ) -> Result<usize> {
     let blob = embedding.map(vecblob::encode).transpose()?;
+    let clear = patch.clear_embedding && blob.is_none();
     db.write(|tx| {
         let changed = tx
             .execute(
@@ -147,8 +168,11 @@ pub fn update(
                    trigger           = COALESCE(?7, trigger),
                    reflect_response  = COALESCE(?8, reflect_response),
                    last_refreshed_at = COALESCE(?9, last_refreshed_at),
-                   embedding         = COALESCE(?10, embedding),
-                   embedding_model   = COALESCE(?11, embedding_model)
+                   refresh_watermark = COALESCE(?10, refresh_watermark),
+                   -- ?13 = clear: NULL the pair, ignoring ?11/?12 (which are
+                   -- NULL on that path anyway).
+                   embedding         = CASE WHEN ?13 THEN NULL ELSE COALESCE(?11, embedding) END,
+                   embedding_model   = CASE WHEN ?13 THEN NULL ELSE COALESCE(?12, embedding_model) END
                  WHERE bank_id = ?1 AND id = ?2",
                 params![
                     bank_id,
@@ -160,14 +184,14 @@ pub fn update(
                     patch.trigger,
                     patch.reflect_response,
                     patch.last_refreshed_at,
+                    patch.refresh_watermark,
                     blob,
                     blob.as_ref().map(|_| EMBEDDING_MODEL_ID),
+                    clear,
                 ],
             )
             .map_err(store_err)?;
-        if changed > 0
-            && let Some(blob) = &blob
-        {
+        if changed > 0 && (blob.is_some() || clear) {
             let rowid: i64 = tx
                 .query_row(
                     "SELECT rowid FROM mental_models WHERE bank_id = ?1 AND id = ?2",
@@ -175,7 +199,18 @@ pub fn update(
                     |r| r.get(0),
                 )
                 .map_err(store_err)?;
-            write_vec(tx, rowid, bank_id, blob)?;
+            match &blob {
+                Some(blob) => write_vec(tx, rowid, bank_id, blob)?,
+                // Clearing: the source column is already NULL above, so the
+                // derived index row must go too, in the same transaction.
+                None => {
+                    tx.execute(
+                        "DELETE FROM vec_mental_models WHERE rowid = ?1",
+                        params![rowid],
+                    )
+                    .map_err(store_err)?;
+                }
+            }
         }
         Ok(changed)
     })
@@ -212,7 +247,14 @@ pub fn get(db: &Db, bank_id: &str, id: &str) -> Result<Option<MentalModel>> {
 /// has a NULL watermark, which SQLite's DESC sorts *last* — so the freshly
 /// created ones sit at the bottom until their first refresh, exactly as
 /// Postgres orders them for legacy.
+///
+/// `limit`/`offset` are **saturated**, not cast (review round 1, SHOULD FIX
+/// 4). `usize as i64` wraps: `?offset=18446744073709551615` became `-1`, which
+/// SQLite reads as OFFSET 0 — so paging past the end silently served page 1
+/// again instead of an empty page. Saturating here rather than at the route
+/// fixes it once for every caller.
 pub fn list(db: &Db, bank_id: &str, limit: usize, offset: usize) -> Result<Vec<MentalModel>> {
+    let sql_i64 = |v: usize| i64::try_from(v).unwrap_or(i64::MAX);
     let conn = db.read()?;
     let mut stmt = conn
         .prepare(&format!(
@@ -223,7 +265,7 @@ pub fn list(db: &Db, bank_id: &str, limit: usize, offset: usize) -> Result<Vec<M
         ))
         .map_err(store_err)?;
     let rows = stmt
-        .query_map(params![bank_id, limit as i64, offset as i64], from_row)
+        .query_map(params![bank_id, sql_i64(limit), sql_i64(offset)], from_row)
         .map_err(store_err)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(store_err)
@@ -247,6 +289,15 @@ pub fn delete(db: &Db, bank_id: &str, id: &str) -> Result<usize> {
 /// guards `search::knn` applies to `vec_nodes`, for the same reasons: a cosine
 /// distance across two embedding spaces is a number with no meaning, and a
 /// cross-bank hit would leak another bank's text.
+///
+/// The producer filter is applied **after** vec0 picks its top `k`, so a bank
+/// holding foreign-producer vectors yields fewer than `k` rather than reaching
+/// deeper for `k` matching ones.
+/// `// ponytail: post-filter, so a bank that is mostly foreign vectors gets a
+/// thin result. Acceptable while the only producer is ours. Upgrade path if
+/// MG-1 lands a mixed bank: sqlite-vec's rowid-IN prefilter, or
+/// `embedding_model` as a second vec0 partition key — the same upgrade
+/// `search::knn` documents, and they should move together.`
 pub fn knn(
     db: &Db,
     bank_id: &str,
@@ -265,9 +316,17 @@ pub fn knn(
         )
         .map_err(store_err)?;
     let rows = stmt
-        .query_map(params![bank_id, blob, k as i64, EMBEDDING_MODEL_ID], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
-        })
+        // Saturating, for the same reason `list` saturates: `usize as i64`
+        // wraps, and a negative `k` is not a thing vec0 has an opinion about.
+        .query_map(
+            params![
+                bank_id,
+                blob,
+                i64::try_from(k).unwrap_or(i64::MAX),
+                EMBEDDING_MODEL_ID
+            ],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
+        )
         .map_err(store_err)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(store_err)
@@ -439,6 +498,104 @@ mod tests {
         );
     }
 
+    /// Critic Revision R4 / review round 1 HIGH 2: a text update that cannot
+    /// produce a new vector must **drop** the old one, not keep it. Keeping it
+    /// leaves KNN answering for text the model no longer contains, and mental
+    /// models have no backlog worker to repair the desync later.
+    #[test]
+    fn a_text_update_without_a_new_vector_invalidates_the_old_one() {
+        let db = db_with_banks();
+        insert(&db, &new("mm-a", "b1", "a", "original"), Some(&unit(0))).unwrap();
+        assert_eq!(knn(&db, "b1", &unit(0), 10).unwrap().len(), 1);
+
+        // The embedder was unavailable: content changed, no vector supplied.
+        update(
+            &db,
+            "b1",
+            "mm-a",
+            &Patch {
+                content: Some("completely different text"),
+                clear_embedding: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            knn(&db, "b1", &unit(0), 10).unwrap().is_empty(),
+            "the stale vector must be gone from the dense index"
+        );
+        let row = get(&db, "b1", "mm-a").unwrap().unwrap();
+        assert_eq!(row.content, "completely different text");
+        assert_eq!(list(&db, "b1", 10, 0).unwrap().len(), 1, "still readable");
+
+        // And the next write that carries a vector repairs it.
+        update(&db, "b1", "mm-a", &Patch::default(), Some(&unit(3))).unwrap();
+        assert_eq!(knn(&db, "b1", &unit(3), 10).unwrap().len(), 1);
+    }
+
+    /// A metadata-only patch must NOT clear the vector — `clear_embedding` is
+    /// the caller's statement that the embedded text changed.
+    #[test]
+    fn a_metadata_patch_leaves_the_vector_alone() {
+        let db = db_with_banks();
+        insert(&db, &new("mm-a", "b1", "a", "text"), Some(&unit(0))).unwrap();
+        update(
+            &db,
+            "b1",
+            "mm-a",
+            &Patch {
+                trigger: Some("0 3 * * *"),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(knn(&db, "b1", &unit(0), 10).unwrap().len(), 1);
+    }
+
+    /// The AX-1 promise on this PR's **new** vector surface, mirroring
+    /// `dense_compares_within_one_space_only` in tests/schema.rs: only vectors
+    /// from the active producer are comparable, and everything stays readable.
+    /// Deleting the `embedding_model` predicate in `knn` must fail a test.
+    #[test]
+    fn knn_returns_only_active_producer_vectors() {
+        let db = db_with_banks();
+        for id in ["mm-ours", "mm-foreign", "mm-untagged"] {
+            insert(&db, &new(id, "b1", id, "content"), Some(&unit(0))).unwrap();
+        }
+        // Retag two of them behind the store's back, the way an MG-1 import
+        // (or an untagged legacy row) would arrive.
+        db.write(|tx| {
+            tx.execute(
+                "UPDATE mental_models SET embedding_model = 'sentence-transformers:BAAI/bge-small-en-v1.5'
+                 WHERE id = 'mm-foreign'",
+                [],
+            )
+            .map_err(store_err)?;
+            tx.execute(
+                "UPDATE mental_models SET embedding_model = NULL WHERE id = 'mm-untagged'",
+                [],
+            )
+            .map_err(store_err)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let hits = knn(&db, "b1", &unit(0), 10).unwrap();
+        assert_eq!(
+            hits.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["mm-ours"],
+            "a foreign vector and an untagged one are both outside our space"
+        );
+        assert_eq!(
+            list(&db, "b1", 10, 0).unwrap().len(),
+            3,
+            "and all three are still fully readable — the exclusion is dense-only"
+        );
+    }
+
     /// A model stored while the embedder was still loading has no vector and
     /// is simply not a KNN candidate — every other read still returns it.
     #[test]
@@ -475,6 +632,12 @@ mod tests {
             .collect();
         assert_eq!(ids, vec!["mm-2", "mm-1", "mm-3"]);
         assert_eq!(list(&db, "b1", 1, 1).unwrap()[0].id, "mm-1");
+
+        // Paging past the end is an empty page, including at the value that
+        // used to wrap to a negative OFFSET and silently re-serve page 1
+        // (review round 1, SHOULD FIX 4).
+        assert!(list(&db, "b1", 10, 99).unwrap().is_empty());
+        assert!(list(&db, "b1", 10, usize::MAX).unwrap().is_empty());
     }
 
     /// Deleting the bank cascades into `mental_models`, and the AFTER DELETE
