@@ -73,7 +73,11 @@ fn migrate_upgrades_a_v1_database_in_place() {
     assert_eq!(jobs, 0);
     // ...and the v1 row is still there.
     let banks: i64 = conn
-        .query_row("SELECT count(*) FROM banks WHERE bank_id = 'legacy'", [], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM banks WHERE bank_id = 'legacy'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(banks, 1);
 }
@@ -495,7 +499,10 @@ fn fts_multi_token_queries_hit() {
                    with vector similarity again";
     assert!(english.split_whitespace().count() >= 12);
     let hits = search::fts_candidates(&db, "b1", &search::fts_query_string(english), 10).unwrap();
-    assert!(hits.contains(&en), "multi-token English query found nothing");
+    assert!(
+        hits.contains(&en),
+        "multi-token English query found nothing"
+    );
 
     // 5 Korean tokens.
     let korean = "메모리 회수 파이프라인 하이브리드 검색";
@@ -523,7 +530,10 @@ fn fts_candidates_filtered_by_fact_type() {
 
     let only_world =
         search::fts_candidates_filtered(&db, "b1", &q, &[FactType::World], 10).unwrap();
-    assert_eq!(only_world.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![w]);
+    assert_eq!(
+        only_world.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![w]
+    );
 
     let two = search::fts_candidates_filtered(
         &db,
@@ -536,8 +546,7 @@ fn fts_candidates_filtered_by_fact_type() {
     assert_eq!(two.len(), 2);
     assert!(two.iter().any(|(id, _)| *id == o));
 
-    let none =
-        search::fts_candidates_filtered(&db, "b1", &q, &[FactType::Experience], 10).unwrap();
+    let none = search::fts_candidates_filtered(&db, "b1", &q, &[FactType::Experience], 10).unwrap();
     assert!(none.is_empty());
 }
 
@@ -572,7 +581,10 @@ fn hydrate_returns_rows_and_tags() {
     assert!(!tagged.uuid.is_empty());
 
     let untagged = rows.iter().find(|r| r.id == bare).unwrap();
-    assert!(untagged.tags.is_empty(), "no tags must be an empty vec, not [\"\"]");
+    assert!(
+        untagged.tags.is_empty(),
+        "no tags must be an empty vec, not [\"\"]"
+    );
 }
 
 #[test]
@@ -666,7 +678,9 @@ fn migrate_upgrades_a_v2_database_in_place() {
 
     // 0003's table exists, the new entity columns exist...
     let cooc: i64 = conn
-        .query_row("SELECT count(*) FROM entity_cooccurrences", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM entity_cooccurrences", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(cooc, 0);
     conn.query_row(
@@ -683,7 +697,10 @@ fn migrate_upgrades_a_v2_database_in_place() {
         })
         .unwrap();
     assert_eq!(count, 1);
-    assert_eq!(weight, 1.0, "an out-of-range weight is clamped, not dropped");
+    assert_eq!(
+        weight, 1.0,
+        "an out-of-range weight is clamped, not dropped"
+    );
 }
 
 #[test]
@@ -829,9 +846,17 @@ fn write_entities_upserts_counts_attaches_and_pairs() {
         )
         .unwrap();
     assert_eq!(count, 4);
-    assert_eq!((first, last), (1_000, 7_000), "first_seen sticks, last_seen advances");
+    assert_eq!(
+        (first, last),
+        (1_000, 7_000),
+        "first_seen sticks, last_seen advances"
+    );
     let cooc: i64 = conn
-        .query_row("SELECT cooccurrence_count FROM entity_cooccurrences", [], |r| r.get(0))
+        .query_row(
+            "SELECT cooccurrence_count FROM entity_cooccurrences",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(cooc, 2, "ON CONFLICT adds the batch count");
 }
@@ -858,7 +883,13 @@ fn korean_entity_names_round_trip() {
     got.sort_unstable();
     assert_eq!(got, vec!["메모리 시스템", "제트슨 자비에"]);
     // Each is recorded as the other's co-occurrent, both directions.
-    let by_name = |n: &str| ctx.candidates.iter().find(|c| c.canonical_name == n).unwrap().id;
+    let by_name = |n: &str| {
+        ctx.candidates
+            .iter()
+            .find(|c| c.canonical_name == n)
+            .unwrap()
+            .id
+    };
     assert!(ctx.cooccurring[&by_name("메모리 시스템")].contains("제트슨 자비에"));
     assert!(ctx.cooccurring[&by_name("제트슨 자비에")].contains("메모리 시스템"));
 }
@@ -872,10 +903,25 @@ fn expand_walks_one_hop_in_both_directions_and_excludes_seeds() {
     graph::insert_links(
         &db,
         &[
-            NewLink { from_node_id: seed, to_node_id: out, link_type: "semantic", weight: 0.9 },
-            NewLink { from_node_id: incoming, to_node_id: seed, link_type: "caused_by", weight: 1.0 },
+            NewLink {
+                from_node_id: seed,
+                to_node_id: out,
+                link_type: "semantic",
+                weight: 0.9,
+            },
+            NewLink {
+                from_node_id: incoming,
+                to_node_id: seed,
+                link_type: "caused_by",
+                weight: 1.0,
+            },
             // Two hops away: reachable from `out`, not from `seed`.
-            NewLink { from_node_id: out, to_node_id: far, link_type: "semantic", weight: 0.8 },
+            NewLink {
+                from_node_id: out,
+                to_node_id: far,
+                link_type: "semantic",
+                weight: 0.8,
+            },
         ],
         0,
     )
@@ -895,8 +941,15 @@ fn expand_walks_one_hop_in_both_directions_and_excludes_seeds() {
     let (links, shared) = graph::expand(&db, "b1", &[seed], 100).unwrap();
     let mut reached: Vec<i64> = links.iter().map(|n| n.node_id).collect();
     reached.sort_unstable();
-    assert_eq!(reached, vec![out, incoming], "both directions, one hop, no seed");
-    assert!(!reached.contains(&far), "two hops away must not appear via links");
+    assert_eq!(
+        reached,
+        vec![out, incoming],
+        "both directions, one hop, no seed"
+    );
+    assert!(
+        !reached.contains(&far),
+        "two hops away must not appear via links"
+    );
     assert_eq!(shared, vec![(far, 1)], "entity co-membership reaches `far`");
 
     // Another bank's node must never be expanded into.
@@ -1026,7 +1079,9 @@ fn resolution_context_bounds_cooccurrence_partners() {
     let stored: i64 = db
         .read()
         .unwrap()
-        .query_row("SELECT count(*) FROM entity_cooccurrences", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM entity_cooccurrences", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     let n = cap + 21;
     assert_eq!(stored as usize, n * (n - 1) / 2);

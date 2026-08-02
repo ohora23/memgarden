@@ -328,7 +328,13 @@ pub fn nodes_in_window(
     let rows = stmt
         .query_map(
             params![bank_id, from_ms, to_ms, MAX_TEMPORAL_WINDOW_NODES as i64],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            },
         )
         .map_err(store_err)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -463,12 +469,7 @@ pub fn expand(
         .map_err(store_err)?;
     let shared = stmt
         .query_map(
-            params![
-                seeds_json,
-                bank_id,
-                edge_limit as i64,
-                MAX_ENTITY_FANOUT
-            ],
+            params![seeds_json, bank_id, edge_limit as i64, MAX_ENTITY_FANOUT],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
         )
         .map_err(store_err)?

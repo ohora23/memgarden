@@ -87,7 +87,11 @@ struct Harness {
 fn build(
     ollama_url: &str,
     tweak: impl FnOnce(&mut Config),
-) -> (Harness, tokio::sync::mpsc::Receiver<retain::RetainTask>, AppState) {
+) -> (
+    Harness,
+    tokio::sync::mpsc::Receiver<retain::RetainTask>,
+    AppState,
+) {
     let db = Arc::new(Db::open_memory().unwrap());
     let mut cfg = Config::defaults().unwrap();
     cfg.bind = "127.0.0.1:0".to_string();
@@ -208,7 +212,10 @@ async fn empty_messages_is_400() {
     memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
     let response = harness
         .app
-        .oneshot(post("/v1/banks/b1/retain", json!({ "messages": [], "is_initial": true })))
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": [], "is_initial": true }),
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -322,11 +329,21 @@ async fn full_queue_is_429_and_leaves_no_rows_behind() {
     memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
 
     let body = json!({ "messages": transcript(4), "session_id": "s1", "is_initial": true });
-    let first = harness.app.clone().oneshot(post("/v1/banks/b1/retain", body)).await.unwrap();
+    let first = harness
+        .app
+        .clone()
+        .oneshot(post("/v1/banks/b1/retain", body))
+        .await
+        .unwrap();
     assert_eq!(first.status(), StatusCode::ACCEPTED);
 
     let body = json!({ "messages": transcript(4), "session_id": "s2", "is_initial": true });
-    let second = harness.app.clone().oneshot(post("/v1/banks/b1/retain", body)).await.unwrap();
+    let second = harness
+        .app
+        .clone()
+        .oneshot(post("/v1/banks/b1/retain", body))
+        .await
+        .unwrap();
     assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body_json(second).await["error"]["code"], "queue_full");
 
@@ -353,7 +370,8 @@ async fn identical_content_is_a_duplicate_only_after_a_clean_ingest() {
     let (url, _calls) = spawn_stub_ollama(vec![]).await;
     let harness = with_worker(&url, |_| {}).await;
     memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
-    let body = json!({ "messages": transcript(4), "session_id": "same-session", "is_initial": true });
+    let body =
+        json!({ "messages": transcript(4), "session_id": "same-session", "is_initial": true });
 
     let first = harness
         .app
@@ -411,7 +429,10 @@ async fn a_partially_failed_job_is_retryable_not_a_permanent_duplicate() {
     .await;
     let job = await_job(&harness.db, first["job_id"].as_str().unwrap()).await;
     assert_eq!(job.status, "done");
-    assert_eq!(job.chunks_failed, 1, "the fixture must actually fail a chunk");
+    assert_eq!(
+        job.chunks_failed, 1,
+        "the fixture must actually fail a chunk"
+    );
 
     let second = harness
         .app
@@ -421,7 +442,10 @@ async fn a_partially_failed_job_is_retryable_not_a_permanent_duplicate() {
         .unwrap();
     assert_eq!(second.status(), StatusCode::ACCEPTED);
     let second = body_json(second).await;
-    assert_eq!(second["status"], "accepted", "a partial ingest must be retryable");
+    assert_eq!(
+        second["status"], "accepted",
+        "a partial ingest must be retryable"
+    );
     assert_eq!(second["document_id"], first["document_id"]);
     assert_ne!(second["job_id"], first["job_id"]);
 
@@ -468,15 +492,24 @@ async fn a_duplicate_records_no_second_ledger_row() {
     )
     .await;
     assert_eq!(
-        memgarden_store::metrics_store::list_ledger(&harness.db, 10).unwrap().len(),
+        memgarden_store::metrics_store::list_ledger(&harness.db, 10)
+            .unwrap()
+            .len(),
         1
     );
     await_job(&harness.db, first["job_id"].as_str().unwrap()).await;
 
-    let second = harness.app.clone().oneshot(post("/v1/banks/b1/retain", body)).await.unwrap();
+    let second = harness
+        .app
+        .clone()
+        .oneshot(post("/v1/banks/b1/retain", body))
+        .await
+        .unwrap();
     assert_eq!(body_json(second).await["status"], "duplicate");
     assert_eq!(
-        memgarden_store::metrics_store::list_ledger(&harness.db, 10).unwrap().len(),
+        memgarden_store::metrics_store::list_ledger(&harness.db, 10)
+            .unwrap()
+            .len(),
         1,
         "a duplicate must not write a second retain_cap_saving row"
     );
@@ -495,12 +528,18 @@ async fn coding_profile_supplies_a_default_bank_mission() {
         .await
         .unwrap();
     assert_eq!(created.status(), StatusCode::CREATED);
-    assert_eq!(body_json(created).await["mission"], "You are a coding assistant.");
+    assert_eq!(
+        body_json(created).await["mission"],
+        "You are a coding assistant."
+    );
 
     // An explicit mission still wins.
     let created = harness
         .app
-        .oneshot(post("/v1/banks", json!({ "bank_id": "explicit", "mission": "mine" })))
+        .oneshot(post(
+            "/v1/banks",
+            json!({ "bank_id": "explicit", "mission": "mine" }),
+        ))
         .await
         .unwrap();
     assert_eq!(body_json(created).await["mission"], "mine");
@@ -627,7 +666,10 @@ async fn worker_writes_nodes_with_tags_and_ordering_offsets() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let job_id = body_json(response).await["job_id"].as_str().unwrap().to_string();
+    let job_id = body_json(response).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let job = await_job(&harness.db, &job_id).await;
     assert_eq!(job.status, "done");
@@ -644,7 +686,9 @@ async fn worker_writes_nodes_with_tags_and_ordering_offsets() {
              FROM memory_nodes WHERE bank_id = 'b1' ORDER BY id",
         )
         .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
@@ -674,7 +718,11 @@ async fn worker_writes_nodes_with_tags_and_ordering_offsets() {
     assert!(tags.contains(&"file:src/retain.rs".to_string()));
     // The request also carried "", "  " and a control-character tag; all
     // three are dropped before anything is written (security review).
-    assert_eq!(tags.len(), 3, "junk tags must not reach node_tags: {tags:?}");
+    assert_eq!(
+        tags.len(),
+        3,
+        "junk tags must not reach node_tags: {tags:?}"
+    );
 
     // Embeddings are left NULL for B1's backlog worker (documented divergence).
     let pending = memgarden_store::nodes::pending_embeddings(&harness.db, 100).unwrap();
@@ -718,14 +766,20 @@ async fn one_failed_chunk_does_not_fail_the_job() {
         ))
         .await
         .unwrap();
-    let job_id = body_json(response).await["job_id"].as_str().unwrap().to_string();
+    let job_id = body_json(response).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let job = await_job(&harness.db, &job_id).await;
     assert_eq!(job.status, "done", "a partial failure is not a failed job");
     assert_eq!(job.chunks_failed, 1);
     assert_eq!(job.chunks_done, job.chunks_total - 1);
     assert_eq!(job.facts_written, (job.chunks_total - 1) * 2);
-    assert!(job.error.is_some(), "the failure is recorded, not swallowed");
+    assert!(
+        job.error.is_some(),
+        "the failure is recorded, not swallowed"
+    );
     assert!(calls.load(Ordering::SeqCst) >= 3);
 }
 
@@ -743,7 +797,10 @@ async fn every_chunk_failing_fails_the_job() {
         ))
         .await
         .unwrap();
-    let job_id = body_json(response).await["job_id"].as_str().unwrap().to_string();
+    let job_id = body_json(response).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let job = await_job(&harness.db, &job_id).await;
     assert_eq!(job.status, "failed");
@@ -772,7 +829,10 @@ async fn wall_timeout_fails_the_job_and_keeps_partial_progress() {
         ))
         .await
         .unwrap();
-    let job_id = body_json(response).await["job_id"].as_str().unwrap().to_string();
+    let job_id = body_json(response).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let job = await_job(&harness.db, &job_id).await;
 
     // Either it finished inside the second (a fast stub, many small chunks)
@@ -867,7 +927,10 @@ async fn degenerate_chunks_never_reach_ollama() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let job_id = body_json(response).await["job_id"].as_str().unwrap().to_string();
+    let job_id = body_json(response).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert_eq!(await_job(&harness.db, &job_id).await.status, "done");
 }
 

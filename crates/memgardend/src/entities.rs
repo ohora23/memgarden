@@ -408,13 +408,10 @@ mod tests {
         // Push it over with the co-occurrence and temporal terms:
         // 0.4545 + 0.3 = 0.7545 > 0.6.
         let mut c = ctx(candidate("ollama"));
-        c.cooccurring.insert(1, ["qwen3"].iter().map(|s| s.to_string()).collect());
+        c.cooccurring
+            .insert(1, ["qwen3"].iter().map(|s| s.to_string()).collect());
         assert_eq!(
-            resolve_fact(
-                &["olama".to_string(), "qwen3".to_string()],
-                None,
-                &c
-            )[0],
+            resolve_fact(&["olama".to_string(), "qwen3".to_string()], None, &c)[0],
             "ollama",
             "above threshold must adopt the candidate's canonical name"
         );

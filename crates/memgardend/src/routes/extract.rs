@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use memgarden_store::banks;
 
 use crate::error::{ApiError, join_err};
-use crate::json::ApiJson;
 use crate::extract::{self, parse::ParsedFact};
+use crate::json::ApiJson;
 use crate::ollama::OllamaError;
 use crate::state::AppState;
 
@@ -51,7 +51,11 @@ pub async fn dry_run_extract(
         ))
         .into());
     }
-    if body.mission.as_deref().is_some_and(|m| m.len() > MAX_MISSION_BYTES) {
+    if body
+        .mission
+        .as_deref()
+        .is_some_and(|m| m.len() > MAX_MISSION_BYTES)
+    {
         return Err(memgarden_core::Error::Invalid(format!(
             "mission too long (max {MAX_MISSION_BYTES} bytes)"
         ))
@@ -83,9 +87,7 @@ pub async fn dry_run_extract(
             OllamaError::Busy | OllamaError::Deadline(_) | OllamaError::Transport(_) => {
                 ApiError::unavailable(message)
             }
-            OllamaError::Http { status, .. } if *status >= 500 => {
-                ApiError::unavailable(message)
-            }
+            OllamaError::Http { status, .. } if *status >= 500 => ApiError::unavailable(message),
             // Permanent upstream refusal (e.g. 404 model-not-found; not
             // retried, see ollama.rs) or garbage across all retries — 502:
             // the upstream misbehaved, retrying blindly won't fix it.

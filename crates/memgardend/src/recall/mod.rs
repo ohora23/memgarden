@@ -166,11 +166,7 @@ impl RecallOutcome {
 /// the tag filter. A free function rather than a closure because `by_id`
 /// grows once the graph arm hydrates its new nodes, and a closure would hold
 /// it borrowed across that.
-fn keep(
-    by_id: &std::collections::HashMap<i64, CandidateRow>,
-    p: &RecallParams,
-    id: i64,
-) -> bool {
+fn keep(by_id: &std::collections::HashMap<i64, CandidateRow>, p: &RecallParams, id: i64) -> bool {
     by_id.get(&id).is_some_and(|row| {
         p.fact_types.contains(&row.fact_type) && p.tags_match.matches(&row.tags, &p.tags)
     })

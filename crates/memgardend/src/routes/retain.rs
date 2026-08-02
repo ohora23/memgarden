@@ -109,7 +109,9 @@ async fn retain_inner(
     body: RetainRequest,
 ) -> Result<Response, ApiError> {
     if body.messages.is_empty() {
-        return Err(memgarden_core::Error::Invalid("messages must not be empty".to_string()).into());
+        return Err(
+            memgarden_core::Error::Invalid("messages must not be empty".to_string()).into(),
+        );
     }
 
     // Reserve the queue slot BEFORE doing any DB work: a full queue must be
@@ -303,12 +305,7 @@ fn prepare(
             "session_id": body.session_id,
         })
         .to_string();
-        metrics_store::insert_ledger(
-            &state.db,
-            "retain_cap_saving",
-            Some(bank_id),
-            Some(&detail),
-        )?;
+        metrics_store::insert_ledger(&state.db, "retain_cap_saving", Some(bank_id), Some(&detail))?;
         METRICS.retain_cap_savings.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -386,9 +383,7 @@ fn resolve_mission(
                 .map(str::to_string)
         })
         .filter(|m| !m.is_empty());
-    from_bank.or_else(|| {
-        Some(state.cfg.profile.retain_mission.clone()).filter(|m| !m.is_empty())
-    })
+    from_bank.or_else(|| Some(state.cfg.profile.retain_mission.clone()).filter(|m| !m.is_empty()))
 }
 
 /// Document metadata: the caller's extras plus the fields retain owns.
@@ -424,7 +419,9 @@ fn sanitize_tags(raw: &[String]) -> Vec<String> {
     raw.iter()
         .map(|t| t.trim())
         .filter(|t| {
-            !t.is_empty() && t.chars().count() <= MAX_TAG_CHARS && !t.chars().any(|c| c.is_control())
+            !t.is_empty()
+                && t.chars().count() <= MAX_TAG_CHARS
+                && !t.chars().any(|c| c.is_control())
         })
         .take(MAX_TAGS)
         .map(str::to_string)

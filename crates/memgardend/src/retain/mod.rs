@@ -31,9 +31,9 @@ use tiktoken_rs::CoreBPE;
 use memgarden_core::config::RetainConfig;
 use memgarden_core::metrics::METRICS;
 use memgarden_core::types::FactType;
+use memgarden_store::graph as store_graph;
 use memgarden_store::models::NewNode;
 use memgarden_store::nodes::NewNodeWithTags;
-use memgarden_store::graph as store_graph;
 use memgarden_store::retain_jobs::{JobProgress, JobStatus};
 use memgarden_store::{documents, nodes, retain_jobs};
 
@@ -130,7 +130,8 @@ pub fn plan_ingest(
         .map(|(t, _)| token_count(&t))
         .unwrap_or(0);
 
-    let capped_messages = transcript::apply_backfill_cap(messages, is_initial, cfg.max_initial_messages);
+    let capped_messages =
+        transcript::apply_backfill_cap(messages, is_initial, cfg.max_initial_messages);
     let (transcript_text, message_count) = transcript::normalize(capped_messages, &capped_opts)?;
     let capped_tokens = token_count(&transcript_text);
 
@@ -240,22 +241,22 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
     // limit; it does not belong on a runtime worker thread.
     let chunk_size = cfg.chunk_size;
     let transcript = task.transcript.clone();
-    let chunks = match tokio::task::spawn_blocking(move || chunk::chunk_text(&transcript, chunk_size))
-        .await
-    {
-        Ok(chunks) => chunks,
-        Err(e) => {
-            tracing::error!(job_id = %task.job_id, error = %e, "retain chunking task panicked");
-            let progress = JobProgress {
-                status: JobStatus::Failed,
-                error: Some(format!("chunking task panicked: {e}")),
-                ..Default::default()
-            };
-            flush(state, &task.job_id, &progress).await;
-            METRICS.retain_jobs_failed.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-    };
+    let chunks =
+        match tokio::task::spawn_blocking(move || chunk::chunk_text(&transcript, chunk_size)).await
+        {
+            Ok(chunks) => chunks,
+            Err(e) => {
+                tracing::error!(job_id = %task.job_id, error = %e, "retain chunking task panicked");
+                let progress = JobProgress {
+                    status: JobStatus::Failed,
+                    error: Some(format!("chunking task panicked: {e}")),
+                    ..Default::default()
+                };
+                flush(state, &task.job_id, &progress).await;
+                METRICS.retain_jobs_failed.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        };
 
     let mut progress = JobProgress {
         status: JobStatus::Running,
@@ -440,7 +441,9 @@ async fn flush(state: &AppState, job_id: &str, progress: &JobProgress) {
             .await;
     match result {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::warn!(job_id = %job_id, error = %e, "retain job progress update failed"),
+        Ok(Err(e)) => {
+            tracing::warn!(job_id = %job_id, error = %e, "retain job progress update failed")
+        }
         Err(e) => tracing::warn!(job_id = %job_id, error = %e, "retain job progress task panicked"),
     }
 }
@@ -579,14 +582,15 @@ async fn write_graph(
             const WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
             let lo = timed.iter().map(|n| n.event_date).min().unwrap_or(now) - WINDOW_MS;
             let hi = timed.iter().map(|n| n.event_date).max().unwrap_or(now) + WINDOW_MS;
-            let window: Vec<links::TimedNode> = store_graph::nodes_in_window(&db, &bank_id, lo, hi)?
-                .into_iter()
-                .map(|(id, fact_type, event_date)| links::TimedNode {
-                    id,
-                    fact_type,
-                    event_date,
-                })
-                .collect();
+            let window: Vec<links::TimedNode> =
+                store_graph::nodes_in_window(&db, &bank_id, lo, hi)?
+                    .into_iter()
+                    .map(|(id, fact_type, event_date)| links::TimedNode {
+                        id,
+                        fact_type,
+                        event_date,
+                    })
+                    .collect();
             batch.extend(links::temporal_links(&timed, &window));
         }
         store_graph::insert_links(&db, &batch, now)?;
@@ -753,7 +757,10 @@ mod tests {
         let initial = plan_ingest(&messages, "", true, &cfg).unwrap();
         assert_eq!(initial.message_count, 5);
         assert!(initial.transcript.contains("message number 49"));
-        assert!(!initial.transcript.contains("message number 44"), "keeps the LAST 5");
+        assert!(
+            !initial.transcript.contains("message number 44"),
+            "keeps the LAST 5"
+        );
 
         let delta = plan_ingest(&messages, "", false, &cfg).unwrap();
         assert_eq!(delta.message_count, 50, "delta retains are never capped");
@@ -845,7 +852,12 @@ mod tests {
         ParsedFact {
             text: text.to_string(),
             fact_type: FactType::World,
-            fact_kind: if start.is_some() { "event" } else { "conversation" }.to_string(),
+            fact_kind: if start.is_some() {
+                "event"
+            } else {
+                "conversation"
+            }
+            .to_string(),
             occurred_start: start.map(str::to_string),
             occurred_end: start.map(str::to_string),
             where_field: None,

@@ -52,8 +52,12 @@ fn recall_path_metrics_overhead() {
     for i in 0..ITERS {
         METRICS.http_requests.fetch_add(1, Ordering::Relaxed);
         METRICS.recall_requests.fetch_add(1, Ordering::Relaxed);
-        METRICS.recall_injected_tokens.fetch_add(120, Ordering::Relaxed);
-        METRICS.recall_injected_memories.fetch_add(6, Ordering::Relaxed);
+        METRICS
+            .recall_injected_tokens
+            .fetch_add(120, Ordering::Relaxed);
+        METRICS
+            .recall_injected_memories
+            .fetch_add(6, Ordering::Relaxed);
         METRICS.recall_latency.record_us(i % 10_000);
         METRICS.http_latency.record_us(i % 10_000);
     }

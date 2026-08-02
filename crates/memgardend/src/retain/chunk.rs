@@ -260,7 +260,9 @@ mod tests {
     #[test]
     fn plain_text_splits_on_paragraphs_and_is_idempotent() {
         let text = (0..40)
-            .map(|i| format!("Paragraph number {i}. It has a couple of sentences. Here is another one."))
+            .map(|i| {
+                format!("Paragraph number {i}. It has a couple of sentences. Here is another one.")
+            })
             .collect::<Vec<_>>()
             .join("\n\n");
         let chunks = chunk_text(&text, 300);

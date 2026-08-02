@@ -135,7 +135,10 @@ mod tests {
         // same content must NOT be dismissed as a duplicate (review HIGH 1).
         let retry = upsert(&db, "b1", "sess-1", Some("t"), META, "aaa").unwrap();
         assert_eq!(retry.id, first.id);
-        assert!(!retry.unchanged, "an un-ingested document is not a duplicate");
+        assert!(
+            !retry.unchanged,
+            "an un-ingested document is not a duplicate"
+        );
 
         set_content_hash(&db, first.id, "aaa").unwrap();
         let third = upsert(&db, "b1", "sess-1", Some("t"), META, "aaa").unwrap();
@@ -145,7 +148,10 @@ mod tests {
         let fourth = upsert(&db, "b1", "sess-1", Some("t2"), META, "bbb").unwrap();
         assert!(!fourth.unchanged);
         assert!(
-            !get_metadata(&db, first.id).unwrap().unwrap().contains("aaa"),
+            !get_metadata(&db, first.id)
+                .unwrap()
+                .unwrap()
+                .contains("aaa"),
             "a content change must clear the previous hash"
         );
     }

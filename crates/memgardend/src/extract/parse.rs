@@ -462,7 +462,10 @@ mod tests {
             "entities": ["Alice", {"text": "Bob"}, {"nope": "dropped"}, 42],
         }]));
         let facts = parse_facts(raw);
-        assert_eq!(facts[0].entities, vec!["Alice".to_string(), "Bob".to_string()]);
+        assert_eq!(
+            facts[0].entities,
+            vec!["Alice".to_string(), "Bob".to_string()]
+        );
     }
 
     #[test]

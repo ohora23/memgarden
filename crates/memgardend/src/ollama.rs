@@ -178,7 +178,12 @@ impl OllamaClient {
     /// raw `content` string (still JSON text — parsing happens in the
     /// caller so retry can distinguish transport failure from parse
     /// failure).
-    async fn try_chat(&self, system: &str, user: &str, schema: &Value) -> Result<String, OllamaError> {
+    async fn try_chat(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+    ) -> Result<String, OllamaError> {
         let body = json!({
             "model": self.cfg.model,
             "messages": [
@@ -355,7 +360,10 @@ mod tests {
         let result: Result<Value, OllamaError> = client
             .chat_json("system", "user", &json!({"type": "object"}))
             .await;
-        assert!(result.is_err(), "unreachable ollama must be a hard error, never a silent empty result");
+        assert!(
+            result.is_err(),
+            "unreachable ollama must be a hard error, never a silent empty result"
+        );
     }
 
     /// Review HIGH 2, the actual contract: while one caller holds the single
@@ -436,6 +444,9 @@ mod tests {
         let sem = Semaphore::new(1);
         let _held = sem.acquire().await.unwrap();
         let result = tokio::time::timeout(Duration::from_millis(50), sem.acquire()).await;
-        assert!(result.is_err(), "second acquire must not succeed while the permit is held");
+        assert!(
+            result.is_err(),
+            "second acquire must not succeed while the permit is held"
+        );
     }
 }

@@ -57,7 +57,14 @@ async fn spawn_stub_ollama() -> String {
     format!("http://{addr}")
 }
 
-fn build(ollama_url: &str) -> (axum::Router, Arc<Db>, AppState, tokio::sync::mpsc::Receiver<retain::RetainTask>) {
+fn build(
+    ollama_url: &str,
+) -> (
+    axum::Router,
+    Arc<Db>,
+    AppState,
+    tokio::sync::mpsc::Receiver<retain::RetainTask>,
+) {
     let db = Arc::new(Db::open_memory().unwrap());
     let mut cfg = Config::defaults().unwrap();
     cfg.bind = "127.0.0.1:0".to_string();
@@ -100,7 +107,10 @@ async fn send(app: &axum::Router, req: Request<Body>) -> (StatusCode, Value) {
     let response = app.clone().oneshot(req).await.unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 async fn post(app: &axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
@@ -121,7 +131,9 @@ fn count(db: &Db, sql: &str) -> i64 {
 async fn await_job(db: &Db, job_id: &str) -> memgarden_store::retain_jobs::RetainJob {
     let deadline = std::time::Instant::now() + Duration::from_secs(12);
     loop {
-        let job = memgarden_store::retain_jobs::get(db, job_id).unwrap().unwrap();
+        let job = memgarden_store::retain_jobs::get(db, job_id)
+            .unwrap()
+            .unwrap();
         if !matches!(job.status.as_str(), "pending" | "running") {
             return job;
         }
@@ -188,14 +200,29 @@ async fn retain_writes_entities_cooccurrences_and_links_but_never_an_entity_row(
     assert_eq!(count(&db, "SELECT count(*) FROM node_entities"), 3);
     // One co-occurrence pair, from the fact naming both entities.
     assert_eq!(
-        count(&db, "SELECT count(*) FROM entity_cooccurrences WHERE entity_id_1 < entity_id_2"),
+        count(
+            &db,
+            "SELECT count(*) FROM entity_cooccurrences WHERE entity_id_1 < entity_id_2"
+        ),
         1
     );
 
     // Links: one caused_by (fact 1 -> fact 0) and two temporal (the two
     // same-type facts are 10ms apart, bidirectional within the batch).
-    assert_eq!(count(&db, "SELECT count(*) FROM links WHERE link_type = 'caused_by'"), 1);
-    assert_eq!(count(&db, "SELECT count(*) FROM links WHERE link_type = 'temporal'"), 2);
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM links WHERE link_type = 'caused_by'"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM links WHERE link_type = 'temporal'"
+        ),
+        2
+    );
     let weight: f64 = db
         .read()
         .unwrap()
@@ -215,7 +242,10 @@ async fn retain_writes_entities_cooccurrences_and_links_but_never_an_entity_row(
     );
     // And no self-links of any type.
     assert_eq!(
-        count(&db, "SELECT count(*) FROM links WHERE from_node_id = to_node_id"),
+        count(
+            &db,
+            "SELECT count(*) FROM links WHERE from_node_id = to_node_id"
+        ),
         0
     );
 }
@@ -344,7 +374,11 @@ async fn graph_arm_surfaces_a_one_hop_neighbour_bm25_cannot_reach() {
     let (app, db) = read_only_app();
     banks::create(&db, "b1", None, None).unwrap();
 
-    let mut seed = NewNode::new("b1", FactType::World, "the reranker uses reciprocal rank fusion");
+    let mut seed = NewNode::new(
+        "b1",
+        FactType::World,
+        "the reranker uses reciprocal rank fusion",
+    );
     seed.mentioned_at = Some(1_782_898_200_000);
     let seed_id = nodes::insert(&db, seed).unwrap();
 
@@ -391,7 +425,10 @@ async fn graph_arm_surfaces_a_one_hop_neighbour_bm25_cannot_reach() {
         ids.contains(&neighbor_id),
         "the graph arm must pull in the 1-hop neighbour: {ids:?}"
     );
-    assert_eq!(ids[0], seed_id, "the seed still ranks first (two arms vs one)");
+    assert_eq!(
+        ids[0], seed_id,
+        "the seed still ranks first (two arms vs one)"
+    );
     assert_eq!(body["counts"]["candidates"], 2);
 }
 
@@ -400,7 +437,11 @@ async fn graph_arm_reaches_a_neighbour_through_a_shared_entity() {
     let (app, db) = read_only_app();
     banks::create(&db, "b1", None, None).unwrap();
 
-    let mut seed = NewNode::new("b1", FactType::World, "the reranker uses reciprocal rank fusion");
+    let mut seed = NewNode::new(
+        "b1",
+        FactType::World,
+        "the reranker uses reciprocal rank fusion",
+    );
     seed.mentioned_at = Some(1_782_898_200_000);
     let seed_id = nodes::insert(&db, seed).unwrap();
     let mut other = NewNode::new("b1", FactType::World, "완전히 다른 이야기");
@@ -441,7 +482,11 @@ async fn graph_arm_respects_type_and_tag_filters() {
     let (app, db) = read_only_app();
     banks::create(&db, "b1", None, None).unwrap();
 
-    let mut seed = NewNode::new("b1", FactType::World, "the reranker uses reciprocal rank fusion");
+    let mut seed = NewNode::new(
+        "b1",
+        FactType::World,
+        "the reranker uses reciprocal rank fusion",
+    );
     seed.mentioned_at = Some(1_782_898_200_000);
     let seed_id = nodes::insert(&db, seed).unwrap();
     let mut neighbor = NewNode::new("b1", FactType::Observation, "옵시디언 볼트 동기화 실패");
@@ -628,7 +673,15 @@ async fn backlog_tick_creates_semantic_links() {
     // If the hook ever reads the distance as a similarity, both fall under
     // the 0.7 threshold and no link is written — which is the assert below.
     let a = unit(&|i| if i == 0 { 1.0 } else { 0.0 });
-    let b = unit(&|i| if i == 0 { 1.0 } else if i == 1 { 0.1 } else { 0.0 });
+    let b = unit(&|i| {
+        if i == 0 {
+            1.0
+        } else if i == 1 {
+            0.1
+        } else {
+            0.0
+        }
+    });
 
     let mk = |ft: FactType, text: &str| {
         let mut n = NewNode::new("b1", ft, text);
@@ -646,7 +699,15 @@ async fn backlog_tick_creates_semantic_links() {
     let mut batch: Vec<(i64, String, Vec<f32>)> = Vec::new();
     for i in 0..40 {
         let id = mk(FactType::Observation, &format!("observation {i}"));
-        let v = unit(&|j| if j == 0 { 1.0 } else if j == 1 { 0.001 } else { 0.0 });
+        let v = unit(&|j| {
+            if j == 0 {
+                1.0
+            } else if j == 1 {
+                0.001
+            } else {
+                0.0
+            }
+        });
         batch.push((id, "b1".to_string(), v));
     }
     batch.push((w1, "b1".to_string(), a));
@@ -657,7 +718,10 @@ async fn backlog_tick_creates_semantic_links() {
     // ...then the hook, exactly as `drain_once` calls it.
     memgardend::embed_task::on_batch_embedded(&db, batch).await;
 
-    let semantic = count(&db, "SELECT count(*) FROM links WHERE link_type = 'semantic'");
+    let semantic = count(
+        &db,
+        "SELECT count(*) FROM links WHERE link_type = 'semantic'",
+    );
     assert!(semantic > 0, "the backlog tick must create semantic links");
     let across_types: i64 = db
         .read()
@@ -691,5 +755,8 @@ async fn backlog_tick_creates_semantic_links() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(w > 0.7, "weight {w} must be a cosine similarity, not a distance");
+    assert!(
+        w > 0.7,
+        "weight {w} must be a cosine similarity, not a distance"
+    );
 }

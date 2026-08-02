@@ -461,7 +461,8 @@ pub fn from_parts(
     }
     if let Some(raw) = env.get(ENV_RETAIN_TOOL_CALLS) {
         // Same truthy set as the fork's `_cast_env` (`lib/config.py:136`).
-        cfg.retain.include_tool_calls = matches!(raw.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
+        cfg.retain.include_tool_calls =
+            matches!(raw.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
         explicit.push("include_tool_calls");
     }
     if let Some(name) = env.get(ENV_PROFILE) {
@@ -537,8 +538,7 @@ pub fn from_parts(
     // Fail at startup, not per-request: a typo'd base_url would otherwise
     // surface only as transport errors + a permanently DEGRADED /healthz,
     // and a zero timeout/concurrency wedges the client silently.
-    if !cfg.ollama.base_url.starts_with("http://") && !cfg.ollama.base_url.starts_with("https://")
-    {
+    if !cfg.ollama.base_url.starts_with("http://") && !cfg.ollama.base_url.starts_with("https://") {
         return Err(Error::Config(format!(
             "ollama.base_url must start with http:// or https://: {}",
             cfg.ollama.base_url
@@ -958,7 +958,10 @@ mod tests {
             cfg.recall.max_tokens, 1024,
             "fork parity: scripts/lib/config.py:15 recallMaxTokens"
         );
-        assert_eq!(cfg.recall.cap_per_source, 0, "0 = disabled, legacy config.py:940");
+        assert_eq!(
+            cfg.recall.cap_per_source, 0,
+            "0 = disabled, legacy config.py:940"
+        );
         assert_eq!(cfg.recall.preamble, "");
 
         let toml_str = r#"
@@ -978,8 +981,12 @@ mod tests {
 
         // An invalid fact type is a startup error, not a silent drop.
         assert!(
-            from_parts(defaults(), Some("[recall]\ntypes = [\"nope\"]"), &HashMap::new())
-                .is_err()
+            from_parts(
+                defaults(),
+                Some("[recall]\ntypes = [\"nope\"]"),
+                &HashMap::new()
+            )
+            .is_err()
         );
     }
 }

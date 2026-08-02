@@ -54,10 +54,12 @@ pub fn fts_query_string(raw: &str) -> String {
 /// Full-text candidate node ids for `bank_id`, ranked by BM25 (best first).
 /// `match_query` is an FTS5 MATCH expression — see `fts_query_string`.
 pub fn fts_candidates(db: &Db, bank_id: &str, match_query: &str, limit: usize) -> Result<Vec<i64>> {
-    Ok(fts_candidates_filtered(db, bank_id, match_query, &[], limit)?
-        .into_iter()
-        .map(|(id, _)| id)
-        .collect())
+    Ok(
+        fts_candidates_filtered(db, bank_id, match_query, &[], limit)?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect(),
+    )
 }
 
 /// `fts_candidates` plus a `fact_type` restriction and the raw `bm25()`
@@ -113,9 +115,10 @@ pub fn fts_candidates_filtered(
         )
         .map_err(store_err)?;
     let rows = stmt
-        .query_map(params![match_query, bank_id, limit as i64, types_json], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?))
-        })
+        .query_map(
+            params![match_query, bank_id, limit as i64, types_json],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)),
+        )
         .map_err(store_err)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(store_err)
@@ -156,10 +159,7 @@ pub fn hydrate(db: &Db, bank_id: &str, ids: &[i64]) -> Result<Vec<CandidateRow>>
     // statement shape regardless of how many ids the fusion produced.
     let ids_json = format!(
         "[{}]",
-        ids.iter()
-            .map(i64::to_string)
-            .collect::<Vec<_>>()
-            .join(",")
+        ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
     );
 
     let conn = db.read()?;
@@ -208,19 +208,21 @@ pub fn hydrate(db: &Db, bank_id: &str, ids: &[i64]) -> Result<Vec<CandidateRow>>
     }
 
     raw.into_iter()
-        .map(|(id, uuid, fact_type, text, context, start, end, mentioned)| {
-            Ok(CandidateRow {
-                id,
-                uuid,
-                fact_type: FactType::from_str(&fact_type)?,
-                text,
-                context,
-                occurred_start: start,
-                occurred_end: end,
-                mentioned_at: mentioned,
-                tags: tags_by_node.remove(&id).unwrap_or_default(),
-            })
-        })
+        .map(
+            |(id, uuid, fact_type, text, context, start, end, mentioned)| {
+                Ok(CandidateRow {
+                    id,
+                    uuid,
+                    fact_type: FactType::from_str(&fact_type)?,
+                    text,
+                    context,
+                    occurred_start: start,
+                    occurred_end: end,
+                    mentioned_at: mentioned,
+                    tags: tags_by_node.remove(&id).unwrap_or_default(),
+                })
+            },
+        )
         .collect()
 }
 
@@ -360,9 +362,15 @@ mod tests {
                    jjjjjjjjjj kkkkkkkkkkk llllllllllll mmmmmmmmmmmmm nnnnnnnnnnnnnn";
         let q = fts_query_string(raw);
         assert_eq!(q.matches(" OR ").count(), MAX_QUERY_TERMS - 1);
-        assert!(!q.contains("\"a\"*"), "the two shortest terms must be dropped: {q}");
+        assert!(
+            !q.contains("\"a\"*"),
+            "the two shortest terms must be dropped: {q}"
+        );
         assert!(!q.contains("\"bb\"*"));
-        assert!(q.starts_with("\"ccc\"*"), "surviving terms keep query order: {q}");
+        assert!(
+            q.starts_with("\"ccc\"*"),
+            "surviving terms keep query order: {q}"
+        );
         assert!(q.ends_with("\"nnnnnnnnnnnnnn\"*"));
     }
 

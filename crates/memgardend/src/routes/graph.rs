@@ -27,7 +27,10 @@ fn label(text: String) -> String {
     if text.chars().count() <= MAX_LABEL_CHARS {
         return text;
     }
-    text.chars().take(MAX_LABEL_CHARS - 1).chain(['…']).collect()
+    text.chars()
+        .take(MAX_LABEL_CHARS - 1)
+        .chain(['…'])
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,10 +76,9 @@ pub async fn get_graph(
 ) -> Result<Json<GraphResponse>, ApiError> {
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT);
     if limit == 0 || limit > MAX_LIMIT {
-        return Err(memgarden_core::Error::Invalid(format!(
-            "limit must be 1..={MAX_LIMIT}"
-        ))
-        .into());
+        return Err(
+            memgarden_core::Error::Invalid(format!("limit must be 1..={MAX_LIMIT}")).into(),
+        );
     }
     let mut fact_types: Vec<FactType> = match &q.types {
         Some(raw) => raw

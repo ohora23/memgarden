@@ -163,10 +163,7 @@ mod tests {
 
         // The pipeline's real shape: a graph-only hit in slot 2, with the
         // temporal slot still empty.
-        let merged = reciprocal_rank_fusion(
-            &[hits(&[1]), hits(&[1]), hits(&[5]), vec![]],
-            RRF_K,
-        );
+        let merged = reciprocal_rank_fusion(&[hits(&[1]), hits(&[1]), hits(&[5]), vec![]], RRF_K);
         let five = merged.iter().find(|m| m.id == 5).unwrap();
         assert_eq!(five.rrf_score, 1.0 / 61.0, "a graph hit still scores");
         assert_eq!(

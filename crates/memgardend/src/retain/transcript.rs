@@ -155,7 +155,11 @@ fn json_transcript(messages: &[Value], opts: &NormalizeOpts) -> Option<(String, 
         let Some(role) = role_allowed(msg, opts.roles) else {
             continue;
         };
-        let blocks = message_blocks(msg.get("content").unwrap_or(&Value::Null), &role, &opts.caps);
+        let blocks = message_blocks(
+            msg.get("content").unwrap_or(&Value::Null),
+            &role,
+            &opts.caps,
+        );
         if blocks.is_empty() {
             continue;
         }
@@ -292,10 +296,12 @@ fn is_operational_mcp_tool(name: &str) -> bool {
     if !name.starts_with("mcp__") {
         return false;
     }
-    let suffix = name.rsplit("__").next().unwrap_or(name).to_ascii_lowercase();
-    OPERATIONAL_TOOL_MARKERS
-        .iter()
-        .any(|m| suffix.contains(m))
+    let suffix = name
+        .rsplit("__")
+        .next()
+        .unwrap_or(name)
+        .to_ascii_lowercase();
+    OPERATIONAL_TOOL_MARKERS.iter().any(|m| suffix.contains(m))
 }
 
 /// The two-tier `tool_use` input cap, ported from `_compact_tool_input`
@@ -331,7 +337,10 @@ pub fn compact_tool_input(input: &Value, caps: &Caps) -> Value {
                 let total = s.chars().count();
                 let head: String = s.chars().take(caps.tool_input_field_max).collect();
                 let dropped = total - caps.tool_input_field_max;
-                compact.insert(key.clone(), Value::String(format!("{head}... (+{dropped} chars)")));
+                compact.insert(
+                    key.clone(),
+                    Value::String(format!("{head}... (+{dropped} chars)")),
+                );
             }
             other => {
                 compact.insert(key.clone(), other.clone());
@@ -420,9 +429,7 @@ pub fn extract_touched_files(messages: &[Value], cwd: &str) -> Vec<String> {
                 });
             let Some(raw) = raw else { continue };
             let path = raw.trim();
-            if path.chars().count() > MAX_FILE_PATH_CHARS
-                || path.chars().any(|c| c.is_control())
-            {
+            if path.chars().count() > MAX_FILE_PATH_CHARS || path.chars().any(|c| c.is_control()) {
                 continue;
             }
             let path = match path.strip_prefix(cwd_prefix.as_str()) {
@@ -629,7 +636,10 @@ mod tests {
         })];
         let (transcript, _) = normalize(&messages, &opts(Caps::default(), true)).unwrap();
         let parsed: Value = serde_json::from_str(&transcript).unwrap();
-        assert_eq!(parsed[0]["content"][0]["content"], json!("line one\nline two"));
+        assert_eq!(
+            parsed[0]["content"][0]["content"],
+            json!("line one\nline two")
+        );
     }
 
     // ---- memory tags -------------------------------------------------------
@@ -649,7 +659,9 @@ mod tests {
 
     #[test]
     fn strip_memory_tags_is_non_greedy_and_survives_unterminated() {
-        let out = strip_memory_tags("<relevant_memories>a</relevant_memories>keep<relevant_memories>b</relevant_memories>");
+        let out = strip_memory_tags(
+            "<relevant_memories>a</relevant_memories>keep<relevant_memories>b</relevant_memories>",
+        );
         assert_eq!(out, "keep");
         let unterminated = "text <relevant_memories>never closed";
         assert_eq!(strip_memory_tags(unterminated), unterminated);
@@ -661,7 +673,10 @@ mod tests {
         assert_eq!(strip_channel_envelope(raw), "hello there");
         assert_eq!(strip_channel_envelope("plain text"), "plain text");
         // Word boundary: <channels> must not match.
-        assert_eq!(strip_channel_envelope("<channels>x</channels>"), "<channels>x</channels>");
+        assert_eq!(
+            strip_channel_envelope("<channels>x</channels>"),
+            "<channels>x</channels>"
+        );
     }
 
     // ---- backfill cap ------------------------------------------------------
@@ -707,7 +722,11 @@ mod tests {
         let messages = vec![
             tool_use_msg("Edit", "file_path", "/home/u/proj/src/auth.rs"),
             tool_use_msg("Read", "file_path", "/home/u/proj/src/ignored.rs"),
-            tool_use_msg("mcp__someserver__Edit", "file_path", "/home/u/proj/src/mcp.rs"),
+            tool_use_msg(
+                "mcp__someserver__Edit",
+                "file_path",
+                "/home/u/proj/src/mcp.rs",
+            ),
             tool_use_msg("NotebookEdit", "notebook_path", "/home/u/proj/nb.ipynb"),
             tool_use_msg("Write", "file_path", "/etc/outside.conf"),
             // Duplicate of the first: first-touch order preserved, no repeat.

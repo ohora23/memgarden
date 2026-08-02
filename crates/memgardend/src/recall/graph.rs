@@ -168,7 +168,11 @@ mod tests {
         );
         assert_eq!(hits.len(), 1);
         let expected = 1.0f64.tanh() + 0.5 + 0.8;
-        assert!((hits[0].score - expected).abs() < 1e-12, "{}", hits[0].score);
+        assert!(
+            (hits[0].score - expected).abs() < 1e-12,
+            "{}",
+            hits[0].score
+        );
     }
 
     #[test]

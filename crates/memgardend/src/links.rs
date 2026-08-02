@@ -190,7 +190,10 @@ mod tests {
                 .iter()
                 .any(|l| l.from_node_id == from && l.to_node_id == to)
         };
-        assert!(has(1, 2) && has(2, 1), "within-batch links are bidirectional");
+        assert!(
+            has(1, 2) && has(2, 1),
+            "within-batch links are bidirectional"
+        );
         assert!(!has(1, 3) && !has(3, 1), "48h apart is outside the window");
         // 12h apart -> 0.5, and exactly 24h apart (b..c is 36h) stays out.
         let ab = links
