@@ -2,6 +2,7 @@ use std::str::FromStr;
 
 use rusqlite::params;
 
+use memgarden_core::EMBEDDING_MODEL_ID;
 use memgarden_core::error::Result;
 use memgarden_core::types::FactType;
 
@@ -285,18 +286,40 @@ pub fn hydrate(db: &Db, bank_id: &str, ids: &[i64]) -> Result<Vec<CandidateRow>>
 /// approaches ~50k nodes: sqlite-vec ANN once it ships, or pre-filter the
 /// partition (e.g. a fact_type/recency-scoped shadow vec0 table) so the
 /// scan is over a slice rather than the bank.`
+///
+/// **Only vectors from the active producer are returned** (AX-1). `vec_nodes`
+/// carries no producer of its own — it is a derived index over
+/// `memory_nodes.embedding` — so the tag is read back off the source row
+/// through the rowid, which is that table's `INTEGER PRIMARY KEY`. A cosine
+/// distance between two embedding spaces is a number with no meaning; a row
+/// excluded here is still fully reachable through FTS/BM25, the graph arm and
+/// hydrate, which is what makes hybrid recall the migration strategy rather
+/// than a re-embed.
+///
+/// The filter is applied **after** the vec0 scan picks its top `k`, so a bank
+/// holding foreign-producer vectors yields fewer than `k` dense candidates
+/// rather than reaching deeper for `k` matching ones.
+/// `// ponytail: post-filter, so a bank that is mostly foreign vectors gets a
+/// thin — worst case empty — dense arm: if the top-k by raw distance are all
+/// foreign, comparable-space matches just below the cut are missed.
+/// Acceptable while the only producer is ours (every row is
+/// tagged by 0005's backfill). Upgrade path if MG-1 lands a mixed bank:
+/// sqlite-vec's rowid-IN prefilter, or `embedding_model` as a second vec0
+/// partition key, either of which returns a full k.`
 pub fn knn(db: &Db, bank_id: &str, query_embedding: &[f32], k: usize) -> Result<Vec<(i64, f64)>> {
     let blob = vecblob::encode(query_embedding)?;
     let conn = db.read()?;
     let mut stmt = conn
         .prepare(
-            "SELECT rowid, distance FROM vec_nodes
-             WHERE bank_id = ?1 AND embedding MATCH ?2 AND k = ?3
-             ORDER BY distance",
+            "SELECT v.rowid, v.distance FROM vec_nodes v
+             JOIN memory_nodes n ON n.id = v.rowid
+             WHERE v.bank_id = ?1 AND v.embedding MATCH ?2 AND v.k = ?3
+               AND n.embedding_model = ?4
+             ORDER BY v.distance",
         )
         .map_err(store_err)?;
     let rows = stmt
-        .query_map(params![bank_id, blob, k as i64], |r| {
+        .query_map(params![bank_id, blob, k as i64, EMBEDDING_MODEL_ID], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?))
         })
         .map_err(store_err)?;

@@ -1,6 +1,6 @@
-use memgarden_core::EMBEDDING_DIM;
 use memgarden_core::error::Error;
 use memgarden_core::types::FactType;
+use memgarden_core::{EMBEDDING_DIM, EMBEDDING_MODEL_ID};
 use memgarden_store::models::NewNode;
 use memgarden_store::{Db, banks, nodes, search, vecblob};
 
@@ -1121,11 +1121,12 @@ fn fresh_database_has_the_0004_consolidation_schema() {
     let db = Db::open_memory().unwrap();
     let conn = db.read().unwrap();
 
-    assert_eq!(memgarden_store::LATEST_VERSION, 4);
+    // The `LATEST_VERSION` pin lives with the newest migration's test — see
+    // `fresh_database_has_the_0005_embedding_model_column`.
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, memgarden_store::LATEST_VERSION);
 
     for table in ["node_sources", "consolidation_runs"] {
         let n: i64 = conn
@@ -1225,4 +1226,273 @@ fn migrate_upgrades_a_v3_database_in_place() {
         memgarden_store::consolidate::sources_of(&db, 2).unwrap(),
         vec![1]
     );
+}
+
+// --- 0005 (AX-1): embedding_model, vector-space versioning ---------------
+
+/// A fresh database lands on v5, and the write paths stamp the producer.
+#[test]
+fn fresh_database_has_the_0005_embedding_model_column() {
+    let db = Db::open_memory().unwrap();
+
+    assert_eq!(memgarden_store::LATEST_VERSION, 5);
+    {
+        let conn = db.read().unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+    }
+
+    banks::create(&db, "b1", None, None).unwrap();
+    let id = nodes::insert(&db, NewNode::new("b1", FactType::World, "a fact")).unwrap();
+    assert_eq!(
+        model_of(&db, id),
+        None,
+        "an unembedded node has no producer to name"
+    );
+
+    nodes::set_embedding(&db, id, "b1", &vec![0.1f32; EMBEDDING_DIM]).unwrap();
+    assert_eq!(model_of(&db, id).as_deref(), Some(EMBEDDING_MODEL_ID));
+
+    // The batch path and the consolidation path stamp it too — neither goes
+    // through `set_embedding`.
+    let id2 = nodes::insert(&db, NewNode::new("b1", FactType::World, "b fact")).unwrap();
+    nodes::set_embeddings_batch(&db, &[(id2, "b1".to_string(), vec![0.2f32; EMBEDDING_DIM])])
+        .unwrap();
+    assert_eq!(model_of(&db, id2).as_deref(), Some(EMBEDDING_MODEL_ID));
+
+    let obs = memgarden_store::consolidate::insert_observation(
+        &db,
+        "b1",
+        "an observation",
+        &vec![0.3f32; EMBEDDING_DIM],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(model_of(&db, obs).as_deref(), Some(EMBEDDING_MODEL_ID));
+}
+
+/// SQL cannot reference a Rust const, so 0005's backfill hard-codes the id.
+/// Pinned against a test-local copy, NOT against the live const: 0005
+/// backfills the producer that was active when 0005 was written, and that is
+/// historical. Editing the literal to follow a bumped `EMBEDDING_MODEL_ID`
+/// would tag a v4 database's old-model vectors with the new id — the silent
+/// mislabeling AX-1 exists to prevent, arriving through its own guard.
+const ID_AT_0005: &str = "fastembed:BAAI/bge-small-en-v1.5";
+
+#[test]
+fn backfill_literal_matches_the_active_model_id() {
+    let sql = include_str!("../migrations/0005_embedding_model.sql");
+    assert!(
+        sql.contains(&format!("SET embedding_model = '{ID_AT_0005}'")),
+        "0005 backfills the producer active when it was written — freeze this \
+         literal. If EMBEDDING_MODEL_ID changed, add a new migration for the \
+         transition and pin that one."
+    );
+    // Today they are the same string; the day they diverge, the line above
+    // must not move and this one must.
+    assert_eq!(ID_AT_0005, EMBEDDING_MODEL_ID);
+}
+
+/// The v4-upgrade mirror of the v1/v2/v3 tests. A populated v4 database must
+/// come out at v5 with rows intact and **every already-embedded row
+/// backfilled** — see 0005's comment: leaving them NULL would drop them out
+/// of the dense arm on upgrade.
+#[test]
+fn migrate_upgrades_a_v4_database_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v4.db");
+
+    {
+        // sqlite-vec is registered as a process-global auto-extension by
+        // `Db::open`, and 0001's `CREATE VIRTUAL TABLE vec_nodes USING vec0`
+        // needs it. The raw connection below predates any `Db` in this test,
+        // so force the registration rather than depending on another test in
+        // the binary having happened to run first.
+        drop(Db::open_memory().unwrap());
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in [
+            include_str!("../migrations/0001_init.sql"),
+            include_str!("../migrations/0002_retain_jobs.sql"),
+            include_str!("../migrations/0003_entities_graph.sql"),
+            include_str!("../migrations/0004_consolidation.sql"),
+        ] {
+            conn.execute_batch(sql).unwrap();
+        }
+        for v in [1, 2, 3, 4] {
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, 0)",
+                rusqlite::params![v],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 4).unwrap();
+        conn.execute(
+            "INSERT INTO banks (bank_id, created_at, updated_at) VALUES ('legacy', 0, 0)",
+            [],
+        )
+        .unwrap();
+        // One embedded row (the backfill's target) and one still on the
+        // backlog (which must stay NULL — it has no producer yet).
+        let blob = vecblob::encode(&vec![0.5f32; EMBEDDING_DIM]).unwrap();
+        conn.execute(
+            "INSERT INTO memory_nodes (uuid, bank_id, fact_type, text, embedding, created_at, updated_at)
+             VALUES ('u1', 'legacy', 'world', 'an embedded fact', ?1, 0, 0)",
+            rusqlite::params![blob],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory_nodes (uuid, bank_id, fact_type, text, created_at, updated_at)
+             VALUES ('u2', 'legacy', 'world', 'a pending fact', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO vec_nodes (rowid, bank_id, embedding) VALUES (1, 'legacy', ?1)",
+            rusqlite::params![blob],
+        )
+        .unwrap();
+    }
+
+    let db = Db::open(&path).unwrap();
+    {
+        let conn = db.read().unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, memgarden_store::LATEST_VERSION);
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM memory_nodes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2, "pre-existing rows survive");
+    }
+
+    assert_eq!(
+        model_of(&db, 1).as_deref(),
+        Some(EMBEDDING_MODEL_ID),
+        "an existing vector was produced by this code path, so it is tagged as such"
+    );
+    assert_eq!(model_of(&db, 2), None, "no vector, no producer");
+
+    // The backfill is what keeps the upgraded row in the dense arm.
+    let hits = search::knn(&db, "legacy", &vec![0.5f32; EMBEDDING_DIM], 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].0, 1);
+}
+
+/// **The AX-1 promise, end to end**: a vector from another producer is
+/// invisible to dense comparison and fully visible to BM25. That asymmetry is
+/// the migration strategy — a mixed bank degrades to keyword recall for the
+/// foreign rows instead of returning meaningless cosine distances, and it
+/// costs nothing because recall is already hybrid.
+#[test]
+fn a_foreign_model_vector_is_absent_from_knn_but_present_in_fts() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let ours = nodes::insert(
+        &db,
+        NewNode::new("b1", FactType::World, "the retain worker transaction"),
+    )
+    .unwrap();
+    let foreign = nodes::insert(
+        &db,
+        NewNode::new("b1", FactType::World, "the retain worker deadline"),
+    )
+    .unwrap();
+    let untagged = nodes::insert(
+        &db,
+        NewNode::new("b1", FactType::World, "the retain worker chunker"),
+    )
+    .unwrap();
+
+    // All three get a real vector through the normal path, so the only thing
+    // that differs is the tag.
+    let v = vec![0.5f32; EMBEDDING_DIM];
+    for id in [ours, foreign, untagged] {
+        nodes::set_embedding(&db, id, "b1", &v).unwrap();
+    }
+    db.write(|tx| {
+        // A legacy import's two shapes: a *named* other producer, and the
+        // untagged NULL that jcode's LEGACY_EMBEDDING_MODEL convention leaves
+        // behind. Neither is comparable with ours.
+        tx.execute(
+            "UPDATE memory_nodes SET embedding_model = 'sentence-transformers:BAAI/bge-small-en-v1.5'
+             WHERE id = ?1",
+            rusqlite::params![foreign],
+        )
+        .unwrap();
+        tx.execute(
+            "UPDATE memory_nodes SET embedding_model = NULL WHERE id = ?1",
+            rusqlite::params![untagged],
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+
+    // Dense: only ours, even though all three sit in `vec_nodes` at distance 0.
+    let hits: Vec<i64> = search::knn(&db, "b1", &v, 10)
+        .unwrap()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(hits, vec![ours], "dense compares within one space only");
+
+    // BM25: all three, unfiltered. This is the reachability guarantee.
+    let q = search::fts_query_string("retain worker");
+    let mut fts = search::fts_candidates(&db, "b1", &q, 10).unwrap();
+    fts.sort_unstable();
+    assert_eq!(fts, vec![ours, foreign, untagged]);
+
+    // And hydration does not filter either — a BM25 hit must be returnable.
+    let mut hydrated: Vec<i64> = search::hydrate(&db, "b1", &fts)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+    hydrated.sort_unstable();
+    assert_eq!(hydrated, vec![ours, foreign, untagged]);
+}
+
+/// The dedup probe is the other cosine consumer (CE-9a's 0.97 threshold), and
+/// it reads `memory_nodes.embedding` directly rather than through `vec_nodes`.
+#[test]
+fn the_dedup_probe_skips_foreign_model_observations() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let v = vec![0.25f32; EMBEDDING_DIM];
+    let ours =
+        memgarden_store::consolidate::insert_observation(&db, "b1", "ours", &v, &[]).unwrap();
+    let foreign =
+        memgarden_store::consolidate::insert_observation(&db, "b1", "foreign", &v, &[]).unwrap();
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE memory_nodes SET embedding_model = 'legacy:whatever' WHERE id = ?1",
+            rusqlite::params![foreign],
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+
+    let probe = memgarden_store::consolidate::observation_vectors(&db, "b1", -1).unwrap();
+    let ids: Vec<i64> = probe.iter().map(|o| o.id).collect();
+    assert_eq!(ids, vec![ours]);
+}
+
+/// Reads `embedding_model` off a node — the column is intentionally not on
+/// `MemoryNode` (nothing in the API surface needs it; it is a storage-layer
+/// invariant, and adding it to the struct would put it in every response).
+fn model_of(db: &Db, id: i64) -> Option<String> {
+    db.read()
+        .unwrap()
+        .query_row(
+            "SELECT embedding_model FROM memory_nodes WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap()
 }
