@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use memgarden_store::banks;
 
 use crate::error::{ApiError, join_err};
+use crate::json::ApiJson;
 use crate::extract::{self, parse::ParsedFact};
 use crate::ollama::OllamaError;
 use crate::state::AppState;
@@ -41,7 +42,7 @@ const MAX_MISSION_BYTES: usize = 4 * 1024;
 pub async fn dry_run_extract(
     State(state): State<AppState>,
     Path(bank_id): Path<String>,
-    Json(body): Json<DryRunExtractRequest>,
+    ApiJson(body): ApiJson<DryRunExtractRequest>,
 ) -> Result<Json<DryRunExtractResponse>, ApiError> {
     if body.text.len() > MAX_TEXT_BYTES {
         return Err(memgarden_core::Error::Invalid(format!(

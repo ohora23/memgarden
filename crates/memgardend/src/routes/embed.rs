@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use memgarden_store::search;
 
 use crate::error::{ApiError, join_err};
+use crate::json::ApiJson;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -44,7 +45,7 @@ pub struct EmbedDebugResponse {
 /// its existence isn't probeable from the outside.
 pub async fn embed_debug(
     State(state): State<AppState>,
-    Json(body): Json<EmbedDebugRequest>,
+    ApiJson(body): ApiJson<EmbedDebugRequest>,
 ) -> Result<Json<EmbedDebugResponse>, ApiError> {
     if !state.cfg.embedding.debug_endpoint {
         return Err(ApiError::not_found("route not found"));

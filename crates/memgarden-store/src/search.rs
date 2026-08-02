@@ -1,48 +1,206 @@
+use std::str::FromStr;
+
 use rusqlite::params;
 
 use memgarden_core::error::Result;
+use memgarden_core::types::FactType;
 
 use crate::{Db, store_err, vecblob};
 
+/// Query terms kept by `fts_query_string`, longest first (Critic Revision
+/// R1). Real prompts run long; every extra `OR` term widens the candidate
+/// pool for no precision gain, and FTS5 itself caps an expression at
+/// SQLITE_MAX_EXPR_DEPTH. Longer terms are the more selective ones.
+pub const MAX_QUERY_TERMS: usize = 12;
+
 /// Builds an FTS5 MATCH expression from raw user input: splits on
 /// non-alphanumeric boundaries (this doubles as escaping — no FTS5 special
-/// characters survive the split) and appends `*` to every term for prefix
-/// matching against the `prefix='2 3 4'` index. Consumed by recall (CE-6).
+/// characters survive the split), keeps the `MAX_QUERY_TERMS` longest terms,
+/// and appends `*` to each for prefix matching against the `prefix='2 3 4'`
+/// index. Consumed by recall (CE-6).
+///
+/// Terms are joined with **` OR `**, not whitespace (Critic Revision R1).
+/// FTS5 reads a bare space as an implicit AND, which measured 0 hits for any
+/// realistic multi-token prompt (16-token English: AND 0 / OR 100; 5-token
+/// Korean: AND 0). Ranking still favours documents matching more terms —
+/// that is what `bm25()` is for — so OR loses nothing but the empty result.
 pub fn fts_query_string(raw: &str) -> String {
-    raw.split(|c: char| !c.is_alphanumeric())
+    let mut terms: Vec<&str> = raw
+        .split(|c: char| !c.is_alphanumeric())
         .filter(|tok| !tok.is_empty())
+        .collect();
+
+    if terms.len() > MAX_QUERY_TERMS {
+        // Rank by length (stable, so equal-length terms keep query order),
+        // take the top N, then restore query order for a readable expression.
+        let mut ranked: Vec<usize> = (0..terms.len()).collect();
+        ranked.sort_by_key(|&i| std::cmp::Reverse(terms[i].chars().count()));
+        ranked.truncate(MAX_QUERY_TERMS);
+        ranked.sort_unstable();
+        terms = ranked.into_iter().map(|i| terms[i]).collect();
+    }
+
+    terms
+        .iter()
         .map(|tok| format!("{tok}*"))
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" OR ")
 }
 
 /// Full-text candidate node ids for `bank_id`, ranked by BM25 (best first).
 /// `match_query` is an FTS5 MATCH expression — see `fts_query_string`.
 pub fn fts_candidates(db: &Db, bank_id: &str, match_query: &str, limit: usize) -> Result<Vec<i64>> {
+    Ok(fts_candidates_filtered(db, bank_id, match_query, &[], limit)?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect())
+}
+
+/// `fts_candidates` plus a `fact_type` restriction and the raw `bm25()`
+/// score (more negative = better match; the recall arm keeps it for
+/// `scores.keyword`). An empty `fact_types` means no type filter.
+///
+/// Tag filtering is deliberately NOT here — see `recall::filter` in the
+/// daemon: the vector arm cannot filter tags in SQL (vec0 partitions on
+/// `bank_id` only), so keeping one Rust implementation for both arms beats
+/// two dialects of the same four-mode semantics.
+/// `// ponytail: post-filter + over-fetch; push tags into SQL if a
+/// tag-narrow recall starts under-returning at scale.`
+pub fn fts_candidates_filtered(
+    db: &Db,
+    bank_id: &str,
+    match_query: &str,
+    fact_types: &[FactType],
+    limit: usize,
+) -> Result<Vec<(i64, f64)>> {
     if match_query.is_empty() {
         // `MATCH ''` is a SQLite/FTS5 syntax error, not "no results" — an
         // empty query (e.g. from fts_query_string on punctuation-only
         // input) has no candidates by definition, so short-circuit.
         return Ok(vec![]);
     }
+    // A JSON array rather than dynamically built `IN (?,?,?)` placeholders:
+    // one prepared statement shape for every filter combination. The values
+    // are `FactType::as_str` literals, never user input.
+    let types_json: Option<String> = if fact_types.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "[{}]",
+            fact_types
+                .iter()
+                .map(|t| format!("\"{}\"", t.as_str()))
+                .collect::<Vec<_>>()
+                .join(",")
+        ))
+    };
+
     let conn = db.read()?;
     let mut stmt = conn
         .prepare(
-            "SELECT memory_nodes_fts.rowid
+            "SELECT memory_nodes_fts.rowid, bm25(memory_nodes_fts)
              FROM memory_nodes_fts
              JOIN memory_nodes ON memory_nodes.id = memory_nodes_fts.rowid
              WHERE memory_nodes_fts MATCH ?1 AND memory_nodes.bank_id = ?2
+               AND (?4 IS NULL
+                    OR memory_nodes.fact_type IN (SELECT value FROM json_each(?4)))
              ORDER BY bm25(memory_nodes_fts)
              LIMIT ?3",
         )
         .map_err(store_err)?;
     let rows = stmt
-        .query_map(params![match_query, bank_id, limit as i64], |r| {
-            r.get::<_, i64>(0)
+        .query_map(params![match_query, bank_id, limit as i64, types_json], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?))
         })
         .map_err(store_err)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(store_err)
+}
+
+/// Everything the recall pipeline needs about a candidate node, fetched for
+/// the whole fused id set in ONE query (no N+1): the union of both arms is
+/// typically 100-200 ids and this measures in the low tens of microseconds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CandidateRow {
+    pub id: i64,
+    pub uuid: String,
+    pub fact_type: FactType,
+    pub text: String,
+    pub context: Option<String>,
+    pub occurred_start: Option<i64>,
+    pub occurred_end: Option<i64>,
+    pub mentioned_at: Option<i64>,
+    pub tags: Vec<String>,
+}
+
+/// Tags are concatenated with U+001F (unit separator) rather than a comma:
+/// tags are user-supplied and a comma inside one would corrupt the split.
+/// Control characters are rejected at the retain boundary, so U+001F cannot
+/// occur inside a tag.
+const TAG_SEP: char = '\u{1f}';
+
+/// Loads `CandidateRow`s for `ids`, in arbitrary order (callers index by
+/// id). Unknown ids are silently absent.
+pub fn hydrate(db: &Db, ids: &[i64]) -> Result<Vec<CandidateRow>> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    // i64s formatted into a JSON array — no injection surface, and one
+    // statement shape regardless of how many ids the fusion produced.
+    let ids_json = format!(
+        "[{}]",
+        ids.iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    let conn = db.read()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT n.id, n.uuid, n.fact_type, n.text, n.context,
+                    n.occurred_start, n.occurred_end, n.mentioned_at,
+                    (SELECT group_concat(t.tag, char(31))
+                       FROM node_tags t WHERE t.node_id = n.id)
+             FROM memory_nodes n
+             WHERE n.id IN (SELECT value FROM json_each(?1))",
+        )
+        .map_err(store_err)?;
+    let raw = stmt
+        .query_map(params![ids_json], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+                r.get::<_, Option<i64>>(6)?,
+                r.get::<_, Option<i64>>(7)?,
+                r.get::<_, Option<String>>(8)?,
+            ))
+        })
+        .map_err(store_err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(store_err)?;
+
+    raw.into_iter()
+        .map(|(id, uuid, fact_type, text, context, start, end, mentioned, tags)| {
+            Ok(CandidateRow {
+                id,
+                uuid,
+                fact_type: FactType::from_str(&fact_type)?,
+                text,
+                context,
+                occurred_start: start,
+                occurred_end: end,
+                mentioned_at: mentioned,
+                tags: tags
+                    .map(|t| t.split(TAG_SEP).map(str::to_string).collect())
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 /// K-nearest-neighbor node ids (with cosine distance, best first) for
@@ -137,8 +295,22 @@ mod tests {
     #[test]
     fn fts_query_string_tokenizes_and_appends_star() {
         assert_eq!(fts_query_string("데몬"), "데몬*");
-        assert_eq!(fts_query_string("hello world"), "hello* world*");
-        assert_eq!(fts_query_string("  foo,bar  "), "foo* bar*");
+        // R1: OR, not whitespace-AND.
+        assert_eq!(fts_query_string("hello world"), "hello* OR world*");
+        assert_eq!(fts_query_string("  foo,bar  "), "foo* OR bar*");
+    }
+
+    #[test]
+    fn fts_query_string_keeps_longest_terms() {
+        // 14 terms -> the 12 longest survive, in original query order.
+        let raw = "a bb ccc dddd eeeee ffffff ggggggg hhhhhhhh iiiiiiiii \
+                   jjjjjjjjjj kkkkkkkkkkk llllllllllll mmmmmmmmmmmmm nnnnnnnnnnnnnn";
+        let q = fts_query_string(raw);
+        assert_eq!(q.matches(" OR ").count(), MAX_QUERY_TERMS - 1);
+        assert!(!q.contains("a*"), "the two shortest terms must be dropped: {q}");
+        assert!(!q.contains("bb*"));
+        assert!(q.starts_with("ccc*"), "surviving terms keep query order: {q}");
+        assert!(q.ends_with("nnnnnnnnnnnnnn*"));
     }
 
     #[test]

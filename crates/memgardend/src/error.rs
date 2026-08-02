@@ -13,6 +13,17 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    /// Escape hatch for a status the named constructors don't cover — used
+    /// by `crate::json::ApiJson` to keep axum's own rejection status (413,
+    /// 415) while still answering in the JSON envelope.
+    pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        ApiError {
+            status,
+            code,
+            message: message.into(),
+        }
+    }
+
     pub fn not_found(message: impl Into<String>) -> Self {
         ApiError {
             status: StatusCode::NOT_FOUND,

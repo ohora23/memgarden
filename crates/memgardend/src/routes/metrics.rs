@@ -8,6 +8,7 @@ use memgarden_store::metrics_store;
 use memgarden_store::models::LedgerEntry;
 
 use crate::error::{ApiError, join_err};
+use crate::json::ApiJson;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -117,7 +118,7 @@ pub async fn list_ledger(
 
 pub async fn create_ledger(
     State(state): State<AppState>,
-    Json(body): Json<CreateLedgerRequest>,
+    ApiJson(body): ApiJson<CreateLedgerRequest>,
 ) -> Result<(StatusCode, Json<LedgerResponse>), ApiError> {
     let detail = LedgerDetail {
         case_text: Some(body.case_text),
