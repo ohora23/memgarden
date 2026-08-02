@@ -19,6 +19,7 @@ pub struct RetainJob {
     pub status: String,
     pub chunks_total: i64,
     pub chunks_done: i64,
+    pub chunks_skipped: i64,
     pub chunks_failed: i64,
     pub facts_written: i64,
     pub error: Option<String>,
@@ -33,6 +34,7 @@ pub struct JobProgress {
     pub status: JobStatus,
     pub chunks_total: i64,
     pub chunks_done: i64,
+    pub chunks_skipped: i64,
     pub chunks_failed: i64,
     pub facts_written: i64,
     pub error: Option<String>,
@@ -89,13 +91,14 @@ pub fn update(db: &Db, job_id: &str, p: &JobProgress) -> Result<()> {
     db.write(|tx| {
         tx.execute(
             "UPDATE retain_jobs SET status = ?1, chunks_total = ?2, chunks_done = ?3,
-             chunks_failed = ?4, facts_written = ?5, error = ?6, detail = coalesce(?7, detail),
-             updated_at = ?8
-             WHERE job_id = ?9",
+             chunks_skipped = ?4, chunks_failed = ?5, facts_written = ?6, error = ?7,
+             detail = coalesce(?8, detail), updated_at = ?9
+             WHERE job_id = ?10",
             params![
                 p.status.as_str(),
                 p.chunks_total,
                 p.chunks_done,
+                p.chunks_skipped,
                 p.chunks_failed,
                 p.facts_written,
                 p.error,
@@ -113,7 +116,7 @@ pub fn get(db: &Db, job_id: &str) -> Result<Option<RetainJob>> {
     let conn = db.read()?;
     conn.query_row(
         "SELECT job_id, bank_id, document_id, session_id, status, chunks_total, chunks_done,
-                chunks_failed, facts_written, error, detail, created_at, updated_at
+                chunks_skipped, chunks_failed, facts_written, error, detail, created_at, updated_at
          FROM retain_jobs WHERE job_id = ?1",
         params![job_id],
         |r| {
@@ -125,12 +128,13 @@ pub fn get(db: &Db, job_id: &str) -> Result<Option<RetainJob>> {
                 status: r.get(4)?,
                 chunks_total: r.get(5)?,
                 chunks_done: r.get(6)?,
-                chunks_failed: r.get(7)?,
-                facts_written: r.get(8)?,
-                error: r.get(9)?,
-                detail: r.get(10)?,
-                created_at: r.get(11)?,
-                updated_at: r.get(12)?,
+                chunks_skipped: r.get(7)?,
+                chunks_failed: r.get(8)?,
+                facts_written: r.get(9)?,
+                error: r.get(10)?,
+                detail: r.get(11)?,
+                created_at: r.get(12)?,
+                updated_at: r.get(13)?,
             })
         },
     )
@@ -175,8 +179,9 @@ mod tests {
             "job-1",
             &JobProgress {
                 status: JobStatus::Done,
-                chunks_total: 3,
+                chunks_total: 4,
                 chunks_done: 2,
+                chunks_skipped: 1,
                 chunks_failed: 1,
                 facts_written: 7,
                 error: None,
@@ -186,6 +191,7 @@ mod tests {
         .unwrap();
         let job = get(&db, "job-1").unwrap().unwrap();
         assert_eq!(job.status, "done");
+        assert_eq!(job.chunks_skipped, 1);
         assert_eq!(job.chunks_failed, 1);
         assert_eq!(job.facts_written, 7);
         // detail: None must preserve the insert-time value, not null it.

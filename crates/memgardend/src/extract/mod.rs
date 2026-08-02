@@ -40,22 +40,31 @@ fn output_schema() -> Value {
 }
 
 /// One end-to-end extraction call: build the prompts, call Ollama, parse the
-/// response. `event_date_ms` and `mission` come straight from the
-/// `dry-run-extract` request body (`routes/extract.rs`); `causal` is fixed
-/// `true` here — legacy's default (`DEFAULT_RETAIN_EXTRACT_CAUSAL_LINKS`,
-/// `config.py:1096`) and there's no per-request override in this endpoint's
-/// contract.
+/// response. `causal` is fixed `true` here — legacy's default
+/// (`DEFAULT_RETAIN_EXTRACT_CAUSAL_LINKS`, `config.py:1096`) and there's no
+/// per-request override in either caller's contract.
+///
+/// `background` picks the concurrency-permit policy: `false` for an HTTP
+/// request handler (fail fast with `Busy` after 15s — Critic Revision R11),
+/// `true` for the retain worker (wait untimed; the job's wall clock is the
+/// bound).
 pub async fn extract(
     client: &OllamaClient,
     text: &str,
     event_date_ms: Option<i64>,
     mission: Option<&str>,
+    background: bool,
 ) -> Result<Vec<parse::ParsedFact>, OllamaError> {
     let system = prompts::system_prompt(true);
     let mission_preamble = prompts::retain_mission_preamble(mission);
     let user = prompts::user_message(&mission_preamble, event_date_ms, None, text);
+    let schema = output_schema();
 
-    let raw: parse::RawFactsResponse = client.chat_json(&system, &user, &output_schema()).await?;
+    let raw: parse::RawFactsResponse = if background {
+        client.chat_json_background(&system, &user, &schema).await?
+    } else {
+        client.chat_json(&system, &user, &schema).await?
+    };
     Ok(parse::parse_facts(raw.into_facts()))
 }
 
@@ -80,7 +89,7 @@ mod tests {
                     with the resident 13GB Ollama model, so I forced CPU inference for embeddings \
                     and the reranker. Recall p50 is now 20-37ms.";
         let started = std::time::Instant::now();
-        let facts = extract(&client, text, Some(1_754_100_000_000), None)
+        let facts = extract(&client, text, Some(1_754_100_000_000), None, false)
             .await
             .expect("live extraction should succeed");
         println!(

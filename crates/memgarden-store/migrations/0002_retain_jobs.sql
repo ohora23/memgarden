@@ -12,6 +12,10 @@ CREATE TABLE retain_jobs (
   status        TEXT    NOT NULL CHECK (status IN ('pending','running','done','failed')),
   chunks_total  INTEGER NOT NULL DEFAULT 0,
   chunks_done   INTEGER NOT NULL DEFAULT 0,
+  -- Chunks with no extractable content (whitespace/punctuation only). Kept
+  -- apart from chunks_done so an all-chunks-failed job cannot look partially
+  -- successful just because some chunks were junk.
+  chunks_skipped INTEGER NOT NULL DEFAULT 0,
   -- Critic Revision R14: a single chunk whose LLM call fails must not fail the
   -- whole job. It bumps this counter and the run continues; only an all-chunks
   -- failure marks the job 'failed'.

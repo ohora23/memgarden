@@ -44,16 +44,14 @@ pub fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
             chunk_conversation(&turns, max_chars, structured_limit)
         }
         // A lone JSON object is one structured unit the producer deliberately
-        // kept whole: keep it whole up to the structured limit, else split it
-        // as text. Without this branch it would fall through to plain-text
-        // splitting and re-split a chunk — breaking idempotence (#2301).
-        Ok(Value::Object(_)) => {
-            if text.chars().count() <= structured_limit {
-                vec![text.to_string()]
-            } else {
-                split_oversized_unit(text, max_chars)
-            }
-        }
+        // kept whole. We only get here when it is already longer than
+        // `max_chars` (the short-circuit above), and `structured_limit ==
+        // max_chars`, so the "keep it whole" arm legacy has is unreachable
+        // for us and is not written out (review LOW 12). The branch still
+        // has to exist: without it a lone object would fall through to JSONL
+        // detection and then plain-text splitting on a chunk the producer
+        // deliberately kept whole — breaking idempotence (#2301).
+        Ok(Value::Object(_)) => split_oversized_unit(text, max_chars),
         _ => match chunk_jsonl(text, max_chars, structured_limit) {
             Some(chunks) => chunks,
             None => split_oversized_unit(text, max_chars),
@@ -73,7 +71,11 @@ fn chunk_conversation(turns: &[Value], max_chars: usize, structured_limit: usize
         let unit_size = turn_json.chars().count();
         let turn_size = unit_size + 1; // +1 for the comma separator
 
-        if unit_size > structured_limit {
+        // `+2` for the enclosing "[]" (review LOW 11): legacy compares the
+        // bare turn against the limit, which lets a turn of exactly
+        // `max_chars` produce a `max_chars + 2` chunk — and a chunk over the
+        // budget re-splits on the next pass, breaking idempotence.
+        if unit_size + 2 > structured_limit {
             flush(&mut chunks, &mut current, &mut current_size);
             chunks.extend(split_oversized_unit(
                 &turn_json,

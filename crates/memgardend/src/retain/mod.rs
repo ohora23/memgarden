@@ -21,7 +21,7 @@ pub mod chunk;
 pub mod transcript;
 
 use std::sync::OnceLock;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
@@ -34,7 +34,7 @@ use memgarden_core::types::FactType;
 use memgarden_store::models::NewNode;
 use memgarden_store::nodes::NewNodeWithTags;
 use memgarden_store::retain_jobs::{JobProgress, JobStatus};
-use memgarden_store::{nodes, retain_jobs};
+use memgarden_store::{documents, nodes, retain_jobs};
 
 use crate::extract;
 use crate::extract::parse::ParsedFact;
@@ -165,6 +165,45 @@ pub struct RetainTask {
     pub context: Option<String>,
     /// Configured tags + `session:<id>` + `file:<path>` tags, already capped.
     pub tags: Vec<String>,
+    /// SHA-256 of `transcript`. Written onto the document **only** when the
+    /// job completes cleanly (review HIGH 1): persisting it at enqueue time
+    /// meant a partially-failed job made every re-POST of the same
+    /// transcript a permanent "duplicate", i.e. silent data loss.
+    pub content_hash: String,
+}
+
+/// Total transcript bytes currently sitting in the retain queue.
+///
+/// The `mpsc` bound caps the queue at 32 *jobs*, which says nothing about
+/// RAM: 32 × 32MB is a gigabyte of held transcripts. This is the byte-side
+/// budget (review MEDIUM 4).
+///
+/// // ponytail: fetch_add-then-rollback, so a burst of concurrent admissions
+/// // can overshoot the cap briefly by at most (concurrent requests × body
+/// // limit). Bounded by the 32-job queue; swap for a CAS loop only if that
+/// // ever matters.
+static QUEUED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// Ceiling for `QUEUED_BYTES`. 8× the per-request body limit, so a single
+/// oversized retain can never wedge the queue on its own.
+pub const MAX_QUEUED_BYTES: usize = 256 * 1024 * 1024;
+
+/// Admits `n` bytes into the queue budget, or returns `false` (caller
+/// answers 429).
+pub fn try_reserve_bytes(n: usize) -> bool {
+    if QUEUED_BYTES.fetch_add(n, Ordering::Relaxed) + n > MAX_QUEUED_BYTES {
+        QUEUED_BYTES.fetch_sub(n, Ordering::Relaxed);
+        return false;
+    }
+    true
+}
+
+fn release_bytes(n: usize) {
+    QUEUED_BYTES.fetch_sub(n, Ordering::Relaxed);
+}
+
+pub fn queued_bytes() -> usize {
+    QUEUED_BYTES.load(Ordering::Relaxed)
 }
 
 /// Drains the retain queue until shutdown. One task at a time — extraction is
@@ -185,32 +224,61 @@ pub async fn run_worker(state: AppState, mut rx: tokio::sync::mpsc::Receiver<Ret
 }
 
 async fn run_job(state: &AppState, task: RetainTask) {
+    let queued = task.transcript.len();
+    run_job_inner(state, task).await;
+    release_bytes(queued);
+}
+
+async fn run_job_inner(state: &AppState, task: RetainTask) {
     let cfg = &state.cfg.retain;
-    let chunks = chunk::chunk_text(&task.transcript, cfg.chunk_size);
     let wall_timeout = Duration::from_secs(cfg.wall_timeout_secs);
     let started = Instant::now();
+
+    // Chunking is a pure CPU pass over a transcript that can reach the body
+    // limit; it does not belong on a runtime worker thread.
+    let chunk_size = cfg.chunk_size;
+    let transcript = task.transcript.clone();
+    let chunks = match tokio::task::spawn_blocking(move || chunk::chunk_text(&transcript, chunk_size))
+        .await
+    {
+        Ok(chunks) => chunks,
+        Err(e) => {
+            tracing::error!(job_id = %task.job_id, error = %e, "retain chunking task panicked");
+            let progress = JobProgress {
+                status: JobStatus::Failed,
+                error: Some(format!("chunking task panicked: {e}")),
+                ..Default::default()
+            };
+            flush(state, &task.job_id, &progress).await;
+            METRICS.retain_jobs_failed.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    };
 
     let mut progress = JobProgress {
         status: JobStatus::Running,
         chunks_total: chunks.len() as i64,
         ..Default::default()
     };
-    flush(state, &task.job_id, &progress);
+    flush(state, &task.job_id, &progress).await;
 
     // Absolute fact index across the whole document (NIT 16) — the +10ms
     // ordering offsets must keep increasing across chunk boundaries, not
     // restart at 0 in every chunk.
     let mut abs_fact_index: usize = 0;
     let mut last_error: Option<String> = None;
-    let mut timed_out = false;
+    let mut aborted: Option<String> = None;
+
+    // Critic Revision NIT 15: a long job must react to SIGTERM between
+    // chunks, not only between jobs.
+    let shutdown = crate::shutdown_signal();
+    tokio::pin!(shutdown);
 
     for (i, chunk) in chunks.iter().enumerate() {
         if started.elapsed() > wall_timeout {
             // Critic Revision R11: parity with the live hindsight daemon's
-            // RETAIN_WALL_TIMEOUT=7200. Partial progress is already
-            // committed and stays recorded.
-            timed_out = true;
-            last_error = Some(format!(
+            // RETAIN_WALL_TIMEOUT=7200. Partial progress stays committed.
+            aborted = Some(format!(
                 "retain wall timeout after {}s at chunk {}/{}",
                 wall_timeout.as_secs(),
                 i,
@@ -218,42 +286,34 @@ async fn run_job(state: &AppState, task: RetainTask) {
             ));
             break;
         }
+        if futures_ready(&mut shutdown) {
+            aborted = Some(format!("daemon shut down at chunk {}/{}", i, chunks.len()));
+            break;
+        }
 
         // CE-5a review carry-over: a whitespace/punctuation-only chunk must
-        // never reach Ollama. It counts as done, not failed.
+        // never reach Ollama. Counted as SKIPPED, not done — counting it as
+        // done would let an all-chunks-failed job look partially successful
+        // (review LOW 13).
         if chunk.trim().is_empty() || extract::parse::is_degenerate_text(chunk) {
-            progress.chunks_done += 1;
-            flush(state, &task.job_id, &progress);
+            progress.chunks_skipped += 1;
+            flush(state, &task.job_id, &progress).await;
             continue;
         }
 
-        // `chat_json` acquires and releases the Ollama permit inside this
-        // call, so the background worker holds nothing between chunks and an
-        // interactive /dry-run-extract waits at most one chunk (Critic
-        // Revision R11). Open question, unchanged from CE-5a: reqwest gives
-        // us no client-disconnect signal here, so a caller who hangs up
-        // mid-generation still burns the permit until Ollama answers — the
-        // per-call deadline in ollama.rs is the only bound.
-        match extract::extract(
-            &state.ollama,
-            chunk,
-            Some(task.event_date_ms),
-            task.mission.as_deref(),
-        )
-        .await
-        {
+        match extract_chunk(state, &task, chunk).await {
             Ok(facts) => {
                 let n = facts.len();
-                match write_facts(state, &task, &facts, abs_fact_index) {
+                match write_facts(state, &task, facts, abs_fact_index).await {
                     Ok(written) => {
                         abs_fact_index += n;
                         progress.facts_written += written as i64;
                         progress.chunks_done += 1;
                     }
                     Err(e) => {
-                        // A storage failure is not a "chunk failed to
-                        // extract" case, but it is still per-chunk: record
-                        // and keep going, same as R14.
+                        // A storage failure is not "the chunk failed to
+                        // extract", but it is still per-chunk: record and
+                        // keep going, same as R14.
                         tracing::warn!(job_id = %task.job_id, chunk = i, error = %e, "retain node write failed");
                         progress.chunks_failed += 1;
                         METRICS.retain_chunks_failed.fetch_add(1, Ordering::Relaxed);
@@ -270,24 +330,54 @@ async fn run_job(state: &AppState, task: RetainTask) {
                 last_error = Some(e.to_string());
             }
         }
-        flush(state, &task.job_id, &progress);
+        flush(state, &task.job_id, &progress).await;
     }
 
-    let all_failed = progress.chunks_done == 0 && progress.chunks_failed > 0;
-    progress.status = if timed_out || all_failed {
+    // Review LOW 13: "nothing was written and something failed" is the real
+    // all-failed condition. Skipped chunks must not mask it.
+    let all_failed = progress.facts_written == 0 && progress.chunks_failed > 0;
+    let clean = aborted.is_none() && !all_failed && progress.chunks_failed == 0;
+    progress.status = if aborted.is_some() || all_failed {
         METRICS.retain_errors.fetch_add(1, Ordering::Relaxed);
+        METRICS.retain_jobs_failed.fetch_add(1, Ordering::Relaxed);
         JobStatus::Failed
     } else {
         JobStatus::Done
     };
-    progress.error = last_error;
-    flush(state, &task.job_id, &progress);
+    progress.error = aborted.or(last_error);
+
+    // Review HIGH 1: the content hash is the "this transcript is fully
+    // ingested" marker, so it is written HERE and only on a clean run. A job
+    // that failed or skipped a chunk leaves the document hash-less, and
+    // re-POSTing the same transcript starts a fresh job instead of being
+    // dismissed as a duplicate.
+    if clean {
+        let db = state.db.clone();
+        let document_id = task.document_id;
+        let hash = task.content_hash.clone();
+        let stored = tokio::task::spawn_blocking(move || {
+            documents::set_content_hash(&db, document_id, &hash)
+        })
+        .await;
+        match stored {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(job_id = %task.job_id, error = %e, "failed to record document content hash")
+            }
+            Err(e) => {
+                tracing::warn!(job_id = %task.job_id, error = %e, "content hash task panicked")
+            }
+        }
+    }
+
+    flush(state, &task.job_id, &progress).await;
     tracing::info!(
         job_id = %task.job_id,
         bank_id = %task.bank_id,
         status = progress.status.as_str(),
         chunks_total = progress.chunks_total,
         chunks_done = progress.chunks_done,
+        chunks_skipped = progress.chunks_skipped,
         chunks_failed = progress.chunks_failed,
         facts_written = progress.facts_written,
         elapsed_ms = started.elapsed().as_millis() as u64,
@@ -295,21 +385,70 @@ async fn run_job(state: &AppState, task: RetainTask) {
     );
 }
 
+/// Non-blocking check on the pinned shutdown future.
+fn futures_ready(shutdown: &mut std::pin::Pin<&mut impl std::future::Future<Output = ()>>) -> bool {
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    shutdown.as_mut().poll(&mut cx).is_ready()
+}
+
+/// One chunk's extraction, with a single retry for the two "the slot wasn't
+/// available" errors (review HIGH 2). `chat_json_background` waits untimed
+/// for the permit, so `Busy` should now be unreachable; `Deadline` can still
+/// fire on a genuinely stuck upstream and is worth one more attempt before
+/// the chunk is written off.
+async fn extract_chunk(
+    state: &AppState,
+    task: &RetainTask,
+    chunk: &str,
+) -> Result<Vec<ParsedFact>, crate::ollama::OllamaError> {
+    let first = extract::extract(
+        &state.ollama,
+        chunk,
+        Some(task.event_date_ms),
+        task.mission.as_deref(),
+        true,
+    )
+    .await;
+    match first {
+        Err(e @ (crate::ollama::OllamaError::Busy | crate::ollama::OllamaError::Deadline(_))) => {
+            tracing::warn!(job_id = %task.job_id, error = %e, "retain chunk retrying once after a slot error");
+            extract::extract(
+                &state.ollama,
+                chunk,
+                Some(task.event_date_ms),
+                task.mission.as_deref(),
+                true,
+            )
+            .await
+        }
+        other => other,
+    }
+}
+
 /// Progress flush. Best-effort: a job whose row cannot be updated has still
 /// done real work, and failing the whole run over a status write would be
 /// worse than a stale row.
-fn flush(state: &AppState, job_id: &str, progress: &JobProgress) {
-    if let Err(e) = retain_jobs::update(&state.db, job_id, progress) {
-        tracing::warn!(job_id = %job_id, error = %e, "retain job progress update failed");
+async fn flush(state: &AppState, job_id: &str, progress: &JobProgress) {
+    let db = state.db.clone();
+    let job_id_owned = job_id.to_string();
+    let progress = progress.clone();
+    let result =
+        tokio::task::spawn_blocking(move || retain_jobs::update(&db, &job_id_owned, &progress))
+            .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(job_id = %job_id, error = %e, "retain job progress update failed"),
+        Err(e) => tracing::warn!(job_id = %job_id, error = %e, "retain job progress task panicked"),
     }
 }
 
 /// Writes one chunk's facts as memory nodes in a single transaction.
 /// Embeddings stay NULL — see the module doc.
-fn write_facts(
+async fn write_facts(
     state: &AppState,
     task: &RetainTask,
-    facts: &[ParsedFact],
+    facts: Vec<ParsedFact>,
     abs_index_base: usize,
 ) -> memgarden_core::error::Result<usize> {
     if facts.is_empty() {
@@ -321,26 +460,35 @@ fn write_facts(
         .map(|(i, fact)| NodeDraft::build(fact, task, abs_index_base + i))
         .collect();
 
-    let items: Vec<NewNodeWithTags> = drafts
-        .iter()
-        .map(|d| NewNodeWithTags {
-            node: NewNode {
-                bank_id: &task.bank_id,
-                document_id: Some(task.document_id),
-                fact_type: d.fact_type,
-                text: &d.text,
-                context: task.context.as_deref(),
-                event_date: d.event_date,
-                occurred_start: d.occurred_start,
-                occurred_end: d.occurred_end,
-                mentioned_at: d.mentioned_at,
-                metadata: Some(&d.metadata),
-            },
-            tags: &task.tags,
-        })
-        .collect();
+    let db = state.db.clone();
+    let bank_id = task.bank_id.clone();
+    let context = task.context.clone();
+    let document_id = task.document_id;
+    let tags = task.tags.clone();
+    let ids = tokio::task::spawn_blocking(move || {
+        let items: Vec<NewNodeWithTags> = drafts
+            .iter()
+            .map(|d| NewNodeWithTags {
+                node: NewNode {
+                    bank_id: &bank_id,
+                    document_id: Some(document_id),
+                    fact_type: d.fact_type,
+                    text: &d.text,
+                    context: context.as_deref(),
+                    event_date: d.event_date,
+                    occurred_start: d.occurred_start,
+                    occurred_end: d.occurred_end,
+                    mentioned_at: d.mentioned_at,
+                    metadata: Some(&d.metadata),
+                },
+                tags: &tags,
+            })
+            .collect();
+        nodes::insert_batch(&db, &items)
+    })
+    .await
+    .map_err(|e| memgarden_core::Error::Storage(format!("node write task panicked: {e}")))??;
 
-    let ids = nodes::insert_batch(&state.db, &items)?;
     METRICS
         .nodes_written
         .fetch_add(ids.len() as u64, Ordering::Relaxed);
@@ -536,6 +684,26 @@ mod tests {
     }
 
     #[test]
+    fn queued_byte_budget_admits_then_rejects_then_recovers() {
+        // Process-wide static; this is the only test that touches it.
+        assert_eq!(queued_bytes(), 0);
+        assert!(try_reserve_bytes(MAX_QUEUED_BYTES));
+        assert!(
+            !try_reserve_bytes(1),
+            "one byte over the budget must be refused (429)"
+        );
+        assert_eq!(
+            queued_bytes(),
+            MAX_QUEUED_BYTES,
+            "a refused reservation must roll itself back"
+        );
+        release_bytes(MAX_QUEUED_BYTES);
+        assert_eq!(queued_bytes(), 0);
+        assert!(try_reserve_bytes(1));
+        release_bytes(1);
+    }
+
+    #[test]
     fn token_count_is_cl100k() {
         // Sanity: the same counter legacy uses, so ledger numbers compare.
         assert_eq!(token_count(""), 0);
@@ -568,6 +736,7 @@ mod tests {
             mission: None,
             context: Some("claude-code".to_string()),
             tags: vec![],
+            content_hash: "hash".to_string(),
         }
     }
 

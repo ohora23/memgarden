@@ -71,6 +71,7 @@ pub async fn dry_run_extract(
         &body.text,
         body.event_date,
         body.mission.as_deref(),
+        false,
     )
     .await
     .map_err(|e| {

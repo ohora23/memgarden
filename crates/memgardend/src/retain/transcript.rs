@@ -370,6 +370,11 @@ pub fn compact_tool_input(input: &Value, caps: &Caps) -> Value {
 ///
 /// The caller applies `retain.file_tag_cap` (20) — legacy does the same at
 /// its own call site (`retain.py:237-241`).
+/// Paths come straight from untrusted tool input and become node tags, so
+/// bound them: anything absurdly long or carrying control characters is
+/// dropped rather than tagged (security review).
+const MAX_FILE_PATH_CHARS: usize = 512;
+
 pub fn extract_touched_files(messages: &[Value], cwd: &str) -> Vec<String> {
     let cwd_prefix = if cwd.is_empty() {
         String::new()
@@ -378,6 +383,7 @@ pub fn extract_touched_files(messages: &[Value], cwd: &str) -> Vec<String> {
     };
 
     let mut files: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for msg in messages {
         if msg.get("role").and_then(Value::as_str) != Some("assistant") {
             continue;
@@ -414,11 +420,17 @@ pub fn extract_touched_files(messages: &[Value], cwd: &str) -> Vec<String> {
                 });
             let Some(raw) = raw else { continue };
             let path = raw.trim();
+            if path.chars().count() > MAX_FILE_PATH_CHARS
+                || path.chars().any(|c| c.is_control())
+            {
+                continue;
+            }
             let path = match path.strip_prefix(cwd_prefix.as_str()) {
                 Some(rel) if !cwd_prefix.is_empty() => rel,
                 _ => path,
             };
-            if !files.iter().any(|f| f == path) {
+            // Vec keeps first-touch order; the set keeps the dedup O(1).
+            if seen.insert(path.to_string()) {
                 files.push(path.to_string());
             }
         }
@@ -728,6 +740,16 @@ mod tests {
         assert_eq!(tags.len(), 20);
         assert_eq!(tags[0], "file:f0.rs");
         assert_eq!(tags[19], "file:f19.rs");
+    }
+
+    #[test]
+    fn touched_files_rejects_absurd_and_control_char_paths() {
+        let messages = vec![
+            tool_use_msg("Edit", "file_path", &"a".repeat(600)),
+            tool_use_msg("Edit", "file_path", "src/ev\u{1b}[2Jil.rs"),
+            tool_use_msg("Edit", "file_path", "src/ok.rs"),
+        ];
+        assert_eq!(extract_touched_files(&messages, ""), vec!["src/ok.rs"]);
     }
 
     #[test]

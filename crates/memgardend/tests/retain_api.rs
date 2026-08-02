@@ -195,7 +195,7 @@ async fn unknown_bank_is_404() {
         .app
         .oneshot(post(
             "/v1/banks/nope/retain",
-            json!({ "messages": [{ "role": "user", "content": "a long enough message here" }] }),
+            json!({ "messages": [{ "role": "user", "content": "a long enough message here" }], "is_initial": true }),
         ))
         .await
         .unwrap();
@@ -208,7 +208,7 @@ async fn empty_messages_is_400() {
     memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
     let response = harness
         .app
-        .oneshot(post("/v1/banks/b1/retain", json!({ "messages": [] })))
+        .oneshot(post("/v1/banks/b1/retain", json!({ "messages": [], "is_initial": true })))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -227,7 +227,7 @@ async fn nothing_to_retain_is_a_clean_skip_not_an_error() {
             "/v1/banks/b1/retain",
             json!({ "messages": [
                 { "role": "user", "content": "<memgarden_memories>injected</memgarden_memories>" }
-            ]}),
+            ], "is_initial": true }),
         ))
         .await
         .unwrap();
@@ -241,11 +241,11 @@ async fn full_queue_is_429_and_leaves_no_rows_behind() {
     let (harness, _rx, _state) = build("http://127.0.0.1:1", |cfg| cfg.retain.queue_capacity = 1);
     memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
 
-    let body = json!({ "messages": transcript(4), "session_id": "s1" });
+    let body = json!({ "messages": transcript(4), "session_id": "s1", "is_initial": true });
     let first = harness.app.clone().oneshot(post("/v1/banks/b1/retain", body)).await.unwrap();
     assert_eq!(first.status(), StatusCode::ACCEPTED);
 
-    let body = json!({ "messages": transcript(4), "session_id": "s2" });
+    let body = json!({ "messages": transcript(4), "session_id": "s2", "is_initial": true });
     let second = harness.app.clone().oneshot(post("/v1/banks/b1/retain", body)).await.unwrap();
     assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body_json(second).await["error"]["code"], "queue_full");
@@ -269,10 +269,11 @@ async fn full_queue_is_429_and_leaves_no_rows_behind() {
 }
 
 #[tokio::test]
-async fn identical_content_is_a_duplicate_no_op() {
-    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+async fn identical_content_is_a_duplicate_only_after_a_clean_ingest() {
+    let (url, _calls) = spawn_stub_ollama(vec![]).await;
+    let harness = with_worker(&url, |_| {}).await;
     memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
-    let body = json!({ "messages": transcript(4), "session_id": "same-session" });
+    let body = json!({ "messages": transcript(4), "session_id": "same-session", "is_initial": true });
 
     let first = harness
         .app
@@ -281,8 +282,13 @@ async fn identical_content_is_a_duplicate_no_op() {
         .await
         .unwrap();
     assert_eq!(first.status(), StatusCode::ACCEPTED);
-    let first_doc = body_json(first).await["document_id"].clone();
+    let first = body_json(first).await;
+    let first_doc = first["document_id"].clone();
+    let job = await_job(&harness.db, first["job_id"].as_str().unwrap()).await;
+    assert_eq!(job.status, "done");
 
+    // Only now — after the worker stamped the content hash — is a re-POST a
+    // duplicate (review HIGH 1).
     let second = harness
         .app
         .clone()
@@ -295,7 +301,6 @@ async fn identical_content_is_a_duplicate_no_op() {
     assert_eq!(second_body["document_id"], first_doc);
     assert_eq!(second_body["job_id"], Value::Null);
 
-    // Only the first retain created a job.
     let jobs: i64 = harness
         .db
         .read()
@@ -306,10 +311,59 @@ async fn identical_content_is_a_duplicate_no_op() {
 }
 
 #[tokio::test]
+async fn a_partially_failed_job_is_retryable_not_a_permanent_duplicate() {
+    // Review HIGH 1, the data-loss case: chunk 2 of 3 fails, so the document
+    // must NOT be marked fully ingested. Re-POSTing the identical transcript
+    // has to start a fresh job, not answer "duplicate" forever.
+    let (url, _calls) = spawn_stub_ollama(vec![2]).await;
+    let harness = with_worker(&url, |cfg| cfg.retain.chunk_size = 400).await;
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+    let body = json!({ "messages": transcript(6), "session_id": "retryable", "is_initial": true });
+
+    let first = body_json(
+        harness
+            .app
+            .clone()
+            .oneshot(post("/v1/banks/b1/retain", body.clone()))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let job = await_job(&harness.db, first["job_id"].as_str().unwrap()).await;
+    assert_eq!(job.status, "done");
+    assert_eq!(job.chunks_failed, 1, "the fixture must actually fail a chunk");
+
+    let second = harness
+        .app
+        .clone()
+        .oneshot(post("/v1/banks/b1/retain", body.clone()))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::ACCEPTED);
+    let second = body_json(second).await;
+    assert_eq!(second["status"], "accepted", "a partial ingest must be retryable");
+    assert_eq!(second["document_id"], first["document_id"]);
+    assert_ne!(second["job_id"], first["job_id"]);
+
+    // The retry succeeds end to end (the stub only fails call #2), stamps the
+    // hash, and only THEN is a third post a duplicate.
+    let job = await_job(&harness.db, second["job_id"].as_str().unwrap()).await;
+    assert_eq!(job.status, "done");
+    assert_eq!(job.chunks_failed, 0);
+    let third = harness
+        .app
+        .oneshot(post("/v1/banks/b1/retain", body))
+        .await
+        .unwrap();
+    assert_eq!(body_json(third).await["status"], "duplicate");
+}
+
+#[tokio::test]
 async fn a_duplicate_records_no_second_ledger_row() {
     // The ledger measures work avoided, not requests received: a re-sent
     // transcript ingests nothing, so it must not inflate the numbers.
-    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    let (url, _calls) = spawn_stub_ollama(vec![]).await;
+    let harness = with_worker(&url, |_| {}).await;
     memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
     let body = json!({
         "messages": [
@@ -321,14 +375,23 @@ async fn a_duplicate_records_no_second_ledger_row() {
         ],
         "session_id": "dup-ledger",
         "cwd": "/repo",
+        "is_initial": true,
     });
 
-    let first = harness.app.clone().oneshot(post("/v1/banks/b1/retain", body.clone())).await.unwrap();
-    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let first = body_json(
+        harness
+            .app
+            .clone()
+            .oneshot(post("/v1/banks/b1/retain", body.clone()))
+            .await
+            .unwrap(),
+    )
+    .await;
     assert_eq!(
         memgarden_store::metrics_store::list_ledger(&harness.db, 10).unwrap().len(),
         1
     );
+    await_job(&harness.db, first["job_id"].as_str().unwrap()).await;
 
     let second = harness.app.clone().oneshot(post("/v1/banks/b1/retain", body)).await.unwrap();
     assert_eq!(body_json(second).await["status"], "duplicate");
@@ -394,7 +457,7 @@ async fn cap_saving_writes_a_ledger_row_with_the_right_ratio() {
         .app
         .oneshot(post(
             "/v1/banks/b1/retain",
-            json!({ "messages": messages, "session_id": "sess-ledger", "cwd": "/repo" }),
+            json!({ "messages": messages, "session_id": "sess-ledger", "cwd": "/repo", "is_initial": true }),
         ))
         .await
         .unwrap();
@@ -432,7 +495,7 @@ async fn no_ledger_row_when_nothing_was_capped() {
         .app
         .oneshot(post(
             "/v1/banks/b1/retain",
-            json!({ "messages": transcript(4), "session_id": "sess-plain" }),
+            json!({ "messages": transcript(4), "session_id": "sess-plain", "is_initial": true }),
         ))
         .await
         .unwrap();
@@ -475,8 +538,9 @@ async fn worker_writes_nodes_with_tags_and_ordering_offsets() {
                 "messages": messages,
                 "session_id": "sess-worker",
                 "cwd": "/repo",
+                "is_initial": true,
                 "context": "claude-code",
-                "tags": ["agent:claude-code"],
+                "tags": ["agent:claude-code", "", "  ", "bad\u{7}tag"],
                 "event_date": 1_717_977_600_000i64,
             }),
         ))
@@ -528,6 +592,9 @@ async fn worker_writes_nodes_with_tags_and_ordering_offsets() {
     assert!(tags.contains(&"agent:claude-code".to_string()));
     assert!(tags.contains(&"session:sess-worker".to_string()));
     assert!(tags.contains(&"file:src/retain.rs".to_string()));
+    // The request also carried "", "  " and a control-character tag; all
+    // three are dropped before anything is written (security review).
+    assert_eq!(tags.len(), 3, "junk tags must not reach node_tags: {tags:?}");
 
     // Embeddings are left NULL for B1's backlog worker (documented divergence).
     let pending = memgarden_store::nodes::pending_embeddings(&harness.db, 100).unwrap();
@@ -567,7 +634,7 @@ async fn one_failed_chunk_does_not_fail_the_job() {
         .app
         .oneshot(post(
             "/v1/banks/b1/retain",
-            json!({ "messages": transcript(6), "session_id": "sess-partial" }),
+            json!({ "messages": transcript(6), "session_id": "sess-partial", "is_initial": true }),
         ))
         .await
         .unwrap();
@@ -592,7 +659,7 @@ async fn every_chunk_failing_fails_the_job() {
         .app
         .oneshot(post(
             "/v1/banks/b1/retain",
-            json!({ "messages": transcript(6), "session_id": "sess-dead" }),
+            json!({ "messages": transcript(6), "session_id": "sess-dead", "is_initial": true }),
         ))
         .await
         .unwrap();
@@ -621,7 +688,7 @@ async fn wall_timeout_fails_the_job_and_keeps_partial_progress() {
         .app
         .oneshot(post(
             "/v1/banks/b1/retain",
-            json!({ "messages": transcript(200), "session_id": "sess-slow" }),
+            json!({ "messages": transcript(200), "session_id": "sess-slow", "is_initial": true }),
         ))
         .await
         .unwrap();
@@ -715,13 +782,53 @@ async fn degenerate_chunks_never_reach_ollama() {
         .app
         .oneshot(post(
             "/v1/banks/b1/retain",
-            json!({ "messages": [{ "role": "user", "content": "..." }], "session_id": "s-junk" }),
+            json!({ "messages": [{ "role": "user", "content": "..." }], "session_id": "s-junk", "is_initial": true }),
         ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let job_id = body_json(response).await["job_id"].as_str().unwrap().to_string();
     assert_eq!(await_job(&harness.db, &job_id).await.status, "done");
+}
+
+#[tokio::test]
+async fn the_raised_body_limit_is_scoped_to_the_retain_route() {
+    // axum's 2MB default still guards every other route; only /retain is
+    // allowed a real transcript (review LOW 17).
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let big = "p".repeat(3 * 1024 * 1024);
+    let rejected = harness
+        .app
+        .clone()
+        .oneshot(post("/v1/banks", json!({ "bank_id": "x", "mission": big })))
+        .await
+        .unwrap();
+    assert_eq!(
+        rejected.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "the 2MB default must still apply to /v1/banks"
+    );
+
+    let big = "p".repeat(3 * 1024 * 1024);
+    let accepted = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({
+                "messages": [{ "role": "user", "content": big }],
+                "session_id": "big",
+                "is_initial": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        accepted.status(),
+        StatusCode::ACCEPTED,
+        "a 3MB transcript must get through the retain route"
+    );
 }
 
 #[tokio::test]
@@ -733,7 +840,7 @@ async fn metrics_expose_the_retain_counters() {
         .clone()
         .oneshot(post(
             "/v1/banks/b1/retain",
-            json!({ "messages": transcript(4), "session_id": "s-metrics" }),
+            json!({ "messages": transcript(4), "session_id": "s-metrics", "is_initial": true }),
         ))
         .await
         .unwrap();

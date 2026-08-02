@@ -83,6 +83,27 @@ pub fn upsert(
     })
 }
 
+/// Stamps `metadata.content_sha256` on an existing document.
+///
+/// Split out from `upsert` on purpose (review HIGH 1): the hash means "this
+/// exact content is fully ingested", which is only true once the retain job
+/// has finished cleanly. Writing it at upsert time turned any partially
+/// failed job into a permanent "duplicate" for that transcript.
+pub fn set_content_hash(db: &Db, id: i64, content_hash: &str) -> Result<()> {
+    let now = now_ms();
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE documents
+             SET metadata = json_set(coalesce(metadata, '{}'), '$.content_sha256', ?1),
+                 updated_at = ?2
+             WHERE id = ?3",
+            params![content_hash, now, id],
+        )
+        .map_err(store_err)?;
+        Ok(())
+    })
+}
+
 pub fn get_metadata(db: &Db, id: i64) -> Result<Option<String>> {
     let conn = db.read()?;
     conn.query_row(
@@ -100,26 +121,44 @@ mod tests {
     use super::*;
     use crate::banks;
 
-    fn meta(hash: &str) -> String {
-        format!(r#"{{"content_sha256":"{hash}"}}"#)
-    }
+    const META: &str = r#"{"kind":"transcript"}"#;
 
     #[test]
-    fn upsert_inserts_then_reports_unchanged_for_same_hash() {
+    fn unchanged_only_after_the_hash_is_stamped() {
         let db = Db::open_memory().unwrap();
         banks::create(&db, "b1", None, None).unwrap();
 
-        let first = upsert(&db, "b1", "sess-1", Some("t"), &meta("aaa"), "aaa").unwrap();
+        let first = upsert(&db, "b1", "sess-1", Some("t"), META, "aaa").unwrap();
         assert!(!first.unchanged);
 
-        let second = upsert(&db, "b1", "sess-1", Some("t"), &meta("aaa"), "aaa").unwrap();
-        assert_eq!(second.id, first.id, "same (bank_id, doc_key) -> same row");
-        assert!(second.unchanged, "identical content hash must be a no-op");
+        // The job has not finished, so no hash is stored yet: re-sending the
+        // same content must NOT be dismissed as a duplicate (review HIGH 1).
+        let retry = upsert(&db, "b1", "sess-1", Some("t"), META, "aaa").unwrap();
+        assert_eq!(retry.id, first.id);
+        assert!(!retry.unchanged, "an un-ingested document is not a duplicate");
 
-        let third = upsert(&db, "b1", "sess-1", Some("t2"), &meta("bbb"), "bbb").unwrap();
-        assert_eq!(third.id, first.id);
-        assert!(!third.unchanged);
-        assert_eq!(get_metadata(&db, first.id).unwrap().unwrap(), meta("bbb"));
+        set_content_hash(&db, first.id, "aaa").unwrap();
+        let third = upsert(&db, "b1", "sess-1", Some("t"), META, "aaa").unwrap();
+        assert!(third.unchanged, "a fully ingested document IS a duplicate");
+
+        // Different content -> not a duplicate, and the stale hash is gone.
+        let fourth = upsert(&db, "b1", "sess-1", Some("t2"), META, "bbb").unwrap();
+        assert!(!fourth.unchanged);
+        assert!(
+            !get_metadata(&db, first.id).unwrap().unwrap().contains("aaa"),
+            "a content change must clear the previous hash"
+        );
+    }
+
+    #[test]
+    fn set_content_hash_preserves_other_metadata() {
+        let db = Db::open_memory().unwrap();
+        banks::create(&db, "b1", None, None).unwrap();
+        let doc = upsert(&db, "b1", "sess", None, r#"{"files_modified":"a.rs"}"#, "h").unwrap();
+        set_content_hash(&db, doc.id, "h").unwrap();
+        let meta = get_metadata(&db, doc.id).unwrap().unwrap();
+        assert!(meta.contains("\"files_modified\":\"a.rs\""));
+        assert!(meta.contains("\"content_sha256\":\"h\""));
     }
 
     #[test]
@@ -128,8 +167,9 @@ mod tests {
         banks::create(&db, "b1", None, None).unwrap();
         banks::create(&db, "b2", None, None).unwrap();
 
-        let a = upsert(&db, "b1", "sess", None, &meta("aaa"), "aaa").unwrap();
-        let b = upsert(&db, "b2", "sess", None, &meta("aaa"), "aaa").unwrap();
+        let a = upsert(&db, "b1", "sess", None, META, "aaa").unwrap();
+        set_content_hash(&db, a.id, "aaa").unwrap();
+        let b = upsert(&db, "b2", "sess", None, META, "aaa").unwrap();
         assert_ne!(a.id, b.id);
         assert!(!b.unchanged, "same doc_key in another bank is a new doc");
     }

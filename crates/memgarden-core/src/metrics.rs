@@ -172,6 +172,11 @@ pub struct Metrics {
     /// Chunks whose LLM extraction failed but did not fail the whole job
     /// (Critic Revision R14).
     pub retain_chunks_failed: AtomicU64,
+    /// Background retain JOBS that ended `failed`. Distinct from
+    /// `retain_errors`, which counts HTTP-level rejections of the retain
+    /// endpoint: a 429 is not a failed ingest and a failed ingest is not a
+    /// rejected request.
+    pub retain_jobs_failed: AtomicU64,
     /// `benefit_ledger` rows of kind `retain_cap_saving` written by the
     /// retain ingest (AC-6: the ledger auto-populates, MX-1's deferral).
     pub retain_cap_savings: AtomicU64,
@@ -198,6 +203,7 @@ impl Metrics {
             retain_tokens_raw: AtomicU64::new(0),
             retain_tokens_capped: AtomicU64::new(0),
             retain_chunks_failed: AtomicU64::new(0),
+            retain_jobs_failed: AtomicU64::new(0),
             retain_cap_savings: AtomicU64::new(0),
             hook_invocations: AtomicU64::new(0),
             http_latency: Histogram::new(),
@@ -239,6 +245,7 @@ impl Metrics {
             retain_tokens_raw,
             retain_tokens_capped,
             retain_chunks_failed: self.retain_chunks_failed.load(Ordering::Relaxed),
+            retain_jobs_failed: self.retain_jobs_failed.load(Ordering::Relaxed),
             retain_cap_savings: self.retain_cap_savings.load(Ordering::Relaxed),
             hook_invocations: self.hook_invocations.load(Ordering::Relaxed),
             retain_tokens_saved,
@@ -266,6 +273,7 @@ pub struct MetricsSnapshot {
     pub retain_tokens_raw: u64,
     pub retain_tokens_capped: u64,
     pub retain_chunks_failed: u64,
+    pub retain_jobs_failed: u64,
     pub retain_cap_savings: u64,
     pub hook_invocations: u64,
     pub retain_tokens_saved: Option<u64>,

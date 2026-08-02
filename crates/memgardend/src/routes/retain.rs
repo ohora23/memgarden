@@ -22,13 +22,14 @@ use crate::error::{ApiError, join_err};
 use crate::retain::{IngestPlan, RetainTask};
 use crate::state::AppState;
 
-/// Hard ceiling on one transcript's messages. The 102MB-transcript incident
-/// that motivated the backfill cap is exactly this shape, and the cap itself
-/// runs *after* the body is parsed — so the body limit has to be generous
-/// enough for a real first-retain of a long-lived project, and bounded
-/// enough that one request cannot OOM the daemon.
+/// Hard ceiling on one retain request body. The caps that shrink a
+/// transcript run *after* parsing, so this has to fit a real first-retain of
+/// a long-lived project — but a single request must never be able to OOM the
+/// daemon, and 32MB already exceeds any transcript the backfill cap will let
+/// through to extraction. Pair with `retain::MAX_QUEUED_BYTES`, which bounds
+/// the *sum* of what is waiting in the queue.
 /// The route-level `DefaultBodyLimit` in `routes/mod.rs` enforces it.
-pub const MAX_RETAIN_BODY_BYTES: usize = 128 * 1024 * 1024;
+pub const MAX_RETAIN_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 pub struct RetainRequest {
@@ -46,10 +47,11 @@ pub struct RetainRequest {
     pub cwd: Option<String>,
     /// `true` only for a session's FIRST retain. Gates the backfill cap
     /// (`retain.max_initial_messages`), which keeps the last N messages.
-    /// Defaults to `false`: capping a delta retain would silently drop
-    /// messages, whereas an uncapped initial retain is still bounded by
-    /// `retain.wall_timeout_secs`.
-    #[serde(default)]
+    ///
+    /// **Required** — deliberately not `#[serde(default)]`. A defaulted
+    /// value means a caller that forgets the field silently takes the
+    /// uncapped branch, which is exactly the 102MB-transcript case the cap
+    /// exists to prevent. An absent field is a 400.
     pub is_initial: bool,
     #[serde(default)]
     pub context: Option<String>,
@@ -169,6 +171,28 @@ async fn retain_inner(
         ),
         Prepared::Queued { plan, task } => {
             let document_id = task.document_id;
+            // Byte-side admission: the 32-job queue bound says nothing about
+            // RAM. Rejecting here leaves the job row behind on purpose —
+            // marked failed below, so the caller can see why.
+            if !crate::retain::try_reserve_bytes(task.transcript.len()) {
+                let job_id_owned = task.job_id.clone();
+                let db = state.db.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    memgarden_store::retain_jobs::update(
+                        &db,
+                        &job_id_owned,
+                        &memgarden_store::retain_jobs::JobProgress {
+                            status: memgarden_store::retain_jobs::JobStatus::Failed,
+                            error: Some("retain queue byte budget exhausted".to_string()),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .await;
+                return Err(ApiError::too_many_requests(
+                    "retain queue byte budget exhausted; retry shortly",
+                ));
+            }
             // The permit was reserved before any DB work, so this cannot
             // fail and cannot block.
             permit.send(*task);
@@ -234,10 +258,14 @@ fn prepare(
 
     if upsert.unchanged {
         // legacy retain dedup is an exact SHA-256 match and nothing else —
-        // never cosine (port-brief gotcha #5). Nothing is ingested, so this
-        // records no tokens and no ledger row: the ledger is a record of
-        // work avoided, not of requests received.
-        tracing::debug!(bank_id, doc_key, "retain skipped: identical content hash");
+        // never cosine (port-brief gotcha #5). `unchanged` can only be true
+        // once a previous job stamped the hash on completion, so a partially
+        // failed ingest is never mistaken for a duplicate (review HIGH 1).
+        // Nothing is ingested here, so this records no tokens and no ledger
+        // row: the ledger is a record of work avoided, not of requests
+        // received.
+        let doc_key_log: String = doc_key.chars().take(128).collect();
+        tracing::debug!(bank_id, doc_key = ?doc_key_log, "retain skipped: identical content hash");
         return Ok(Prepared::Duplicate {
             plan,
             document_id: upsert.id,
@@ -288,7 +316,7 @@ fn prepare(
         Some(&detail),
     )?;
 
-    let mut tags = body.tags.clone();
+    let mut tags = sanitize_tags(&body.tags);
     // Critic Revision R15: the session tag is the data path AC-4's session
     // filter (and B5's `/graph?session=`) reads. legacy template parity:
     // `retain.py:201-206`.
@@ -307,6 +335,7 @@ fn prepare(
         mission: resolve_mission(state, &bank, body),
         context: body.context.clone(),
         tags,
+        content_hash: plan.content_hash.clone(),
     };
     Ok(Prepared::Queued {
         plan,
@@ -341,12 +370,14 @@ fn resolve_mission(
 }
 
 /// Document metadata: the caller's extras plus the fields retain owns.
-/// `content_sha256` is what `documents::upsert` compares on;
-/// `files_modified` is the comma-joined form the fork stores alongside the
-/// `file:` tags (`retain.py:240`).
+///
+/// Deliberately does NOT carry `content_sha256` — that is stamped by
+/// `documents::set_content_hash` when the job finishes cleanly (review
+/// HIGH 1). `files_modified` is the comma-joined form the fork stores
+/// alongside the `file:` tags (`retain.py:240`).
 fn document_metadata(body: &RetainRequest, plan: &IngestPlan) -> String {
     let mut meta = body.metadata.clone();
-    meta.insert("content_sha256".to_string(), json!(plan.content_hash));
+    meta.remove("content_sha256");
     meta.insert("message_count".to_string(), json!(plan.message_count));
     if let Some(session_id) = &body.session_id {
         meta.insert("session_id".to_string(), json!(session_id));
@@ -358,6 +389,24 @@ fn document_metadata(body: &RetainRequest, plan: &IngestPlan) -> String {
         );
     }
     Value::Object(meta).to_string()
+}
+
+/// Caller-supplied tags are untrusted and land in `node_tags` for every fact
+/// of the job. Drop the empty and the unprintable, bound the length, and cap
+/// the count (security review): an unbounded tag list multiplies by fact
+/// count in the database.
+const MAX_TAGS: usize = 32;
+const MAX_TAG_CHARS: usize = 128;
+
+fn sanitize_tags(raw: &[String]) -> Vec<String> {
+    raw.iter()
+        .map(|t| t.trim())
+        .filter(|t| {
+            !t.is_empty() && t.chars().count() <= MAX_TAG_CHARS && !t.chars().any(|c| c.is_control())
+        })
+        .take(MAX_TAGS)
+        .map(str::to_string)
+        .collect()
 }
 
 pub async fn get_job(
@@ -379,6 +428,7 @@ pub async fn get_job(
         "status": job.status,
         "chunks_total": job.chunks_total,
         "chunks_done": job.chunks_done,
+        "chunks_skipped": job.chunks_skipped,
         "chunks_failed": job.chunks_failed,
         "facts_written": job.facts_written,
         "error": job.error,

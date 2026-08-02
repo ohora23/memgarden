@@ -113,11 +113,17 @@ wall_timeout_secs = 7200
 [profile]
 # Named preset that fills grouped defaults for a usage pattern. Precedence
 # matches the fork: defaults -> this file -> env -> the preset fills only
-# keys you did NOT set explicitly. "" = no preset; "coding" is the only one.
+# keys you did NOT set explicitly. "coding" is the only preset today.
 #
 # coding: include_tool_calls = true, recall_budget = "low", and the two
 # mission strings below (verbatim from the fork's PROFILE_PRESETS).
-name = ""
+#
+# Shipped ON, because that is what MemGarden is for: with `name = ""` the
+# built-in default include_tool_calls = false means tool calls are never
+# retained, the two tool-input caps have nothing to cap, and a default
+# install produces no retain_cap_saving ledger rows at all. Set it to "" if
+# this daemon serves plain chat rather than coding sessions.
+name = "coding"
 # The three keys below are commented out for the same reason as
 # include_tool_calls: uncommenting one pins it against the preset.
 #
