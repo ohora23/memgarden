@@ -121,6 +121,30 @@ wall_timeout_secs = 7200
 # every extra probe is one more 14B-model call on the background path.
 dedup_threshold = 0.97
 
+# Seconds between background consolidation ticks (legacy:
+# DEFAULT_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS, config.py:1298).
+# 0 disables the background task; POST /v1/banks/{id}/consolidate still runs a
+# round manually. A tick is skipped entirely while a retain job is queued or in
+# flight — consolidation has no latency SLO and ingest does.
+interval_secs = 300
+
+# Facts loaded per round (config.py:1149) and facts per LLM call
+# (config.py:1153). The prompt's own hard token ceiling is a const in the code,
+# NOT a config value — see docs/design/ce-9b-consolidation-round.md for why.
+batch_size = 50
+llm_batch_size = 8
+
+# Outer attempts at one LLM batch before it is skipped (config.py:1147). The
+# Ollama client retries transport and parse failures on its own; this retries a
+# semantically invalid plan, which no transport retry would fix.
+max_attempts = 3
+
+# The per-fact recall that pools existing observations into the batch prompt
+# (config.py:1163, :1167). `max_tokens` bounds how much existing-observation
+# text one prompt may carry.
+recall_budget = "low"
+max_tokens = 512
+
 [profile]
 # Named preset that fills grouped defaults for a usage pattern. Precedence
 # matches the fork: defaults -> this file -> env -> the preset fills only

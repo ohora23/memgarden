@@ -25,6 +25,20 @@ pub struct AppState {
     /// reachability lives in `ollama::ollama_status()`, updated by the
     /// background prober.
     pub ollama: Arc<OllamaClient>,
+    /// Banks with a consolidation round in flight (CE-9b).
+    ///
+    /// `run_round`'s watermark read, fact selection and `start_run` are three
+    /// separate transactions, so two overlapping rounds on one bank read the
+    /// same watermark, select the same facts and both apply plans — duplicate
+    /// observations that the advanced watermark then guarantees are never
+    /// revisited. Two POSTs, or one POST landing on the 300s tick, is enough.
+    ///
+    /// // ponytail: a set of bank ids under a std Mutex, not a job table. The
+    /// // critical section is one `insert`/`remove` and is never held across
+    /// // an await; single-process by construction, so nothing here survives a
+    /// // restart — and nothing needs to, since an abandoned `running` row has
+    /// // a NULL watermark and is ignored.
+    pub consolidating: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Bounded queue into the background retain worker
     /// (`retain::run_worker`). Capacity is `retain.queue_capacity`; the
     /// endpoint reserves a slot with `try_reserve` and answers 429 when the

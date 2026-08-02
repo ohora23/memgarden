@@ -111,6 +111,7 @@ fn build(
         started_at_ms: memgarden_core::now_ms(),
         embedder: Arc::new(std::sync::RwLock::new(None)),
         ollama,
+        consolidating: Default::default(),
         retain_tx,
     };
     let app = routes::router(state.clone());

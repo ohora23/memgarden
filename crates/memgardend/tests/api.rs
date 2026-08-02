@@ -48,6 +48,7 @@ fn test_app_parts(
         started_at_ms: memgarden_core::now_ms(),
         embedder: Arc::new(std::sync::RwLock::new(None)),
         ollama,
+        consolidating: Default::default(),
         retain_tx,
     };
     (routes::router(state), db, retain_rx)

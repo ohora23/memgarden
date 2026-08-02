@@ -30,6 +30,21 @@ async fn main() -> anyhow::Result<()> {
         Ok(n) => tracing::warn!(count = n, "closed out retain jobs orphaned by a restart"),
         Err(e) => tracing::warn!(error = %e, "failed to close out orphaned retain jobs"),
     }
+    // Same for a consolidation round the previous process died inside: its
+    // in-memory single-flight guard is gone, but its `running` ledger row is
+    // not. The watermark is NULL on those rows so nothing is lost — this only
+    // stops `GET /consolidation` reporting a round that cannot finish.
+    match memgarden_store::consolidate::fail_stale_runs(
+        &db,
+        "daemon restarted before the round finished",
+    ) {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(
+            count = n,
+            "closed out consolidation runs orphaned by a restart"
+        ),
+        Err(e) => tracing::warn!(error = %e, "failed to close out orphaned consolidation runs"),
+    }
     // 21ms one-time cl100k_base init, paid here instead of on the first
     // retain request (decision #5).
     memgardend::retain::warm_tokenizer();
@@ -41,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
         started_at_ms,
         embedder: Arc::new(RwLock::new(None)),
         ollama: ollama_client.clone(),
+        consolidating: Default::default(),
         retain_tx,
     };
 
@@ -57,6 +73,8 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(embed_task::load_at_startup(state.clone()));
     let embed_backlog_handle = tokio::spawn(embed_task::run_backlog(db.clone(), state.clone()));
     tokio::spawn(ollama::run_prober(ollama_client));
+    let consolidation_handle =
+        tokio::spawn(memgardend::consolidate::round::run_task(state.clone()));
     let retain_worker_handle = tokio::spawn(memgardend::retain::run_worker(state, retain_rx));
 
     axum::serve(listener, app)
@@ -71,6 +89,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Err(e) = retain_worker_handle.await {
         tracing::warn!(error = %e, "retain worker join error during shutdown");
+    }
+    if let Err(e) = consolidation_handle.await {
+        tracing::warn!(error = %e, "consolidation task join error during shutdown");
     }
 
     tracing::info!("shutting down: checkpointing WAL");
