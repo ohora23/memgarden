@@ -240,7 +240,9 @@ pub fn extract_constraint(query: &str, now_ms: i64) -> Option<Constraint> {
 
     // Fallback. legacy runs dateparser here; MemGarden ships none, so this is
     // an explicit-date scan — and, like legacy, it reads the ORIGINAL query.
-    let day = fallback_date(query)?;
+    // ISO first, so the pre-existing behaviour is untouched; Korean only when
+    // there is no ISO token to find.
+    let day = fallback_date(query).or_else(|| korean_absolute_date(query, today))?;
     let start_ms = midnight_ms(day)?;
     Some(Constraint::Range {
         start_ms,
@@ -340,8 +342,9 @@ fn resolve(period: Period, today: Date) -> Option<(Date, Date)> {
 /// First parseable token wins (legacy scores and takes the strongest,
 /// `:270-283`).
 ///
-/// `// ponytail: ISO only. Add prose dates when a real query needs one — the
-/// period rules above already cover every relative form these banks use.`
+/// `// ponytail: ISO only. Korean `N월 N일` was added below once a real query
+/// needed it (AX-2 q17). Other prose forms — English month names, `8/2` — are
+/// still absent; add one when a query in the banks asks for it.`
 fn fallback_date(original: &str) -> Option<Date> {
     original
         .split_whitespace()
@@ -355,6 +358,122 @@ fn fallback_date(original: &str) -> Option<Date> {
         .find_map(|tok| parse_iso_ms(tok).and_then(date_of))
 }
 
+/// Korean absolute dates: `N월 N일` and `YYYY년 N월 N일`, read off the
+/// **original** query like the ISO scan above. A day-precise single date, so
+/// the caller turns it into the same single-day window ISO produces.
+///
+/// This is the most natural way a Korean speaker writes an absolute date and
+/// it is what AX-2's gold query q17 (`8월 2일에 터진 사고`) actually asks.
+///
+/// **This deliberately does not reproduce legacy.** Legacy's dateparser
+/// matches only the `N월` token and fills the day *and the year* from the
+/// reference date, so with `RELATIVE_BASE = 2026-08-03` it reads `8월 2일` as
+/// 2026-08-03 and `2024년 3월 15일` as 2026-03-03 — then narrows to that one
+/// wrong day (`query_analyzer.py:283-287`). A confidently wrong window is
+/// worse than none, so we are day-precise instead. See
+/// `docs/design/ce-8-korean-absolute-dates.md`.
+///
+/// Scanning, not regex: no regex crate is in the tree and this is two numeric
+/// reads around a known character.
+///
+/// `// ponytail: the fallback path ignores the before/since markers that the
+/// period path honours. marker_before is consulted only inside the
+/// find_period branch, so 8월 2일 이전에 있었던 일 yields a single-day Aug 2
+/// window where 지난주 이전 would yield Unconstrainable. This is the one
+/// declined shape that fails UNSAFE — a dated node outside a wrong window
+/// takes temporal_proximity 0.0 (0.9x in combined) while a dateless node
+/// keeps NEUTRAL (1.0x), so a wrong window actively penalises correctly-dated
+/// candidates. Pre-existing: ISO dates behave identically on master. This
+/// change makes it reachable through the natural Korean form, which is why it
+/// is named here rather than left implicit. Upgrade path: hoist the
+/// marker_before check above the fallback so both paths share it.`
+fn korean_absolute_date(original: &str, today: Date) -> Option<Date> {
+    original.match_indices('월').find_map(|(at, m)| {
+        let (month, head) = trailing_number(&original[..at])?;
+        let (day, tail) = leading_number(&original[at + m.len()..])?;
+        // The `일` is what makes this a date rather than a bare month.
+        if !tail.trim_start().starts_with('일') {
+            return None;
+        }
+        let (month, day) = (i8::try_from(month).ok()?, i8::try_from(day).ok()?);
+        match year_prefix(head) {
+            // An explicit year is honoured as written, future or not: the
+            // query said it.
+            Some(year) => Date::new(year, month, day).ok(),
+            None => most_recent_occurrence(today, month, day),
+        }
+        // `Date::new` rejects 13월, 45일 and 2월 30일 rather than clamping
+        // them. Clamping would invent a confidently wrong single-day window,
+        // which is the exact failure this whole function exists to avoid.
+    })
+}
+
+/// **The year-inference rule for the bare `N월 N일` form: the most recent
+/// occurrence that is not in the future relative to `now`.**
+///
+/// A memory query asks about the past — there is nothing to recall from next
+/// December. "Always the current year" is the tempting alternative and it is
+/// wrong here in the one case that matters: `12월 31일` asked on 5 January
+/// would resolve eleven months into the future, where the bank is empty, and
+/// the arm would return nothing while looking like it worked.
+///
+/// ponytail: five candidate years, walked, not searched. Only `2월 29일`
+/// needs more than one step back, and never more than four. Widen the range
+/// if a query ever needs a date older than that — but at that point the query
+/// should be writing the year.
+fn most_recent_occurrence(today: Date, month: i8, day: i8) -> Option<Date> {
+    (0..5).find_map(|back| {
+        let candidate = Date::new(today.year() - back, month, day).ok()?;
+        (candidate <= today).then_some(candidate)
+    })
+}
+
+/// `YYYY년` immediately before the month, if present.
+///
+/// **Exactly four digits.** `trailing_number` caps at four so a port number
+/// cannot be read as a year; this is the matching floor. Without it
+/// `99년 3월 15일` resolves to a window on **0099-03-15** — in Korean `99년`
+/// means 1999 and nobody means 99 AD. Falling through to
+/// `most_recent_occurrence` instead makes it imprecise (2026-03-15) rather
+/// than absurd, and imprecise is the safe failure here: a two-digit year is
+/// guesswork either way, but a year-0099 window is a confidently wrong one.
+fn year_prefix(head: &str) -> Option<i16> {
+    let (year, _) = trailing_number(head.trim_end().strip_suffix('년')?)?;
+    // `1000..=9999` *is* the four-digit test, given `trailing_number` already
+    // capped the run at four. Stated as a range rather than a digit count
+    // because the digits are gone by here and re-deriving them from byte
+    // offsets across a 3-byte `년` is how you get an off-by-two.
+    (1000..=9999).contains(&year).then_some(())?;
+    i16::try_from(year).ok()
+}
+
+/// The run of ASCII digits at the end of `s`, plus what precedes it.
+/// Whitespace-tolerant, so `2024년 3월` splits the same as `2024년3월`.
+///
+/// Four digits max: enough for a year, and it keeps a long digit string (a
+/// port, a node id) from being read as one.
+fn trailing_number(s: &str) -> Option<(i64, &str)> {
+    let s = s.trim_end();
+    let len = s.bytes().rev().take_while(u8::is_ascii_digit).count();
+    if len == 0 || len > 4 {
+        return None;
+    }
+    // Digits are one byte each, so this is always a char boundary.
+    let (rest, digits) = s.split_at(s.len() - len);
+    Some((digits.parse().ok()?, rest))
+}
+
+/// The mirror of `trailing_number`: the run of ASCII digits at the start.
+fn leading_number(s: &str) -> Option<(i64, &str)> {
+    let s = s.trim_start();
+    let len = s.bytes().take_while(u8::is_ascii_digit).count();
+    if len == 0 || len > 4 {
+        return None;
+    }
+    let (digits, rest) = s.split_at(len);
+    Some((digits.parse().ok()?, rest))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,8 +482,22 @@ mod tests {
     /// for the Monday-zero week arithmetic and the weekend rule.
     const NOW: i64 = 1_785_646_541_000;
 
+    /// 2026-08-03T00:00:00Z — AX-2's pinned `now`
+    /// (`docs/design/ax-2-recall-quality.md`). Used by the tests that pin q17
+    /// and the divergence from legacy, so those assertions are about the
+    /// configuration the recorded baseline was measured in.
+    const NOW_AX2: i64 = 1_785_715_200_000;
+
+    /// 2027-01-05T00:00:00Z — a January reference date, for the year-boundary
+    /// half of the inference rule.
+    const NOW_JAN: i64 = 1_799_107_200_000;
+
     fn range(query: &str) -> Option<(String, String)> {
-        match extract_constraint(query, NOW) {
+        range_at(query, NOW)
+    }
+
+    fn range_at(query: &str, now: i64) -> Option<(String, String)> {
+        match extract_constraint(query, now) {
             Some(Constraint::Range { start_ms, end_ms }) => Some((
                 jiff::Timestamp::from_millisecond(start_ms)
                     .unwrap()
@@ -378,7 +511,11 @@ mod tests {
     }
 
     fn days(query: &str) -> Option<(String, String)> {
-        range(query).map(|(a, b)| (a[..10].to_string(), b[..10].to_string()))
+        days_at(query, NOW)
+    }
+
+    fn days_at(query: &str, now: i64) -> Option<(String, String)> {
+        range_at(query, now).map(|(a, b)| (a[..10].to_string(), b[..10].to_string()))
     }
 
     #[test]
@@ -620,6 +757,137 @@ mod tests {
             day("2026-07-15")
         );
         assert_eq!(days("what shipped on 2026-07-15"), day("2026-07-15"));
+    }
+
+    /// `N월 N일` and `YYYY년 N월 N일`, each a single day — the same window the
+    /// ISO fallback produces.
+    #[test]
+    fn korean_absolute_dates_are_single_day_windows() {
+        // AX-2's q17, at AX-2's pinned `now`.
+        assert_eq!(days_at("8월 2일에 터진 사고", NOW_AX2), day("2026-08-02"));
+        // The whole day, to the last millisecond — same shape as ISO.
+        assert_eq!(
+            range_at("8월 2일에 터진 사고", NOW_AX2),
+            Some((
+                "2026-08-02T00:00:00Z".to_string(),
+                "2026-08-02T23:59:59.999Z".to_string()
+            ))
+        );
+        // Whitespace is optional, on both sides of `월`.
+        assert_eq!(days("8월2일 사고"), day("2026-08-02"));
+        assert_eq!(days("8 월 2 일 사고"), day("2026-08-02"));
+        // An explicit year is honoured as written — no inference.
+        assert_eq!(days("2024년 3월 15일 결정"), day("2024-03-15"));
+        assert_eq!(days("2024년3월15일"), day("2024-03-15"));
+    }
+
+    /// **The year-inference rule: the most recent occurrence not in the
+    /// future.** Both halves, because a rule tested only inside one calendar
+    /// year is indistinguishable from "always the current year".
+    #[test]
+    fn a_bare_month_day_resolves_to_the_most_recent_past_occurrence() {
+        // NOW is 2026-08-02. A date already past this year stays in it...
+        assert_eq!(days("3월 15일 결정"), day("2026-03-15"));
+        // ...and one still ahead of it belongs to last year.
+        assert_eq!(days("12월 31일 릴리스"), day("2025-12-31"));
+
+        // The boundary: the same query asked in January must NOT jump forward
+        // eleven months into an empty bank.
+        assert_eq!(days_at("12월 31일 릴리스", NOW_JAN), day("2026-12-31"));
+        assert_eq!(days_at("1월 3일 배포", NOW_JAN), day("2027-01-03"));
+        // Today itself is "not in the future" — inclusive, not strict.
+        assert_eq!(days_at("1월 5일", NOW_JAN), day("2027-01-05"));
+        // Tomorrow is, so it walks back a year.
+        assert_eq!(days_at("1월 6일", NOW_JAN), day("2026-01-06"));
+
+        // The only date that needs more than one step back.
+        assert_eq!(days("2월 29일 그 버그"), day("2024-02-29"));
+    }
+
+    /// Invalid dates are **rejected, not clamped**. A clamped date is a
+    /// confidently wrong single-day window filtering out everything the query
+    /// asked for — the exact failure mode this change exists to avoid.
+    #[test]
+    fn an_impossible_date_is_no_constraint_rather_than_a_clamped_one() {
+        for q in [
+            "13월 45일에 무슨 일",
+            "2월 30일 회의",
+            "0월 5일",
+            "8월 0일",
+            "8월 32일",
+            "99999월 1일",
+        ] {
+            assert_eq!(extract_constraint(q, NOW), None, "{q}");
+        }
+    }
+
+    /// A two-digit year is guesswork; a year-0099 window is a confidently
+    /// wrong one. `year_prefix` requires exactly four digits, so these fall
+    /// through to the bare-form inference instead.
+    #[test]
+    fn a_two_digit_year_is_inferred_not_read_as_year_ninety_nine() {
+        assert_eq!(days("99년 3월 15일"), day("2026-03-15"));
+        assert_eq!(days("24년 3월 15일"), day("2026-03-15"));
+        assert_eq!(days("0년 3월 15일"), day("2026-03-15"));
+        // Four digits still means what it says.
+        assert_eq!(days("2024년 3월 15일"), day("2024-03-15"));
+    }
+
+    /// The one declined shape that fails **unsafe**, pinned as it currently
+    /// behaves so the ponytail comment on `korean_absolute_date` cannot drift
+    /// away from the code. The period path returns `Unconstrainable` here;
+    /// the fallback path does not consult the markers at all.
+    #[test]
+    fn before_markers_do_not_reach_the_fallback_path() {
+        // The period path honours `이전`...
+        assert_eq!(
+            extract_constraint("지난주 이전 결정", NOW),
+            Some(Constraint::Unconstrainable)
+        );
+        // ...the fallback path does not, for a Korean date or an ISO one.
+        assert_eq!(days("8월 2일 이전에 있었던 일"), day("2026-08-02"));
+        assert_eq!(days("2026-07-15 이전에 있었던 일"), day("2026-07-15"));
+    }
+
+    /// Out of scope, deliberately, and pinned so a future reader sees it was a
+    /// decision. Bare `N월` is a month *range*, a different shape; `8/2` is
+    /// ambiguous between two orderings and indistinguishable from a fraction
+    /// or a path. Legacy resolves neither correctly either.
+    #[test]
+    fn bare_month_and_numeric_slash_forms_are_out_of_scope() {
+        assert_eq!(extract_constraint("12월에 있었던 일", NOW), None);
+        assert_eq!(extract_constraint("8/2 사고", NOW), None);
+        // ...and the digits of a version or a port are still not a date.
+        assert_eq!(extract_constraint("포트 9077 재시작", NOW), None);
+    }
+
+    /// The relative rules run first and must keep winning where they already
+    /// match — the absolute scan lives in the fallback, below them.
+    #[test]
+    fn relative_expressions_still_beat_an_absolute_date_in_the_same_query() {
+        assert_eq!(
+            days("지난주 8월 2일 회의"),
+            span("2026-07-20", "2026-07-26")
+        );
+        // And the sentinel still short-circuits the whole fallback.
+        assert_eq!(
+            extract_constraint("매주 8월 2일", NOW),
+            Some(Constraint::Unconstrainable)
+        );
+        // An ISO token in the same query still wins the fallback.
+        assert_eq!(days("2026-07-15 아니면 8월 2일"), day("2026-07-15"));
+    }
+
+    /// The divergence, pinned. At AX-2's `now` legacy's dateparser matches
+    /// only the `월` token and takes the day **and** the year from the
+    /// reference date: `8월 2일` → 2026-08-03, `2024년 3월 15일` →
+    /// 2026-03-03. This asserts we do not reproduce that.
+    #[test]
+    fn we_do_not_take_the_day_or_the_year_from_the_reference_date() {
+        assert_ne!(days_at("8월 2일", NOW_AX2), day("2026-08-03"));
+        assert_eq!(days_at("8월 2일", NOW_AX2), day("2026-08-02"));
+        assert_ne!(days_at("2024년 3월 15일", NOW_AX2), day("2026-03-03"));
+        assert_eq!(days_at("2024년 3월 15일", NOW_AX2), day("2024-03-15"));
     }
 
     #[test]

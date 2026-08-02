@@ -115,9 +115,16 @@ rule order behaviour, in **both** directions:
   nothing measurable and gets the ordering subtly wrong. Flagged in the module
   doc. Consequence: the `Unconstrainable` producers here are the English and
   Korean ones, since every legacy producer lives in that module.
-* **No dateparser.** The fallback is an explicit ISO-8601 scan over the
-  original query. Extended format only — `jiff` also accepts basic ISO, which
-  would read a bare 8-digit node id as a date.
+* **No dateparser.** The fallback is an explicit scan over the original query.
+  ISO-8601 extended format only — `jiff` also accepts basic ISO, which would
+  read a bare 8-digit node id as a date.
+
+  **Superseded in scope, not in decision:** the follow-up PR
+  `fix/ce-8-korean-absolute-dates` added Korean `N월 N일` and
+  `YYYY년 N월 N일` to the same fallback. Still no dateparser and still no
+  date-parsing crate — see `docs/design/ce-8-korean-absolute-dates.md`, which
+  also records why reproducing dateparser's answer here would have been a
+  regression rather than parity.
 * **Additions to the period set**, beyond legacy's non-Chinese rules: the
   whole Korean column; the `this`/`next` rows (legacy's non-Chinese set is
   past-only, though its *Chinese* set has 这周/下周, so the concept is
@@ -141,18 +148,29 @@ rule order behaviour, in **both** directions:
   AX-2's gold query q17 asks `8월 2일` and gets **no temporal constraint at
   all**: `fallback_date` accepts only ISO-extended tokens (`len >= 10` and
   containing `-`), so the arm never fires and `scores.temporal` stays
-  `NEUTRAL`. Legacy resolves it — its `query_analyzer.py:182-246` runs
-  `dateparser.search.search_dates` with language detection, and
-  `temporal_periods.py:156-159` declines exact dates precisely *because*
-  dateparser handles them. Verified directly against legacy's own dateparser:
-  `search_dates('8월 2일')` → `datetime(2026, 8, 2)`, with and without
-  `languages=['ko']`.
+  `NEUTRAL`. ~~Legacy resolves it — verified directly against legacy's own
+  dateparser: `search_dates('8월 2일')` → `datetime(2026, 8, 2)`, with and
+  without `languages=['ko']`.~~ **That verification was itself wrong** and is
+  struck rather than edited away, because it was the load-bearing half of the
+  claim: it holds only when the reference date happens to be the 2nd of the
+  month, which it was on the day the check was run. Under an explicit
+  `RELATIVE_BASE` — which `query_analyzer.py` supplies — dateparser matches
+  only the `N월` token and takes the day *and* the year from the reference
+  date. So legacy does **not** resolve `8월 2일`; it resolves it wrongly, and
+  then narrows to that wrong single day (`:283-287`).
 
-  So this is a **parity gap, not a coverage gap**, and Korean absolute dates
-  are the most natural way to write one in this project's own query language.
-  Tracked in `docs/parity-gaps.md`. Deliberately **not** fixed in B10: it moves
-  the temporal stratum, which would invalidate the reranker deltas that PR
-  recorded. The follow-up must re-baseline AX-2 in the same change.
+  **Closed by `fix/ce-8-korean-absolute-dates`, as a deliberate divergence**:
+  we parse `N월 N일` day-precisely, which legacy does not do. Korean absolute
+  dates were the most natural way to write one in this project's own query
+  language, and they now work. The full dateparser evidence, the
+  year-inference rule, and the AX-2 re-baseline the fix owed are in
+  `docs/design/ce-8-korean-absolute-dates.md`; `docs/parity-gaps.md` carries
+  the corrected row.
+
+  Not fixed in B10 on purpose — it moves the temporal stratum, which would
+  have invalidated the reranker deltas that PR recorded. It did move them:
+  CE-11's `+0.251` temporal gain is now `−0.192`, and `ce-11-reranker.md` has
+  been re-baselined accordingly.
 * **The arm's entry predicate is narrower than legacy's.** Legacy uses a
   four-branch OR (`retrieval.py:624-633`): interval overlap, `mentioned_at` in
   window, `occurred_start` in window, `occurred_end` in window. The plan
