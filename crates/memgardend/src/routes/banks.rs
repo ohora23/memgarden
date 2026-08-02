@@ -73,11 +73,19 @@ pub async fn create_bank(
         );
     }
     let db = state.db.clone();
+    // A bank created without a mission inherits `[profile] bank_mission`
+    // (the `coding` preset supplies one) — legacy fork: `ensure_bank_mission`,
+    // `lib/bank.py`. An explicit mission in the request always wins.
+    let default_mission = state.cfg.profile.bank_mission.clone();
     let created = tokio::task::spawn_blocking(move || {
+        let mission = body
+            .mission
+            .filter(|m| !m.is_empty())
+            .or_else(|| Some(default_mission).filter(|m| !m.is_empty()));
         banks::create(
             &db,
             &body.bank_id,
-            body.mission.as_deref(),
+            mission.as_deref(),
             body.disposition.as_deref(),
         )
     })

@@ -169,6 +169,12 @@ pub struct Metrics {
     pub links_written: AtomicU64,
     pub retain_tokens_raw: AtomicU64,
     pub retain_tokens_capped: AtomicU64,
+    /// Chunks whose LLM extraction failed but did not fail the whole job
+    /// (Critic Revision R14).
+    pub retain_chunks_failed: AtomicU64,
+    /// `benefit_ledger` rows of kind `retain_cap_saving` written by the
+    /// retain ingest (AC-6: the ledger auto-populates, MX-1's deferral).
+    pub retain_cap_savings: AtomicU64,
     pub hook_invocations: AtomicU64,
     pub http_latency: Histogram,
     pub recall_latency: Histogram,
@@ -191,6 +197,8 @@ impl Metrics {
             links_written: AtomicU64::new(0),
             retain_tokens_raw: AtomicU64::new(0),
             retain_tokens_capped: AtomicU64::new(0),
+            retain_chunks_failed: AtomicU64::new(0),
+            retain_cap_savings: AtomicU64::new(0),
             hook_invocations: AtomicU64::new(0),
             http_latency: Histogram::new(),
             recall_latency: Histogram::new(),
@@ -230,6 +238,8 @@ impl Metrics {
             links_written: self.links_written.load(Ordering::Relaxed),
             retain_tokens_raw,
             retain_tokens_capped,
+            retain_chunks_failed: self.retain_chunks_failed.load(Ordering::Relaxed),
+            retain_cap_savings: self.retain_cap_savings.load(Ordering::Relaxed),
             hook_invocations: self.hook_invocations.load(Ordering::Relaxed),
             retain_tokens_saved,
             retain_saving_ratio,
@@ -255,6 +265,8 @@ pub struct MetricsSnapshot {
     pub links_written: u64,
     pub retain_tokens_raw: u64,
     pub retain_tokens_capped: u64,
+    pub retain_chunks_failed: u64,
+    pub retain_cap_savings: u64,
     pub hook_invocations: u64,
     pub retain_tokens_saved: Option<u64>,
     pub retain_saving_ratio: Option<f64>,

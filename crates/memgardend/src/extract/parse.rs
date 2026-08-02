@@ -247,7 +247,11 @@ fn coerce_entity_strings(entities: Option<&Value>) -> Vec<String> {
 }
 
 /// legacy: `ProcessedFact._is_degenerate_text`, `types.py:189-223`.
-fn is_degenerate_text(text: &str) -> bool {
+///
+/// Also reused by B3's retain worker as the "is this chunk worth an LLM
+/// call at all" gate — a whitespace/punctuation-only chunk must never reach
+/// Ollama (CE-5a review carry-over).
+pub fn is_degenerate_text(text: &str) -> bool {
     let stripped = text.trim();
     if stripped.is_empty() {
         return true;

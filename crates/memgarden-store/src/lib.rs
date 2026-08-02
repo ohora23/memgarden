@@ -1,11 +1,15 @@
 pub mod banks;
 mod conn;
+pub mod documents;
 pub mod metrics_store;
 mod migrate;
 pub mod models;
 pub mod nodes;
+pub mod retain_jobs;
 pub mod search;
 pub mod vecblob;
+
+pub use migrate::LATEST_VERSION;
 
 use std::path::Path;
 use std::time::Duration;

@@ -3,7 +3,9 @@ mod embed;
 mod extract;
 mod health;
 mod metrics;
+mod retain;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::middleware::from_fn;
 use axum::response::IntoResponse;
@@ -45,6 +47,15 @@ pub fn router(state: AppState) -> Router {
             "/v1/banks/{bank_id}/dry-run-extract",
             post(extract::dry_run_extract),
         )
+        // The retain route (and only it) raises axum's 2MB default body
+        // limit: the Phase C hook posts a raw transcript, and the caps that
+        // shrink it run server-side, after parsing. See
+        // retain::MAX_RETAIN_BODY_BYTES for why the ceiling is where it is.
+        .route(
+            "/v1/banks/{bank_id}/retain",
+            post(retain::retain).layer(DefaultBodyLimit::max(retain::MAX_RETAIN_BODY_BYTES)),
+        )
+        .route("/v1/retain/{job_id}", get(retain::get_job))
         .layer(from_fn(track_http));
 
     unmeasured

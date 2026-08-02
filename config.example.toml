@@ -8,7 +8,9 @@
 # this file and the built-in defaults:
 #   MEMGARDEN_BIND, MEMGARDEN_DB_PATH, MEMGARDEN_LOG_LEVEL,
 #   MEMGARDEN_METRICS_INTERVAL, MEMGARDEN_MODEL_DIR, MEMGARDEN_EMBED_THREADS,
-#   MEMGARDEN_OLLAMA_URL, MEMGARDEN_OLLAMA_MODEL
+#   MEMGARDEN_OLLAMA_URL, MEMGARDEN_OLLAMA_MODEL,
+#   MEMGARDEN_RETAIN_MAX_INITIAL_MESSAGES, MEMGARDEN_RETAIN_TOOL_CALLS,
+#   MEMGARDEN_PROFILE
 
 [server]
 # Note: ports 9077 (hindsight) and 9090 (memdash) are already in use on
@@ -69,3 +71,62 @@ keep_alive = "10m"
 # A 14B model sharing one GPU with nothing else must not be hit
 # concurrently — keep at 1 unless Ollama is moved to dedicated hardware.
 max_concurrent = 1
+
+[retain]
+# Transcript ingest (CE-5b). Every cap here runs SERVER-SIDE: the Phase C
+# hook posts a raw transcript and does nothing else, because the
+# retain_cap_saving ledger row is a store concern and the hook's whole
+# budget is <10ms. All defaults are the hindsight fork's values.
+
+# Initial-backfill cap. Applies ONLY to a session's first retain
+# (`is_initial: true` in the request) and keeps the LAST N messages; 0
+# disables it. This exists because a 102MB legacy transcript once blew the
+# server's retain wall-clock limit. Delta retains are never capped.
+max_initial_messages = 300
+# Characters per extraction chunk; one Ollama call per chunk.
+chunk_size = 3000
+# Per-string-field cap inside a tool_use input. Long enough to keep the
+# semantic signal of a code edit, short enough that a Write of a whole file
+# stops dominating the payload.
+tool_input_field_max = 300
+# Second-tier cap: if the whole serialized input still exceeds this, only
+# the priority keys (file_path, notebook_path, path, command, description,
+# pattern, query, url) survive, plus a _truncated_fields list.
+tool_input_total_max = 1500
+# tool_result content truncation.
+tool_result_max = 2000
+# Max `file:<path>` tags attached per retain.
+file_tag_cap = 20
+# Bounded background-worker queue. A full queue answers HTTP 429 rather
+# than buffering transcripts in RAM.
+queue_capacity = 32
+# Per-job wall clock, matching the live hindsight daemon's
+# RETAIN_WALL_TIMEOUT=7200. Exceeding it marks the job failed with the
+# partial progress intact.
+wall_timeout_secs = 7200
+# Retain tool calls at all. false is the fork's default; the "coding"
+# profile below flips it to true (which is what the two caps above exist
+# for). Left commented out on purpose: matching legacy, a key PRESENT in this
+# file counts as explicitly set and a profile preset will not override it.
+# include_tool_calls = false
+
+[profile]
+# Named preset that fills grouped defaults for a usage pattern. Precedence
+# matches the fork: defaults -> this file -> env -> the preset fills only
+# keys you did NOT set explicitly. "" = no preset; "coding" is the only one.
+#
+# coding: include_tool_calls = true, recall_budget = "low", and the two
+# mission strings below (verbatim from the fork's PROFILE_PRESETS).
+name = ""
+# The three keys below are commented out for the same reason as
+# include_tool_calls: uncommenting one pins it against the preset.
+#
+# Default mission for banks created without one. Per-bank override:
+# banks.mission.
+# bank_mission = ""
+# Default extraction mission. Per-bank override: banks.disposition JSON
+# {"retain_mission": "..."}; per-request override: the retain body's
+# `mission` field.
+# retain_mission = ""
+# low | mid | high. Consumed by CE-6 recall; part of the ported preset.
+# recall_budget = "mid"

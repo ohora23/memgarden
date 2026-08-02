@@ -5,6 +5,7 @@ pub mod extract;
 pub mod metrics_task;
 pub mod middleware;
 pub mod ollama;
+pub mod retain;
 pub mod routes;
 pub mod state;
 

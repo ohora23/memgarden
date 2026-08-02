@@ -42,6 +42,61 @@ pub fn insert(db: &Db, new: NewNode) -> Result<i64> {
     })
 }
 
+/// One node plus the tags to attach to it, for `insert_batch`.
+pub struct NewNodeWithTags<'a> {
+    pub node: NewNode<'a>,
+    pub tags: &'a [String],
+}
+
+/// Inserts a whole chunk's facts (and their tags) in a single
+/// `BEGIN IMMEDIATE`. The retain worker calls this once per chunk instead of
+/// `insert` + `add_tags` per fact: 2N write-lock acquisitions per chunk would
+/// contend with the embedding backlog worker for no benefit, and a partial
+/// chunk must not survive a mid-write failure.
+///
+/// Returns the new rowids in input order.
+pub fn insert_batch(db: &Db, items: &[NewNodeWithTags]) -> Result<Vec<i64>> {
+    let now = now_ms();
+    db.write(|tx| {
+        let mut ids = Vec::with_capacity(items.len());
+        for item in items {
+            let new = &item.node;
+            let uuid = Uuid::now_v7().to_string();
+            tx.execute(
+                "INSERT INTO memory_nodes
+                 (uuid, bank_id, document_id, fact_type, text, context, event_date,
+                  occurred_start, occurred_end, mentioned_at, metadata, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                params![
+                    uuid,
+                    new.bank_id,
+                    new.document_id,
+                    new.fact_type.as_str(),
+                    new.text,
+                    new.context,
+                    new.event_date,
+                    new.occurred_start,
+                    new.occurred_end,
+                    new.mentioned_at,
+                    new.metadata,
+                    now,
+                ],
+            )
+            .map_err(store_err)?;
+            let id = tx.last_insert_rowid();
+            for tag in item.tags {
+                tx.execute(
+                    "INSERT OR IGNORE INTO node_tags (node_id, tag) VALUES (?1, ?2)",
+                    params![id, tag],
+                )
+                .map_err(store_err)?;
+            }
+            ids.push(id);
+        }
+        Ok(ids)
+    })
+}
+
 pub fn get(db: &Db, id: i64) -> Result<Option<MemoryNode>> {
     let conn = db.read()?;
     let raw: Option<NodeRow> = conn
