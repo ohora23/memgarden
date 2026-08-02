@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::embed::Embedder;
 use crate::ollama::OllamaClient;
+use crate::rerank::Reranker;
 use crate::retain::RetainTask;
 
 /// Shared app state, cheap to clone (all fields are `Arc` or `Copy`).
@@ -20,6 +21,13 @@ pub struct AppState {
     /// reports. A `std::sync::RwLock` is enough here — the critical section
     /// is just cloning an `Arc`, never held across an `.await`.
     pub embedder: Arc<RwLock<Option<Arc<Embedder>>>>,
+    /// The CE-11 cross-encoder. `None` while it loads, when `[reranker]
+    /// enabled` is false (the default — see `RerankerConfig`), or if loading
+    /// failed; recall reads it as "stay on the RRF passthrough", which is the
+    /// configuration every Phase B number was measured against. Same
+    /// `RwLock<Option<Arc<_>>>` shape as `embedder`, and for the same reason:
+    /// the critical section is one `Arc` clone, never held across an `.await`.
+    pub reranker: Arc<RwLock<Option<Arc<Reranker>>>>,
     /// Always present (unlike `embedder`): building a `reqwest::Client`
     /// touches no network, so there's no loading state to model. Actual
     /// reachability lives in `ollama::ollama_status()`, updated by the

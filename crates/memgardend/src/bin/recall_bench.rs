@@ -11,8 +11,14 @@
 //!
 //! ```text
 //! recall_bench import <corpus.jsonl> <db-path>
-//! recall_bench bench  <db-path> <gold.jsonl> <corpus.jsonl> [results.jsonl]
+//! recall_bench bench  <db-path> <gold.jsonl> <corpus.jsonl> [results.jsonl] [rerank=<top_k>]
 //! ```
+//!
+//! `rerank=<top_k>` (CE-11) is the only measurement knob this binary exposes,
+//! and it exists because it is the thing under test. Everything else — `now`,
+//! `limit`, `max_tokens`, the budget and the recall types — is pinned to the
+//! AX-2 baseline's configuration, since a delta computed under a different
+//! configuration is not a delta.
 //!
 //! **A binary, not an `#[ignore]`d test.** The existing latency benches are
 //! tests because they seed their own synthetic bank and assert nothing but a
@@ -488,11 +494,23 @@ fn mean(rows: &[QueryMetrics]) -> QueryMetrics {
 // bench
 // ---------------------------------------------------------------------------
 
+/// `rerank_top_k`: `None` is the AX-2 baseline configuration (RRF passthrough,
+/// which is production); `Some(k)` turns CE-11's cross-encoder on at that
+/// depth. It is the *only* knob a CE-11 run may change — every other value
+/// below is pinned to what the baseline used, because a delta computed under
+/// a different configuration is not a delta.
+///
+/// Note what `Some(k)` structurally cannot move: the reranker reorders the
+/// top `k` of the RRF list and drops the tail, so at `k = 10` the *set*
+/// measured by recall@10 is exactly the baseline's and that column is
+/// arithmetically pinned at zero delta. recall@1, recall@5, MRR and nDCG@10
+/// are the columns with anything to say.
 async fn bench(
     db_path: &Path,
     gold_path: &Path,
     corpus_path: &Path,
     out_path: Option<&Path>,
+    rerank_top_k: Option<usize>,
 ) -> anyhow::Result<()> {
     let gold = read_gold(gold_path)?;
     let corpus_sha = sha256_of(corpus_path)?;
@@ -510,11 +528,18 @@ async fn bench(
         corpus_path.display()
     );
 
-    let cfg = Config::defaults()?;
+    let mut cfg = Config::defaults()?;
+    if let Some(top_k) = rerank_top_k {
+        cfg.reranker.enabled = true;
+        cfg.reranker.top_k = top_k;
+    }
     let limit = POOL_LIMIT;
     let budget = cfg.profile.recall_budget.clone();
     let (state, _retain_rx) = build_state(db.clone(), cfg)?;
     load_embedder(&state).await?;
+    if rerank_top_k.is_some() {
+        load_reranker(&state).await?;
+    }
 
     let mut rows: Vec<(&GoldQuery, QueryMetrics, Vec<String>)> = Vec::new();
     let mut unanswered: Vec<&GoldQuery> = Vec::new();
@@ -597,7 +622,10 @@ async fn bench(
             rel, m.recall_1, m.recall_5, m.recall_10, m.recall_10_ceiling, m.mrr, m.ndcg_10
         )
     };
-    println!("\ncorpus {corpus_sha} ({node_count} nodes), now = {BENCH_NOW_MS}");
+    println!(
+        "\ncorpus {corpus_sha} ({node_count} nodes), now = {BENCH_NOW_MS}, rerank = {}",
+        rerank_top_k.map_or("off".to_string(), |k| format!("top_k {k}"))
+    );
     println!(
         "{:<6} {:<12} {:>5} {:>7} {:>7} {:>8} {:>8} {:>7} {:>8}",
         "query", "stratum", "|R|", "r@1", "r@5", "r@10", "ceil", "mrr", "nDCG@10"
@@ -637,6 +665,8 @@ async fn bench(
             "limit": limit, "budget": budget, "k": K,
             "now_ms": BENCH_NOW_MS,
             "max_tokens": memgarden_core::config::MAX_RECALL_TOKENS,
+            // The treatment. `null` is the AX-2 baseline (RRF passthrough).
+            "rerank_top_k": rerank_top_k,
         },
         // Travels with every number so a figure can never be quoted without
         // the "these labels are provisional" caveat attached to it.
@@ -664,11 +694,20 @@ async fn bench(
             .append(true)
             .open(out)?;
         writeln!(f, "{record}")?;
-        std::fs::write(
-            out.with_extension("pool.json"),
-            serde_json::to_string_pretty(&pool)?,
-        )?;
-        println!("\nappended to {}", out.display());
+        // The pool is rewritten each run, unlike the ledger — so a reranked
+        // run writes to its own file rather than overwriting the baseline's
+        // labelling pool, which is the artifact the gold labels were drawn
+        // from and the audit trail for how they were produced.
+        let pool_path = match rerank_top_k {
+            Some(k) => out.with_extension(format!("rerank{k}.pool.json")),
+            None => out.with_extension("pool.json"),
+        };
+        std::fs::write(&pool_path, serde_json::to_string_pretty(&pool)?)?;
+        println!(
+            "\nappended to {}, pool in {}",
+            out.display(),
+            pool_path.display()
+        );
     } else {
         println!("\n{}", serde_json::to_string_pretty(&record)?);
         println!("{}", serde_json::to_string_pretty(&pool)?);
@@ -708,6 +747,7 @@ fn build_state(
             cfg: Arc::new(cfg),
             started_at_ms: memgarden_core::now_ms(),
             embedder: Arc::new(RwLock::new(None)),
+            reranker: Default::default(),
             ollama,
             consolidating: Default::default(),
             refreshing: Default::default(),
@@ -725,16 +765,50 @@ async fn load_embedder(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// CE-11. `rerank::load_at_startup` would swallow a failure into a log line
+/// and leave the run silently measuring the baseline again under a "reranked"
+/// label, so the load is done here where it can fail the process.
+async fn load_reranker(state: &AppState) -> anyhow::Result<()> {
+    let cfg = state.cfg.reranker.clone();
+    let model_dir = state.cfg.embedding.model_dir.clone();
+    let reranker =
+        tokio::task::spawn_blocking(move || memgardend::rerank::Reranker::load(&cfg, &model_dir))
+            .await??;
+    *state.reranker.write().expect("reranker lock poisoned") = Some(Arc::new(reranker));
+    Ok(())
+}
+
 const USAGE: &str = "\
 usage:
   recall_bench import <corpus.jsonl> <db-path>
-  recall_bench bench  <db-path> <gold.jsonl> <corpus.jsonl> [results.jsonl]";
+  recall_bench bench  <db-path> <gold.jsonl> <corpus.jsonl> [results.jsonl] [rerank=<top_k>]
+
+`rerank=<top_k>` turns CE-11's cross-encoder on. Everything else about the
+measurement is pinned to the AX-2 baseline's configuration and is not
+adjustable, because a delta computed under a different configuration is not a
+delta.";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     // Positional args, no clap. Two subcommands with fixed arity do not need
-    // an argument parser, and the workspace pins are frozen.
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // an argument parser, and the workspace pins are frozen. The one flag
+    // (CE-11's `rerank=<top_k>`) is pulled out first so the positionals keep
+    // their fixed arity.
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let mut rerank_top_k: Option<usize> = None;
+    if let Some(i) = args.iter().position(|a| a.starts_with("rerank=")) {
+        let raw = args.remove(i);
+        let value = raw.trim_start_matches("rerank=");
+        rerank_top_k = Some(
+            value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("rerank= wants a positive integer, got {value:?}"))?,
+        );
+        anyhow::ensure!(
+            rerank_top_k != Some(0),
+            "rerank=0 is not 'off'; omit the flag"
+        );
+    }
     let path = |i: usize| PathBuf::from(&args[i]);
     match args
         .iter()
@@ -743,8 +817,10 @@ async fn main() -> anyhow::Result<()> {
         .as_slice()
     {
         ["import", _, _] => import(&path(1), &path(2)).await,
-        ["bench", _, _, _] => bench(&path(1), &path(2), &path(3), None).await,
-        ["bench", _, _, _, _] => bench(&path(1), &path(2), &path(3), Some(&path(4))).await,
+        ["bench", _, _, _] => bench(&path(1), &path(2), &path(3), None, rerank_top_k).await,
+        ["bench", _, _, _, _] => {
+            bench(&path(1), &path(2), &path(3), Some(&path(4)), rerank_top_k).await
+        }
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);

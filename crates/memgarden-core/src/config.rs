@@ -33,9 +33,53 @@ pub struct Config {
     pub ollama: OllamaConfig,
     pub retain: RetainConfig,
     pub recall: RecallConfig,
+    pub reranker: RerankerConfig,
     pub consolidation: ConsolidationConfig,
     pub profile: ProfileConfig,
 }
+
+/// `[reranker]` — the embedded ms-marco cross-encoder (CE-11).
+///
+/// **Off by default, and off *is* parity.** The live legacy daemon runs with
+/// `HINDSIGHT_API_RERANKER_PROVIDER=rrf` (`/proc/<pid>/environ`), adopted as
+/// part of its 830ms → 20ms latency fix, so a disabled cross-encoder is what
+/// the system being matched actually does. It is not a reduction.
+///
+/// Measured cost is ~1.5–2.6ms **per candidate** on this machine's CPU
+/// against AC-2's 35ms p50 for the *whole* recall, which is why `top_k` is 10
+/// rather than legacy's `thinking_budget * 2` = 600
+/// (`memory_engine.py:5266`). See `docs/design/ce-11-reranker.md`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RerankerConfig {
+    pub enabled: bool,
+    /// Hugging Face repo id. `Xenova/ms-marco-MiniLM-L-6-v2` is the ONNX
+    /// export of `cross-encoder/ms-marco-MiniLM-L-6-v2`, which is the exact
+    /// model legacy loads (`engine/cross_encoder.py:103,131`). fastembed has
+    /// no built-in entry for it, so it is fetched by repo id and loaded
+    /// through the user-defined path.
+    pub model: String,
+    /// How many of the RRF-ordered candidates the cross-encoder sees. The
+    /// tail is **dropped**, exactly as legacy drops everything past
+    /// `rerank_limit` before reranking — so this is also a cap on what recall
+    /// returns whenever it is below `[recall] limit`.
+    pub top_k: usize,
+    /// ONNX Runtime intra-op threads, same reasoning as
+    /// `[embedding] intra_threads`.
+    pub threads: usize,
+    /// Query-document pairs per ONNX forward pass.
+    pub batch_size: usize,
+}
+
+/// `top_k` above this logs a startup warning naming the measured cost. Not a
+/// hard error: an operator running a deliberate AC-1 quality experiment has a
+/// legitimate reason to raise it, and refusing to boot over a latency
+/// preference would be the wrong call. The warning exists so a future config
+/// edit cannot blow the SLO *silently*.
+pub const RERANK_TOP_K_WARN_ABOVE: usize = 20;
+
+/// Hard ceiling on `reranker.top_k`, matching `recall.limit`'s: reranking
+/// deeper than recall can return is pure latency for no ranking change.
+pub const MAX_RERANK_TOP_K: usize = 200;
 
 /// `[consolidation]` — fact→observation consolidation (CE-9).
 ///
@@ -271,6 +315,13 @@ impl Config {
                 cap_per_source: 0,
                 preamble: String::new(),
             },
+            reranker: RerankerConfig {
+                enabled: false,
+                model: "Xenova/ms-marco-MiniLM-L-6-v2".to_string(),
+                top_k: 10,
+                threads: 4,
+                batch_size: 16,
+            },
             consolidation: ConsolidationConfig {
                 dedup_threshold: 0.97,
                 interval_secs: 300,
@@ -457,6 +508,23 @@ pub fn from_parts(
                 cfg.recall.preamble = v;
             }
         }
+        if let Some(r) = parsed.reranker {
+            if let Some(v) = r.enabled {
+                cfg.reranker.enabled = v;
+            }
+            if let Some(v) = r.model {
+                cfg.reranker.model = v;
+            }
+            if let Some(v) = r.top_k {
+                cfg.reranker.top_k = v;
+            }
+            if let Some(v) = r.threads {
+                cfg.reranker.threads = v;
+            }
+            if let Some(v) = r.batch_size {
+                cfg.reranker.batch_size = v;
+            }
+        }
         if let Some(c) = parsed.consolidation {
             if let Some(v) = c.dedup_threshold {
                 cfg.consolidation.dedup_threshold = v;
@@ -594,6 +662,31 @@ pub fn from_parts(
             cfg.recall.max_tokens
         )));
     }
+    // A zero here is not "off" — `enabled` is off. `top_k = 0` would rerank
+    // nothing while still paying the model load, and (because the tail is
+    // dropped) return an empty result set for every query; `threads` or
+    // `batch_size` at 0 is rejected by ONNX Runtime / fastembed at the first
+    // request instead of at boot, which is the wrong place to find out.
+    for (name, value) in [
+        ("reranker.top_k", cfg.reranker.top_k),
+        ("reranker.threads", cfg.reranker.threads),
+        ("reranker.batch_size", cfg.reranker.batch_size),
+    ] {
+        if value == 0 {
+            return Err(Error::Config(format!("{name} must be > 0")));
+        }
+    }
+    if cfg.reranker.top_k > MAX_RERANK_TOP_K {
+        return Err(Error::Config(format!(
+            "reranker.top_k must be <= {MAX_RERANK_TOP_K}: {}",
+            cfg.reranker.top_k
+        )));
+    }
+    if cfg.reranker.model.trim().is_empty() {
+        return Err(Error::Config(
+            "reranker.model must be a Hugging Face repo id".to_string(),
+        ));
+    }
     // The knob that decides whether a 14B model is called at all. Below the
     // threshold there is no probe and no call; at 0.0 (or negative) every
     // candidate clears it, so **every** observation created fires an
@@ -720,8 +813,18 @@ struct TomlConfig {
     ollama: Option<TomlOllama>,
     retain: Option<TomlRetain>,
     recall: Option<TomlRecall>,
+    reranker: Option<TomlReranker>,
     consolidation: Option<TomlConsolidation>,
     profile: Option<TomlProfile>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TomlReranker {
+    enabled: Option<bool>,
+    model: Option<String>,
+    top_k: Option<usize>,
+    threads: Option<usize>,
+    batch_size: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -852,6 +955,13 @@ mod tests {
                 max_tokens: 1024,
                 cap_per_source: 0,
                 preamble: String::new(),
+            },
+            reranker: RerankerConfig {
+                enabled: false,
+                model: "Xenova/ms-marco-MiniLM-L-6-v2".to_string(),
+                top_k: 10,
+                threads: 4,
+                batch_size: 16,
             },
             consolidation: ConsolidationConfig {
                 dedup_threshold: 0.97,
@@ -1135,6 +1245,58 @@ mod tests {
         let mut huge_tokens = defaults();
         huge_tokens.recall.max_tokens = MAX_RECALL_TOKENS + 1;
         assert!(from_parts(huge_tokens, None, &HashMap::new()).is_err());
+    }
+
+    /// The default that carries the parity claim. If this flips, recall stops
+    /// matching the live legacy daemon (`RERANKER_PROVIDER=rrf`) and starts
+    /// spending 1.5–2.6ms per candidate against a 35ms p50 budget — so it
+    /// gets its own assertion rather than riding along in a bigger test.
+    #[test]
+    fn reranker_defaults_are_off_and_shallow() {
+        let cfg = from_parts(defaults(), None, &HashMap::new()).unwrap();
+        assert!(
+            !cfg.reranker.enabled,
+            "off by default IS parity with the live legacy daemon"
+        );
+        assert_eq!(cfg.reranker.model, "Xenova/ms-marco-MiniLM-L-6-v2");
+        assert_eq!(cfg.reranker.top_k, 10, "NOT legacy's thinking_budget*2=600");
+        assert_eq!(cfg.reranker.threads, 4);
+        assert_eq!(cfg.reranker.batch_size, 16);
+
+        let toml_str = r#"
+            [reranker]
+            enabled = true
+            top_k = 5
+            threads = 7
+            batch_size = 3
+        "#;
+        let cfg = from_parts(defaults(), Some(toml_str), &HashMap::new()).unwrap();
+        assert!(cfg.reranker.enabled);
+        assert_eq!(cfg.reranker.top_k, 5);
+        assert_eq!(cfg.reranker.threads, 7);
+        assert_eq!(cfg.reranker.batch_size, 3);
+        // Untouched by TOML: still default.
+        assert_eq!(cfg.reranker.model, "Xenova/ms-marco-MiniLM-L-6-v2");
+    }
+
+    #[test]
+    fn reranker_rejects_zero_and_oversized_knobs() {
+        let env = HashMap::new();
+        for key in ["top_k", "threads", "batch_size"] {
+            let toml_str = format!("[reranker]\n{key} = 0\n");
+            assert!(
+                from_parts(defaults(), Some(&toml_str), &env).is_err(),
+                "reranker.{key} = 0 must be rejected"
+            );
+        }
+        let over = format!("[reranker]\ntop_k = {}\n", MAX_RERANK_TOP_K + 1);
+        assert!(from_parts(defaults(), Some(&over), &env).is_err());
+        let at = format!("[reranker]\ntop_k = {MAX_RERANK_TOP_K}\n");
+        assert!(from_parts(defaults(), Some(&at), &env).is_ok());
+        assert!(
+            from_parts(defaults(), Some("[reranker]\nmodel = \"  \"\n"), &env).is_err(),
+            "a blank repo id would fail at load, not at boot"
+        );
     }
 
     #[test]

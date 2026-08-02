@@ -110,6 +110,7 @@ fn build(
         cfg: Arc::new(cfg),
         started_at_ms: memgarden_core::now_ms(),
         embedder: Arc::new(std::sync::RwLock::new(None)),
+        reranker: Default::default(),
         ollama,
         consolidating: Default::default(),
         refreshing: Default::default(),

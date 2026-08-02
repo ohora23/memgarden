@@ -31,6 +31,16 @@ fastembed = { version = "=5.17.4", default-features = false, features = [
     "hf-hub-rustls-tls", "ort-download-binaries-rustls-tls",
 ] } # B1. ort 2.0.0-rc.13 underneath. NOT the default features: they add
     # `image-models` and a second (native) TLS stack.
+hf-hub = { version = "=0.5.0", default-features = false } # B10 (CE-11).
+    # Already in the graph — fastembed's `hf-hub-rustls-tls` feature pulls
+    # exactly this version — but not reachable from our code, because
+    # fastembed's `pull_from_hf` lives behind a private `mod common`
+    # (fastembed-5.17.4/src/lib.rs:75) and only `try_new`, which needs a
+    # built-in `RerankerModel` entry, uses it. `Xenova/ms-marco-MiniLM-L-6-v2`
+    # has no such entry, so the user-defined path is the only one available
+    # and it takes bytes, not a repo name. Declared with no features of its
+    # own: cargo unifies with fastembed's `ureq` + `rustls-tls`, so this line
+    # adds zero crates and leaves Cargo.lock byte-identical (verified).
 jiff = "0.2.35" # B1 (embed augmentation "%B %Y"), later CE-8.
 reqwest = { version = "0.13.4", default-features = false, features = [
     "json",
