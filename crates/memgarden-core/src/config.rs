@@ -37,8 +37,15 @@ pub struct Config {
     pub profile: ProfileConfig,
 }
 
-/// `[consolidation]` — fact→observation consolidation (CE-9). Only the
-/// dedup knob exists today; CE-9b (PR B8) adds the batch-round parameters.
+/// `[consolidation]` — fact→observation consolidation (CE-9).
+///
+/// Every value is legacy's, from `config.py:1147-1171` and `:1298`. One
+/// legacy knob is deliberately **not** here: `consolidation_llm_parallelism`
+/// (4, `config.py:1165`) is forced to 1, because it assumes a hosted provider
+/// and MemGarden runs a single local 14B model behind
+/// `ollama.max_concurrent = 1` — a second concurrent group would queue on
+/// that semaphore rather than run, so the knob could only ever be a lie.
+/// A config for a value that cannot change is worse than no config.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConsolidationConfig {
     /// Cosine at or above which a newly created observation is adjudicated
@@ -46,6 +53,28 @@ pub struct ConsolidationConfig {
     /// (`DEFAULT_CONSOLIDATION_DEDUP_THRESHOLD`, `config.py:1157`).
     /// **`>= 1.0` disables the whole dedup path** (`consolidator.py:180-182`).
     pub dedup_threshold: f64,
+    /// Seconds between background consolidation ticks
+    /// (`DEFAULT_CONSOLIDATION_RECONCILE_INTERVAL_SECONDS`, `config.py:1298`).
+    /// **`0` disables the background task**, as it does in legacy; manual
+    /// `POST /v1/banks/{id}/consolidate` still works.
+    pub interval_secs: u64,
+    /// Facts loaded per round (`DEFAULT_CONSOLIDATION_BATCH_SIZE`,
+    /// `config.py:1149`).
+    pub batch_size: usize,
+    /// Facts per LLM call (`DEFAULT_CONSOLIDATION_LLM_BATCH_SIZE`,
+    /// `config.py:1153`).
+    pub llm_batch_size: usize,
+    /// Outer attempts at one LLM batch before the batch is skipped
+    /// (`DEFAULT_CONSOLIDATION_MAX_ATTEMPTS`, `config.py:1147`).
+    pub max_attempts: u32,
+    /// Budget for the per-fact recall that pools existing observations
+    /// (`DEFAULT_CONSOLIDATION_RECALL_BUDGET`, `config.py:1167`).
+    pub recall_budget: String,
+    /// Token budget for that recall — how much existing-observation text one
+    /// batch prompt may carry (`DEFAULT_CONSOLIDATION_MAX_TOKENS`,
+    /// `config.py:1163`). The prompt's hard ceiling is a `const` in
+    /// `consolidate::round`, not this.
+    pub max_tokens: usize,
 }
 
 /// Hard ceiling on `recall.max_tokens` (config and the per-request
@@ -244,6 +273,12 @@ impl Config {
             },
             consolidation: ConsolidationConfig {
                 dedup_threshold: 0.97,
+                interval_secs: 300,
+                batch_size: 50,
+                llm_batch_size: 8,
+                max_attempts: 3,
+                recall_budget: "low".to_string(),
+                max_tokens: 512,
             },
             profile: ProfileConfig {
                 name: String::new(),
@@ -422,8 +457,28 @@ pub fn from_parts(
                 cfg.recall.preamble = v;
             }
         }
-        if let Some(v) = parsed.consolidation.and_then(|c| c.dedup_threshold) {
-            cfg.consolidation.dedup_threshold = v;
+        if let Some(c) = parsed.consolidation {
+            if let Some(v) = c.dedup_threshold {
+                cfg.consolidation.dedup_threshold = v;
+            }
+            if let Some(v) = c.interval_secs {
+                cfg.consolidation.interval_secs = v;
+            }
+            if let Some(v) = c.batch_size {
+                cfg.consolidation.batch_size = v;
+            }
+            if let Some(v) = c.llm_batch_size {
+                cfg.consolidation.llm_batch_size = v;
+            }
+            if let Some(v) = c.max_attempts {
+                cfg.consolidation.max_attempts = v;
+            }
+            if let Some(v) = c.recall_budget {
+                cfg.consolidation.recall_budget = v;
+            }
+            if let Some(v) = c.max_tokens {
+                cfg.consolidation.max_tokens = v;
+            }
         }
         if let Some(profile) = parsed.profile {
             if let Some(v) = profile.name {
@@ -553,6 +608,41 @@ pub fn from_parts(
             cfg.consolidation.dedup_threshold
         )));
     }
+    // A round with no facts, no LLM batch, or no attempt is a background task
+    // that burns a tick and does nothing — and `batch_size = 0` in particular
+    // would leave the watermark frozen forever with no error anywhere.
+    for (name, value) in [
+        ("consolidation.batch_size", cfg.consolidation.batch_size),
+        (
+            "consolidation.llm_batch_size",
+            cfg.consolidation.llm_batch_size,
+        ),
+        (
+            "consolidation.max_attempts",
+            cfg.consolidation.max_attempts as usize,
+        ),
+    ] {
+        if value == 0 {
+            return Err(Error::Config(format!("{name} must be > 0")));
+        }
+    }
+    if !matches!(
+        cfg.consolidation.recall_budget.as_str(),
+        "low" | "mid" | "high"
+    ) {
+        return Err(Error::Config(format!(
+            "consolidation.recall_budget must be low|mid|high: {}",
+            cfg.consolidation.recall_budget
+        )));
+    }
+    // Same ceiling the recall route enforces on `maxTokens`: this value is
+    // that parameter, on the consolidation path.
+    if !(1..=MAX_RECALL_TOKENS).contains(&cfg.consolidation.max_tokens) {
+        return Err(Error::Config(format!(
+            "consolidation.max_tokens must be 1..={MAX_RECALL_TOKENS}: {}",
+            cfg.consolidation.max_tokens
+        )));
+    }
     if cfg.retain.chunk_size == 0 {
         return Err(Error::Config("retain.chunk_size must be > 0".to_string()));
     }
@@ -619,6 +709,12 @@ struct TomlConfig {
 #[derive(Debug, Deserialize, Default)]
 struct TomlConsolidation {
     dedup_threshold: Option<f64>,
+    interval_secs: Option<u64>,
+    batch_size: Option<usize>,
+    llm_batch_size: Option<usize>,
+    max_attempts: Option<u32>,
+    recall_budget: Option<String>,
+    max_tokens: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -741,6 +837,12 @@ mod tests {
             },
             consolidation: ConsolidationConfig {
                 dedup_threshold: 0.97,
+                interval_secs: 300,
+                batch_size: 50,
+                llm_batch_size: 8,
+                max_attempts: 3,
+                recall_budget: "low".to_string(),
+                max_tokens: 512,
             },
             profile: ProfileConfig {
                 name: String::new(),

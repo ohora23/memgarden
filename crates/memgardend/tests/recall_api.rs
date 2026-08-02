@@ -22,7 +22,7 @@ use tower::ServiceExt;
 type EmbedderSlot = Arc<std::sync::RwLock<Option<Arc<memgardend::embed::Embedder>>>>;
 
 fn test_app(tweak: impl FnOnce(&mut memgarden_core::config::Config)) -> (axum::Router, Arc<Db>) {
-    let (app, db, _) = test_app_parts(tweak);
+    let (app, db, ..) = test_app_parts(tweak);
     (app, db)
 }
 
@@ -30,14 +30,16 @@ fn test_app(tweak: impl FnOnce(&mut memgarden_core::config::Config)) -> (axum::R
 /// turns the semantic arm on for an already-built app (the bench).
 fn test_app_parts(
     tweak: impl FnOnce(&mut memgarden_core::config::Config),
-) -> (axum::Router, Arc<Db>, EmbedderSlot) {
+) -> (axum::Router, Arc<Db>, EmbedderSlot, AppState) {
     test_app_on(Arc::new(Db::open_memory().unwrap()), tweak)
 }
 
+/// The `AppState` comes back too so a bench can drive a background task
+/// (CE-9b's consolidation round) against the very app it is measuring.
 fn test_app_on(
     db: Arc<Db>,
     tweak: impl FnOnce(&mut memgarden_core::config::Config),
-) -> (axum::Router, Arc<Db>, EmbedderSlot) {
+) -> (axum::Router, Arc<Db>, EmbedderSlot, AppState) {
     let mut cfg = memgarden_core::config::Config::defaults().unwrap();
     cfg.bind = "127.0.0.1:0".to_string();
     cfg.db_path = std::path::PathBuf::from(":memory:");
@@ -59,7 +61,7 @@ fn test_app_on(
         ollama,
         retain_tx,
     };
-    (routes::router(state), db, embedder)
+    (routes::router(state.clone()), db, embedder, state)
 }
 
 async fn post(app: &axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
@@ -805,6 +807,42 @@ fn temporal_arm_bench() {
 /// `NODES` / `REQUESTS` are overridable so the same test can be run against
 /// a bigger bank without a recompile:
 ///   MEMGARDEN_BENCH_NODES=3000 MEMGARDEN_BENCH_REQUESTS=2000 cargo test ...
+/// A stub `/api/chat` for the consolidation bench: one CREATE per batch, so
+/// every round really does embed, write and adjudicate. Returns its base URL.
+#[allow(clippy::await_holding_lock)]
+async fn consolidation_stub() -> String {
+    let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = axum::Router::new().route(
+        "/api/chat",
+        axum::routing::post(move |axum::Json(_): axum::Json<Value>| {
+            let counter = counter.clone();
+            async move {
+                let n = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // The dedup adjudicator and the batch consolidator share this
+                // endpoint; a body carrying both shapes' keys satisfies each.
+                axum::Json(json!({ "message": { "content": json!({
+                    "action": "keep",
+                    "text": "",
+                    "reason": "stub",
+                    "creates": [{
+                        "text": format!("consolidated observation {n} about the retain worker"),
+                        "source_fact_ids": [],
+                        "reason": "stub",
+                    }],
+                    "updates": [],
+                    "deletes": [],
+                }).to_string() } }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}")
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "loads the real embedding model and takes ~1 minute"]
 async fn hybrid_recall_bench() {
@@ -826,9 +864,33 @@ async fn hybrid_recall_bench() {
     // `MEMGARDEN_BENCH_LOAD` run below would measure (and trip over) a
     // table-lock contention that cannot happen in production.
     let dir = tempfile::tempdir().unwrap();
-    let (app, db, embedder_slot) = test_app_on(
+    // CE-9b: `MEMGARDEN_BENCH_CONSOLIDATE=1` runs real consolidation rounds
+    // against a SECOND bank for the duration of the loop. That is the
+    // measurement CE-9a's handoff demanded — a loaded p95 taken with the
+    // consolidation path idle measures nothing — and a second bank is what
+    // keeps it honest: consolidation contends on the process-wide ONNX mutex,
+    // the SQLite write lock and the blocking pool whichever bank it runs on,
+    // but pointing it at `b1` would also hand its dedup probe a full scan of
+    // the 36k *observations* this harness's background ingest writes, which no
+    // real bank has. The contention is real; the pathological scan is not.
+    let consolidating = std::env::var("MEMGARDEN_BENCH_CONSOLIDATE").is_ok_and(|v| v == "1");
+    let stub_url = if consolidating {
+        Some(consolidation_stub().await)
+    } else {
+        None
+    };
+
+    let embedding_cfg = cfg_defaults.embedding.clone();
+    let (app, db, embedder_slot, state) = test_app_on(
         Arc::new(Db::open(dir.path().join("bench.db")).unwrap()),
-        |c| c.embedding = cfg_defaults.embedding.clone(),
+        move |c| {
+            c.embedding = embedding_cfg;
+            if let Some(url) = stub_url {
+                c.ollama.base_url = url;
+                c.ollama.request_timeout_secs = 5;
+                c.ollama.max_retries = 0;
+            }
+        },
     );
     banks::create(&db, "b1", None, None).unwrap();
 
@@ -995,6 +1057,45 @@ async fn hybrid_recall_bench() {
         &all_queries[..]
     };
 
+    // CE-9b: seed the consolidation bank and start the rounds. `run_round`
+    // rather than `run_task` because the task wrapper adds only bank iteration
+    // and the retain-in-flight skip, neither of which is a latency mechanism;
+    // driving the round directly on a 1s ticker is strictly *more* contention
+    // than the 300s production interval.
+    if consolidating {
+        banks::create(&db, "b2", None, None).unwrap();
+        let texts: Vec<String> = (0..3000)
+            .map(|i| format!("consolidation input fact {i} about the retain worker"))
+            .collect();
+        let facts: Vec<memgarden_store::nodes::NewNodeWithTags> = texts
+            .iter()
+            .map(|t| memgarden_store::nodes::NewNodeWithTags {
+                node: NewNode::new("b2", FactType::World, t),
+                tags: &[],
+            })
+            .collect();
+        for chunk in facts.chunks(500) {
+            nodes::insert_batch(&db, chunk).unwrap();
+        }
+    }
+    let consolidation_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let consolidation_task = consolidating.then(|| {
+        let (state, stop) = (state.clone(), consolidation_stop.clone());
+        tokio::spawn(async move {
+            let mut rounds = 0u32;
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                ticker.tick().await;
+                match memgardend::consolidate::round::run_round(&state, "b2").await {
+                    Ok(s) if s.run_id.is_some() => rounds += 1,
+                    Ok(_) => {}
+                    Err(e) => eprintln!("bench: consolidation round failed: {e}"),
+                }
+            }
+            rounds
+        })
+    });
+
     // Critic Revision R7 wants the loaded number too, not just idle.
     // `MEMGARDEN_BENCH_LOAD=1` runs a background ingest against the same DB
     // for the duration: it contends on exactly what a live retain contends
@@ -1054,6 +1155,25 @@ async fn hybrid_recall_bench() {
     }
     let wall = wall.elapsed();
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    consolidation_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(task) = consolidation_task {
+        let rounds = tokio::time::timeout(std::time::Duration::from_secs(120), task)
+            .await
+            .map(|r| r.unwrap_or(0))
+            .unwrap_or(0);
+        let observations: i64 = db
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM memory_nodes WHERE bank_id = 'b2' AND fact_type = 'observation'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        println!(
+            "bench: CONSOLIDATING run — {rounds} rounds completed, {observations} observations written"
+        );
+    }
     if let Some(task) = load_task {
         println!(
             "bench: LOADED run — {} background nodes written+embedded during the loop",

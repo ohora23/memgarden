@@ -64,7 +64,12 @@ pub async fn run_backlog(db: Arc<Db>, state: AppState) {
 /// batches keep coming back; stop after a partial (or empty) batch. Yields
 /// between batches (R10) so an interactive `/v1/embed` request queued behind
 /// a long drain isn't stuck waiting for the whole backlog.
-async fn drain_once(db: &Arc<Db>, state: &AppState) {
+///
+/// `pub` for testing (same reason as `on_batch_embedded`): CE-9a's R4 nulls
+/// an embedding on every text update and CE-9b re-queues nodes that way, so
+/// something has to assert the vector actually comes *back* — and only a
+/// caller that can drive one tick by hand can do that without a 300s wait.
+pub async fn drain_once(db: &Arc<Db>, state: &AppState) {
     let batch_size = state.cfg.embedding.batch_size;
     loop {
         let embedder = state

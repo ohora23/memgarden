@@ -30,6 +30,9 @@
 //! [`DEDUP_REPLY_MAX_TOKENS`] bounds the other half: a reply that fills the
 //! window mid-generation reaches the same truncation from the far side.
 
+pub mod prompts;
+pub mod round;
+
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -282,6 +285,10 @@ async fn adjudicate(ollama: &OllamaClient, new_text: &str, twin_text: &str) -> D
             &user,
             &decision_schema(),
             DEDUP_REPLY_MAX_TOKENS,
+            // CE-9a's pair prompt fits Ollama's 4096 default with 2x to
+            // spare, so this path keeps the server's window (unlike
+            // `round`, whose batch prompt does not).
+            None,
         )
         .await;
     match raw {
@@ -361,7 +368,28 @@ pub async fn store_observation(
         );
         blocking(move || store::insert_observation(&db, &bank, &text, &embedding, &sources)).await?
     };
+    dedup_created(db, ollama, cfg, bank_id, id, text, embedding).await
+}
 
+/// The dedup half of [`store_observation`], for an observation that is
+/// **already stored**.
+///
+/// CE-9b's batch round writes a whole LLM plan — several creates, updates and
+/// deletes — in one transaction, so it cannot go through `store_observation`'s
+/// insert. It calls this afterwards, once per created observation, under a
+/// per-round cap ([`round::MAX_ADJUDICATIONS_PER_ROUND`]).
+///
+/// `embedding` must be the vector actually stored for `id`: the probe
+/// compares against this slice rather than reading the row back.
+pub async fn dedup_created(
+    db: &Arc<Db>,
+    ollama: &OllamaClient,
+    cfg: &ConsolidationConfig,
+    bank_id: &str,
+    id: i64,
+    text: &str,
+    embedding: &[f32],
+) -> Result<Outcome> {
     // `>= 1.0` disables the whole path (`consolidator.py:180-182`).
     if cfg.dedup_threshold >= 1.0 {
         return Ok(Outcome::Created { id });
@@ -426,6 +454,9 @@ mod tests {
     fn cfg(threshold: f64) -> ConsolidationConfig {
         ConsolidationConfig {
             dedup_threshold: threshold,
+            ..memgarden_core::config::Config::defaults()
+                .expect("default config")
+                .consolidation
         }
     }
 

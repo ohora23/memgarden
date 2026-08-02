@@ -57,6 +57,8 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(embed_task::load_at_startup(state.clone()));
     let embed_backlog_handle = tokio::spawn(embed_task::run_backlog(db.clone(), state.clone()));
     tokio::spawn(ollama::run_prober(ollama_client));
+    let consolidation_handle =
+        tokio::spawn(memgardend::consolidate::round::run_task(state.clone()));
     let retain_worker_handle = tokio::spawn(memgardend::retain::run_worker(state, retain_rx));
 
     axum::serve(listener, app)
@@ -71,6 +73,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Err(e) = retain_worker_handle.await {
         tracing::warn!(error = %e, "retain worker join error during shutdown");
+    }
+    if let Err(e) = consolidation_handle.await {
+        tracing::warn!(error = %e, "consolidation task join error during shutdown");
     }
 
     tracing::info!("shutting down: checkpointing WAL");

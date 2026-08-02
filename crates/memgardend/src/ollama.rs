@@ -84,7 +84,7 @@ impl OllamaClient {
         user: &str,
         schema: &Value,
     ) -> Result<T, OllamaError> {
-        self.chat_json_inner(system, user, schema, Some(ACQUIRE_TIMEOUT), None)
+        self.chat_json_inner(system, user, schema, Some(ACQUIRE_TIMEOUT), None, None)
             .await
     }
 
@@ -98,10 +98,12 @@ impl OllamaClient {
         user: &str,
         schema: &Value,
     ) -> Result<T, OllamaError> {
-        self.chat_json_inner(system, user, schema, None, None).await
+        self.chat_json_inner(system, user, schema, None, None, None)
+            .await
     }
 
-    /// `chat_json_background` with a per-call `num_predict` **ceiling**.
+    /// `chat_json_background` with a per-call `num_predict` **ceiling** and an
+    /// optional per-call `num_ctx`.
     ///
     /// The configured `ollama.num_predict` (8192) is sized for extraction,
     /// where one chunk legitimately produces pages of facts. A caller whose
@@ -111,16 +113,24 @@ impl OllamaClient {
     /// which is the truncation half of the 2026-08-02 consolidation incident
     /// (see `consolidate::DEDUP_REPLY_MAX_TOKENS`).
     ///
-    /// This is a ceiling, not an override — a config that already asks for
-    /// less is respected.
+    /// `num_predict` is a ceiling, not an override — a config that already
+    /// asks for less is respected.
+    ///
+    /// `num_ctx` is different: it is sent as given, because it is not a
+    /// preference but part of a caller's own token bound. CE-9b's batch
+    /// prompt is larger than Ollama's 4096 default window, so leaving the
+    /// window to the server would make that bound an assumption about the
+    /// deployment rather than a property of the code. `None` keeps the
+    /// server's default, which is what every other caller wants.
     pub async fn chat_json_background_bounded<T: DeserializeOwned>(
         &self,
         system: &str,
         user: &str,
         schema: &Value,
         num_predict: u32,
+        num_ctx: Option<u32>,
     ) -> Result<T, OllamaError> {
-        self.chat_json_inner(system, user, schema, None, Some(num_predict))
+        self.chat_json_inner(system, user, schema, None, Some(num_predict), num_ctx)
             .await
     }
 
@@ -131,6 +141,7 @@ impl OllamaClient {
         schema: &Value,
         acquire_timeout: Option<Duration>,
         num_predict: Option<u32>,
+        num_ctx: Option<u32>,
     ) -> Result<T, OllamaError> {
         // A closed semaphore is unreachable today, but a request path must
         // never panic.
@@ -156,7 +167,7 @@ impl OllamaClient {
             let mut last_err = OllamaError::Parse("no attempts made".to_string());
 
             for attempt in 0..outer_attempts {
-                match self.try_chat(system, user, schema, num_predict).await {
+                match self.try_chat(system, user, schema, num_predict, num_ctx).await {
                     Ok(raw) => match serde_json::from_str::<T>(&raw) {
                         Ok(parsed) => return Ok(parsed),
                         Err(e) => {
@@ -208,7 +219,18 @@ impl OllamaClient {
         user: &str,
         schema: &Value,
         num_predict: Option<u32>,
+        num_ctx: Option<u32>,
     ) -> Result<String, OllamaError> {
+        let mut options = json!({
+            "temperature": self.cfg.temperature,
+            // A per-call ceiling, never a raise: a config already asking
+            // for less keeps its number.
+            "num_predict": num_predict
+                .map_or(self.cfg.num_predict, |cap| cap.min(self.cfg.num_predict)),
+        });
+        if let Some(ctx) = num_ctx {
+            options["num_ctx"] = json!(ctx);
+        }
         let body = json!({
             "model": self.cfg.model,
             "messages": [
@@ -217,13 +239,7 @@ impl OllamaClient {
             ],
             "stream": false,
             "format": schema,
-            "options": {
-                "temperature": self.cfg.temperature,
-                // A per-call ceiling, never a raise: a config already asking
-                // for less keeps its number.
-                "num_predict": num_predict
-                    .map_or(self.cfg.num_predict, |cap| cap.min(self.cfg.num_predict)),
-            },
+            "options": options,
             "keep_alive": self.cfg.keep_alive,
         });
 

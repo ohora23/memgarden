@@ -6,6 +6,10 @@ use serde_json::json;
 use memgarden_core::Error;
 
 /// JSON error envelope: `{"error": {"code": "...", "message": "..."}}`.
+///
+/// `Debug` so a caller that has to fold one back into a `memgarden_core::Error`
+/// (consolidation's internal recall) can keep the reason instead of dropping it.
+#[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
     code: &'static str,
