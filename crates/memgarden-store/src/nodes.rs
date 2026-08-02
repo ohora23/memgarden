@@ -4,8 +4,8 @@ use rusqlite::{OptionalExtension, Row, params};
 use uuid::Uuid;
 
 use memgarden_core::error::Result;
-use memgarden_core::now_ms;
 use memgarden_core::types::FactType;
+use memgarden_core::{EMBEDDING_MODEL_ID, now_ms};
 
 use crate::models::{MemoryNode, NewNode};
 use crate::{Db, store_err, vecblob};
@@ -169,6 +169,12 @@ pub(crate) fn update_text_tx(
     text: &str,
     now: i64,
 ) -> Result<usize> {
+    // `embedding_model` is deliberately **not** nulled alongside `embedding`
+    // (AX-1). It tags the producer of the vector in the dense index, and the
+    // `vec_nodes` row is still there and still ours — that is this function's
+    // whole R4 deviation above. Nulling it would drop the node out of
+    // `search::knn`'s model filter, i.e. exactly the invisibility the
+    // deviation exists to avoid. `set_embedding` overwrites it on re-embed.
     tx.execute(
         "UPDATE memory_nodes SET text = ?1, embedding = NULL, updated_at = ?2 WHERE id = ?3",
         params![text, now, node_id],
@@ -178,13 +184,18 @@ pub(crate) fn update_text_tx(
 
 /// Writes the embedding BLOB on `memory_nodes` and upserts the matching
 /// `vec_nodes` row (vec0 has no native upsert, so this deletes then inserts).
+///
+/// Stamps `embedding_model` with [`EMBEDDING_MODEL_ID`] in the same statement
+/// as the vector (AX-1) — the two must never be able to disagree, so they are
+/// written together or not at all.
 pub fn set_embedding(db: &Db, node_id: i64, bank_id: &str, embedding: &[f32]) -> Result<()> {
     let blob = vecblob::encode(embedding)?;
     let now = now_ms();
     db.write(|tx| {
         tx.execute(
-            "UPDATE memory_nodes SET embedding = ?1, updated_at = ?2 WHERE id = ?3",
-            params![blob, now, node_id],
+            "UPDATE memory_nodes SET embedding = ?1, embedding_model = ?2, updated_at = ?3
+             WHERE id = ?4",
+            params![blob, EMBEDDING_MODEL_ID, now, node_id],
         )
         .map_err(store_err)?;
         tx.execute("DELETE FROM vec_nodes WHERE rowid = ?1", params![node_id])
@@ -238,8 +249,9 @@ pub fn set_embeddings_batch(db: &Db, batch: &[(i64, String, Vec<f32>)]) -> Resul
         for (node_id, bank_id, embedding) in batch {
             let blob = vecblob::encode(embedding)?;
             tx.execute(
-                "UPDATE memory_nodes SET embedding = ?1, updated_at = ?2 WHERE id = ?3",
-                params![blob, now, node_id],
+                "UPDATE memory_nodes SET embedding = ?1, embedding_model = ?2, updated_at = ?3
+                 WHERE id = ?4",
+                params![blob, EMBEDDING_MODEL_ID, now, node_id],
             )
             .map_err(store_err)?;
             tx.execute("DELETE FROM vec_nodes WHERE rowid = ?1", params![node_id])

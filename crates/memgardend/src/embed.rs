@@ -1,6 +1,13 @@
 //! In-binary CPU embeddings: `bge-small-en-v1.5` via fastembed/ONNX,
 //! bit-identical (measured to 7 decimals) to the legacy Python
 //! sentence-transformers stack — see the plan's Verified Environment Facts.
+//!
+//! Every vector this module produces is stamped on disk with
+//! [`memgarden_core::EMBEDDING_MODEL_ID`] (AX-1), which is what makes the
+//! claim in the paragraph above checkable rather than remembered. The const
+//! lives in `memgarden-core` only because `memgarden-store` writes the column;
+//! this module is what it describes, and `mg1_reference_vector` below is the
+//! check that says whether it still does.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -248,5 +255,60 @@ mod tests {
             sim_close > sim_far,
             "on-topic pair must score higher than the unrelated sentence: {sim_close} vs {sim_far}"
         );
+    }
+
+    /// **MG-1's reference vector** (AX-1). Prints what the active embedder
+    /// produces for one fixed sentence, so that a Phase D run can embed the
+    /// *same* sentence with the legacy sentence-transformers stack, compute
+    /// the cosine against these numbers, and decide from data whether the
+    /// legacy bank can be imported without re-embedding.
+    ///
+    /// Prints rather than asserts, deliberately. There is no committed
+    /// expectation to compare against yet — producing one here would just be
+    /// asserting that fastembed equals itself. The output is the artifact:
+    /// paste it into the MG-1 PR next to the legacy side's numbers.
+    ///
+    /// The sentence is ASCII, punctuation-free, and passed **raw** — no
+    /// `augment_for_embedding`, no BGE query/passage prefix (neither side uses
+    /// one; the prefixes live only in legacy's unused `OnnxEmbeddings`) — so
+    /// the two stacks are fed byte-identical input and the only variables left
+    /// are pooling and normalization.
+    ///
+    /// Requires the 133MB model download — run manually:
+    ///   cargo test -p memgardend -- --ignored --nocapture mg1_reference_vector
+    #[test]
+    #[ignore]
+    fn mg1_reference_vector() {
+        const REFERENCE_TEXT: &str = "the database migration completed successfully last night";
+
+        let cfg = EmbeddingConfig {
+            enabled: true,
+            model_dir: memgarden_core::paths::models_dir().unwrap(),
+            intra_threads: 4,
+            batch_size: 8,
+            backlog_poll_secs: 5,
+            debug_endpoint: false,
+        };
+        let embedder = Embedder::load(&cfg).unwrap();
+        let v = embedder
+            .embed_batch(&[REFERENCE_TEXT.to_string()])
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        assert_eq!(v.len(), EMBEDDING_DIM);
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        println!("mg1: model_id  = {}", memgarden_core::EMBEDDING_MODEL_ID);
+        println!("mg1: text      = {REFERENCE_TEXT:?}");
+        println!("mg1: dim       = {}", v.len());
+        println!("mg1: L2 norm   = {norm:.7}");
+        println!(
+            "mg1: dims[0..8]= {:?}",
+            v[..8].iter().map(|x| format!("{x:.7}")).collect::<Vec<_>>()
+        );
+        // Not a tolerance for the legacy comparison — just proof that this
+        // output describes a unit vector, so a cosine against it is a dot
+        // product and MG-1 does not have to renormalize.
+        assert!((norm - 1.0).abs() < 1e-4, "‖v‖ = {norm}, expected ~1.0");
     }
 }

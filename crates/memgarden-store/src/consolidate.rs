@@ -11,8 +11,8 @@
 use rusqlite::{OptionalExtension, params};
 
 use memgarden_core::error::Result;
-use memgarden_core::now_ms;
 use memgarden_core::types::FactType;
+use memgarden_core::{EMBEDDING_MODEL_ID, now_ms};
 
 use crate::{Db, nodes, store_err, vecblob};
 
@@ -30,6 +30,11 @@ pub struct ObservationVector {
 
 /// Every embedded observation in `bank_id` except `exclude_id`, for the
 /// dedup probe's cosine scan.
+///
+/// Restricted to `embedding_model = EMBEDDING_MODEL_ID` (AX-1). This is a
+/// cosine comparison against a 0.97 threshold, so a vector from another
+/// producer is not merely noisy here — its similarity number means nothing,
+/// and acting on it merges or spares an observation for no reason.
 ///
 /// Deliberately **not** the `vec_nodes` KNN path. vec0 partitions on
 /// `bank_id` only, so a `MATCH ... AND k = 5` there returns the five nearest
@@ -62,11 +67,11 @@ pub fn observation_vectors(
         .prepare(
             "SELECT id, uuid, text, embedding FROM memory_nodes
              WHERE bank_id = ?1 AND fact_type = 'observation'
-               AND embedding IS NOT NULL AND id <> ?2",
+               AND embedding IS NOT NULL AND embedding_model = ?3 AND id <> ?2",
         )
         .map_err(store_err)?;
     let rows = stmt
-        .query_map(params![bank_id, exclude_id], |r| {
+        .query_map(params![bank_id, exclude_id, EMBEDDING_MODEL_ID], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
@@ -133,14 +138,18 @@ pub(crate) fn insert_observation_tx(
     let uuid = uuid::Uuid::now_v7().to_string();
     tx.execute(
         "INSERT INTO memory_nodes
-         (uuid, bank_id, fact_type, text, embedding, mentioned_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6)",
+         (uuid, bank_id, fact_type, text, embedding, embedding_model, mentioned_at,
+          created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?7)",
         params![
             uuid,
             bank_id,
             FactType::Observation.as_str(),
             text,
             blob,
+            // AX-1: this path embeds inline rather than going through
+            // `nodes::set_embedding`, so it has to stamp the producer itself.
+            EMBEDDING_MODEL_ID,
             now,
         ],
     )
