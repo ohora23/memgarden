@@ -13,7 +13,9 @@ pub async fn livez() -> &'static str {
 
 /// Liveness + DB reachability: SELECT 1, schema version, row counts, plus
 /// the embedding subsystem's `loading`/`ready`/`disabled`/`error` status
-/// (CE-4 — the first real use of `DEGRADED`, reserved since CE-3).
+/// (CE-4 — the first real use of `DEGRADED`, reserved since CE-3) and (CE-5,
+/// B2) Ollama's `ready`/`unreachable` status from the background prober's
+/// atomic (decision #5 — never probe per request).
 pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
     let uptime_ms = memgarden_core::now_ms() - state.started_at_ms;
     let db = state.db.clone();
@@ -51,12 +53,16 @@ pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
     let db_path = state.cfg.db_path.display().to_string();
     let version = env!("CARGO_PKG_VERSION");
     let embedding = crate::embed::embed_status();
+    let ollama = crate::ollama::ollama_status();
 
     match checked {
         Ok((Ok((schema_version, banks, nodes)), db_size_bytes)) => {
-            // DB is healthy; an embedding load error still counts as
-            // service-degraded, not down — 200, not 503.
-            let status = if embedding == crate::embed::EmbedStatus::Error {
+            // DB is healthy; an embedding load error or an unreachable
+            // Ollama still count as service-degraded, not down — 200, not
+            // 503.
+            let status = if embedding == crate::embed::EmbedStatus::Error
+                || ollama == crate::ollama::OllamaStatus::Unreachable
+            {
                 "DEGRADED"
             } else {
                 "HEALTHY"
@@ -73,6 +79,7 @@ pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
                     "banks": banks,
                     "nodes": nodes,
                     "embedding": embedding.as_str(),
+                    "ollama": ollama.as_str(),
                 })),
             )
         }
@@ -88,6 +95,7 @@ pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
                 "banks": null,
                 "nodes": null,
                 "embedding": embedding.as_str(),
+                "ollama": ollama.as_str(),
             })),
         ),
         Err(_) => (
@@ -102,6 +110,7 @@ pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
                 "banks": null,
                 "nodes": null,
                 "embedding": embedding.as_str(),
+                "ollama": ollama.as_str(),
             })),
         ),
     }

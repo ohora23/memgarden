@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use memgarden_core::config::Config;
 use memgarden_core::metrics::METRICS;
 use memgarden_store::Db;
-use memgardend::{embed_task, metrics_task, routes, state::AppState};
+use memgardend::{embed_task, metrics_task, ollama, routes, state::AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -19,11 +19,13 @@ async fn main() -> anyhow::Result<()> {
     METRICS
         .started_at_ms
         .store(started_at_ms as u64, Ordering::Relaxed);
+    let ollama_client = Arc::new(ollama::OllamaClient::new(cfg.ollama.clone())?);
     let state = AppState {
         db: db.clone(),
         cfg: cfg.clone(),
         started_at_ms,
         embedder: Arc::new(RwLock::new(None)),
+        ollama: ollama_client.clone(),
     };
 
     let app = routes::router(state.clone());
@@ -38,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
     // download must not delay the port bind.
     tokio::spawn(embed_task::load_at_startup(state.clone()));
     let embed_backlog_handle = tokio::spawn(embed_task::run_backlog(db.clone(), state));
+    tokio::spawn(ollama::run_prober(ollama_client));
 
     axum::serve(listener, app)
         .with_graceful_shutdown(memgardend::shutdown_signal())

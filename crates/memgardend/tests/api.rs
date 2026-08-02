@@ -26,12 +26,24 @@ fn test_app_with_db() -> (axum::Router, Arc<memgarden_store::Db>) {
             backlog_poll_secs: 5,
             debug_endpoint: false,
         },
+        ollama: memgarden_core::config::OllamaConfig {
+            base_url: "http://127.0.0.1:1".to_string(), // unroutable: any real call fails fast
+            model: "test-model".to_string(),
+            temperature: 0.1,
+            num_predict: 64,
+            request_timeout_secs: 1,
+            max_retries: 0,
+            keep_alive: "10m".to_string(),
+            max_concurrent: 1,
+        },
     };
+    let ollama = std::sync::Arc::new(memgardend::ollama::OllamaClient::new(cfg.ollama.clone()).unwrap());
     let state = AppState {
         db: db.clone(),
         cfg: Arc::new(cfg),
         started_at_ms: memgarden_core::now_ms(),
         embedder: Arc::new(std::sync::RwLock::new(None)),
+        ollama,
     };
     (routes::router(state), db)
 }
@@ -329,4 +341,36 @@ async fn reindex_bank_rebuilds_vec_index() {
     let body = body_json(response).await;
     assert_eq!(body["rebuilt"], 1);
     assert_eq!(search::knn(&db, "b1", &v, 10).unwrap()[0].0, id);
+}
+
+#[tokio::test]
+async fn dry_run_extract_unknown_bank_404() {
+    let app = test_app();
+    let request = json_request(
+        "POST",
+        "/v1/banks/nope/dry-run-extract",
+        json!({ "text": "hello" }),
+    );
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn dry_run_extract_unreachable_ollama_503() {
+    // test_app_with_db()'s OllamaConfig points at an unroutable loopback
+    // port with max_retries=0, so this fails fast without ever touching a
+    // real Ollama instance — exercising Critic Revision R11's 503 mapping,
+    // not the extraction logic itself (that's parse.rs's job).
+    let (app, db) = test_app_with_db();
+    memgarden_store::banks::create(&db, "b1", None, None).unwrap();
+
+    let request = json_request(
+        "POST",
+        "/v1/banks/b1/dry-run-extract",
+        json!({ "text": "the user prefers dark mode" }),
+    );
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["code"], "unavailable");
 }

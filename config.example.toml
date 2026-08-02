@@ -7,7 +7,8 @@
 # Every value can also be overridden via environment, which wins over both
 # this file and the built-in defaults:
 #   MEMGARDEN_BIND, MEMGARDEN_DB_PATH, MEMGARDEN_LOG_LEVEL,
-#   MEMGARDEN_METRICS_INTERVAL, MEMGARDEN_MODEL_DIR, MEMGARDEN_EMBED_THREADS
+#   MEMGARDEN_METRICS_INTERVAL, MEMGARDEN_MODEL_DIR, MEMGARDEN_EMBED_THREADS,
+#   MEMGARDEN_OLLAMA_URL, MEMGARDEN_OLLAMA_MODEL
 
 [server]
 # Note: ports 9077 (hindsight) and 9090 (memdash) are already in use on
@@ -47,3 +48,24 @@ batch_size = 8
 backlog_poll_secs = 5
 # POST /v1/embed (text -> vector) is a debug tool, off by default.
 debug_endpoint = false
+
+[ollama]
+# Fact extraction LLM (CE-5). Loopback HTTP only — memgardend never speaks
+# TLS to Ollama, see the workspace Cargo.toml's reqwest comment.
+base_url = "http://127.0.0.1:11434"
+# The bare "qwen3-14b" tag does NOT exist on this machine — only
+# "qwen3-14b-nothink:latest" / "qwen3-14b-q6:latest" do. This matches the
+# live hindsight fork daemon's HINDSIGHT_API_LLM_MODEL.
+model = "qwen3-14b-nothink:latest"
+# legacy: config.py:210 DEFAULT_LLM_TEMPERATURE_RETAIN.
+temperature = 0.1
+# Deliberate divergence from legacy's 64000 (config.py:1094): at the
+# measured ~65 tok/s that's a 16-minute worst case for one chunk. 8192
+# comfortably covers a 3000-char chunk's facts.
+num_predict = 8192
+request_timeout_secs = 300
+max_retries = 3
+keep_alive = "10m"
+# A 14B model sharing one GPU with nothing else must not be hit
+# concurrently — keep at 1 unless Ollama is moved to dedicated hardware.
+max_concurrent = 1

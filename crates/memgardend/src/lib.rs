@@ -1,8 +1,10 @@
 pub mod embed;
 pub mod embed_task;
 pub mod error;
+pub mod extract;
 pub mod metrics_task;
 pub mod middleware;
+pub mod ollama;
 pub mod routes;
 pub mod state;
 

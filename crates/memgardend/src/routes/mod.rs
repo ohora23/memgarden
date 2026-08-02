@@ -1,5 +1,6 @@
 mod banks;
 mod embed;
+mod extract;
 mod health;
 mod metrics;
 
@@ -36,6 +37,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/banks/{bank_id}/reindex", post(embed::reindex_bank))
         .route("/v1/embed", post(embed::embed_debug))
+        .route(
+            "/v1/banks/{bank_id}/dry-run-extract",
+            post(extract::dry_run_extract),
+        )
         .layer(from_fn(track_http));
 
     unmeasured

@@ -1,6 +1,4 @@
 //! Daemon configuration: struct defaults -> TOML file -> env overrides.
-//!
-//! [ollama] is intentionally absent here (CE-5).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,6 +16,8 @@ const ENV_CONFIG: &str = "MEMGARDEN_CONFIG";
 const ENV_HOME: &str = "HOME";
 const ENV_MODEL_DIR: &str = "MEMGARDEN_MODEL_DIR";
 const ENV_EMBED_THREADS: &str = "MEMGARDEN_EMBED_THREADS";
+const ENV_OLLAMA_URL: &str = "MEMGARDEN_OLLAMA_URL";
+const ENV_OLLAMA_MODEL: &str = "MEMGARDEN_OLLAMA_MODEL";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -26,6 +26,22 @@ pub struct Config {
     pub log_level: String,
     pub metrics_snapshot_interval_secs: u64,
     pub embedding: EmbeddingConfig,
+    pub ollama: OllamaConfig,
+}
+
+/// `[ollama]` — the local LLM used for fact extraction (CE-5, B2). Loopback
+/// HTTP only (`reqwest` has no TLS feature enabled — see the workspace
+/// Cargo.toml comment).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OllamaConfig {
+    pub base_url: String,
+    pub model: String,
+    pub temperature: f64,
+    pub num_predict: u32,
+    pub request_timeout_secs: u64,
+    pub max_retries: u32,
+    pub keep_alive: String,
+    pub max_concurrent: usize,
 }
 
 /// `[embedding]` — in-binary CPU embeddings (CE-4). `intra_threads = 4` and
@@ -60,6 +76,29 @@ impl Config {
                 backlog_poll_secs: 5,
                 debug_endpoint: false,
             },
+            ollama: OllamaConfig {
+                base_url: "http://127.0.0.1:11434".to_string(),
+                // legacy: the live fork daemon's HINDSIGHT_API_LLM_MODEL — the
+                // bare "qwen3-14b" tag does NOT exist on this machine, only
+                // "qwen3-14b-nothink:latest" / "qwen3-14b-q6:latest" do
+                // (plan Verified Environment Facts, Ollama section).
+                model: "qwen3-14b-nothink:latest".to_string(),
+                // legacy: config.py:210 DEFAULT_LLM_TEMPERATURE_RETAIN.
+                temperature: 0.1,
+                // Deliberate divergence from legacy's 64000 (config.py:1094):
+                // at the measured ~65 tok/s that's a 16-minute worst case for
+                // one chunk. 8192 comfortably covers a 3000-char chunk's
+                // facts. See docs/design/ce-5a-ollama-extract.md.
+                num_predict: 8192,
+                request_timeout_secs: 300,
+                // legacy: config.py:862-864 (retry count only — backoff cap
+                // differs, see ollama.rs R14).
+                max_retries: 3,
+                keep_alive: "10m".to_string(),
+                // A 14B model sharing one GPU with nothing else must not be
+                // hit concurrently.
+                max_concurrent: 1,
+            },
         })
     }
 
@@ -92,6 +131,8 @@ impl Config {
             ENV_HOME,
             ENV_MODEL_DIR,
             ENV_EMBED_THREADS,
+            ENV_OLLAMA_URL,
+            ENV_OLLAMA_MODEL,
         ] {
             if let Ok(v) = std::env::var(key) {
                 env.insert(key.to_string(), v);
@@ -150,6 +191,32 @@ pub fn from_parts(
                 cfg.embedding.debug_endpoint = v;
             }
         }
+        if let Some(ollama) = parsed.ollama {
+            if let Some(v) = ollama.base_url {
+                cfg.ollama.base_url = v;
+            }
+            if let Some(v) = ollama.model {
+                cfg.ollama.model = v;
+            }
+            if let Some(v) = ollama.temperature {
+                cfg.ollama.temperature = v;
+            }
+            if let Some(v) = ollama.num_predict {
+                cfg.ollama.num_predict = v;
+            }
+            if let Some(v) = ollama.request_timeout_secs {
+                cfg.ollama.request_timeout_secs = v;
+            }
+            if let Some(v) = ollama.max_retries {
+                cfg.ollama.max_retries = v;
+            }
+            if let Some(v) = ollama.keep_alive {
+                cfg.ollama.keep_alive = v;
+            }
+            if let Some(v) = ollama.max_concurrent {
+                cfg.ollama.max_concurrent = v;
+            }
+        }
     }
 
     if let Some(bind) = env.get(ENV_BIND) {
@@ -174,6 +241,12 @@ pub fn from_parts(
             .parse()
             .map_err(|_| Error::Config(format!("invalid {ENV_EMBED_THREADS}: {threads}")))?;
     }
+    if let Some(url) = env.get(ENV_OLLAMA_URL) {
+        cfg.ollama.base_url = url.clone();
+    }
+    if let Some(model) = env.get(ENV_OLLAMA_MODEL) {
+        cfg.ollama.model = model.clone();
+    }
 
     Ok(cfg)
 }
@@ -197,6 +270,7 @@ struct TomlConfig {
     log: Option<TomlLog>,
     metrics: Option<TomlMetrics>,
     embedding: Option<TomlEmbedding>,
+    ollama: Option<TomlOllama>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -229,6 +303,18 @@ struct TomlEmbedding {
     debug_endpoint: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct TomlOllama {
+    base_url: Option<String>,
+    model: Option<String>,
+    temperature: Option<f64>,
+    num_predict: Option<u32>,
+    request_timeout_secs: Option<u64>,
+    max_retries: Option<u32>,
+    keep_alive: Option<String>,
+    max_concurrent: Option<usize>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +332,16 @@ mod tests {
                 batch_size: 8,
                 backlog_poll_secs: 5,
                 debug_endpoint: false,
+            },
+            ollama: OllamaConfig {
+                base_url: "http://127.0.0.1:11434".to_string(),
+                model: "qwen3-14b-nothink:latest".to_string(),
+                temperature: 0.1,
+                num_predict: 8192,
+                request_timeout_secs: 300,
+                max_retries: 3,
+                keep_alive: "10m".to_string(),
+                max_concurrent: 1,
             },
         }
     }
@@ -347,5 +443,32 @@ mod tests {
         let mut env = HashMap::new();
         env.insert(ENV_EMBED_THREADS.to_string(), "not-a-number".to_string());
         assert!(from_parts(defaults(), None, &env).is_err());
+    }
+
+    #[test]
+    fn ollama_precedence() {
+        let toml_str = r#"
+            [ollama]
+            model = "qwen3-14b-q6:latest"
+            max_retries = 5
+        "#;
+        let cfg = from_parts(defaults(), Some(toml_str), &HashMap::new()).unwrap();
+        assert_eq!(cfg.ollama.model, "qwen3-14b-q6:latest");
+        assert_eq!(cfg.ollama.max_retries, 5);
+        // Untouched by TOML: still default.
+        assert_eq!(cfg.ollama.base_url, "http://127.0.0.1:11434");
+        assert_eq!(cfg.ollama.temperature, 0.1);
+
+        let mut env = HashMap::new();
+        env.insert(
+            ENV_OLLAMA_URL.to_string(),
+            "http://127.0.0.1:22222".to_string(),
+        );
+        env.insert(ENV_OLLAMA_MODEL.to_string(), "other-model".to_string());
+        let cfg = from_parts(defaults(), Some(toml_str), &env).unwrap();
+        assert_eq!(cfg.ollama.base_url, "http://127.0.0.1:22222"); // env wins over toml
+        assert_eq!(cfg.ollama.model, "other-model"); // env wins over toml
+        // Env doesn't touch max_retries; TOML value survives.
+        assert_eq!(cfg.ollama.max_retries, 5);
     }
 }
