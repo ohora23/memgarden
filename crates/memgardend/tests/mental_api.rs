@@ -521,6 +521,42 @@ async fn knn_search_without_an_embedder_is_unavailable() {
     assert_eq!(list.as_array().unwrap().len(), 1);
 }
 
+/// KNN mode is unpaged, so `offset` alongside `q` is refused rather than
+/// silently ignored (review round 1, L3) — checked before the embedder, so it
+/// is a 400 even on a daemon that could not have served the search anyway.
+#[tokio::test]
+async fn knn_search_rejects_an_offset_instead_of_ignoring_it() {
+    let h = harness().await;
+    h.create("b1", json!({"name": "Ollama latency"})).await;
+
+    let (status, err) = h
+        .send(
+            "GET",
+            "/v1/banks/b1/mental-models?q=latency&offset=50",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unpaged"),
+        "the client must be told why: {err}"
+    );
+
+    // `offset=0` is not a paging request, so it is not an error...
+    let (status, _) = h
+        .send("GET", "/v1/banks/b1/mental-models?q=latency&offset=0", None)
+        .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "no embedder here");
+    // ...and offset without q pages normally.
+    let (status, _) = h
+        .send("GET", "/v1/banks/b1/mental-models?offset=50", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
 /// Cron due-ness as the API reports it (`maintenance.py:417-425`).
 #[tokio::test]
 async fn due_reflects_the_trigger_against_the_last_refresh() {

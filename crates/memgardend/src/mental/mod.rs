@@ -475,6 +475,15 @@ async fn supporting_facts(
     model: &MentalModel,
     now_ms: i64,
 ) -> Result<(Vec<RecallItem>, Option<i64>), ApiError> {
+    // One number, two budgets (review round 1, L12): `max_tokens` is the
+    // *document* budget (it caps `num_predict` via `reply_cap`) and is reused
+    // here as recall's *retrieval* budget. Tolerable rather than designed —
+    // they move in the same direction, so a model that wants a short summary
+    // also reads less to write it, which is why the conflation has never
+    // bitten. What a caller cannot express is the diagonal: a long document
+    // from a narrow window, or a one-line conclusion drawn from everything
+    // recalled. The day someone wants either, this needs a second field, not a
+    // bigger number.
     let max_tokens = usize::try_from(model.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS))
         .unwrap_or(DEFAULT_MAX_TOKENS as usize)
         .clamp(1, MAX_RECALL_TOKENS);
@@ -587,6 +596,9 @@ fn assemble_refresh<'a>(
     let mut with_content = true;
     let mut kept: Vec<&RecallItem> = facts.iter().collect();
 
+    // ponytail: same O(n^2) re-render as `reflect::assemble` and the same
+    // reasoning — n <= REFLECT_RECALL_LIMIT (40) and this precedes a
+    // multi-second LLM call. Same upgrade path (running total) if either grows.
     loop {
         if kept.is_empty() {
             return None;

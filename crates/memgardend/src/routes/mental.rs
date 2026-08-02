@@ -66,7 +66,42 @@ pub struct MentalModelResponse {
     pub created_at: i64,
 }
 
+/// Builds the response bodies **off the reactor** (review round 1, L8).
+///
+/// `due` runs `cron::prev_fire`, which walks whole days backwards until the
+/// schedule matches or `MAX_LOOKBACK_DAYS` (1,464) runs out. Realistic
+/// schedules match in one or two iterations, but `0 0 30 2 *` is eleven bytes,
+/// parses fine, and never fires — so it walks the full lookback every time it
+/// is rendered. `MAX_TRIGGER_BYTES` does not help here: input length bounds
+/// the *parse*, not the *walk*.
+///
+/// So every handler routes its rows through this one call rather than mapping
+/// them inline. One `spawn_blocking` per request, whatever the row count —
+/// which is also why memoizing per distinct trigger string is the wrong lever:
+/// it would help the 200-rows-one-schedule case and do nothing for the single
+/// pathological row.
+async fn respond(
+    models: Vec<MentalModel>,
+    now_ms: i64,
+) -> Result<Vec<MentalModelResponse>, ApiError> {
+    tokio::task::spawn_blocking(move || {
+        models
+            .into_iter()
+            .map(|m| MentalModelResponse::new(m, now_ms))
+            .collect()
+    })
+    .await
+    .map_err(join_err)
+}
+
+/// [`respond`] for the single-row handlers.
+async fn respond_one(model: MentalModel, now_ms: i64) -> Result<MentalModelResponse, ApiError> {
+    let mut out = respond(vec![model], now_ms).await?;
+    Ok(out.remove(0))
+}
+
 impl MentalModelResponse {
+    /// Cheap except for `due` — call it from [`respond`], never on the reactor.
     fn new(m: MentalModel, now_ms: i64) -> Self {
         let due = m
             .trigger
@@ -181,6 +216,18 @@ pub async fn list_mental_models(
         ))
         .into());
     }
+    // KNN mode is unpaged, so an `offset` alongside `q` is refused rather than
+    // ignored (review round 1, L3). Same defect class as the wrapping OFFSET:
+    // a paging parameter that is accepted and then quietly does nothing hands
+    // the caller page 1 with no signal. A comment cannot reach an HTTP client.
+    if q.q.is_some() && q.offset.is_some_and(|o| o > 0) {
+        return Err(memgarden_core::Error::Invalid(
+            "offset is not supported with q: KNN search returns the nearest \
+             `limit` models and is unpaged"
+                .to_string(),
+        )
+        .into());
+    }
     let found = match q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         // KNN search. 503 rather than a silent recency page when the embedder
         // is not ready: a caller who asked for nearest-neighbour ordering and
@@ -192,6 +239,13 @@ pub async fn list_mental_models(
             let (db, bank) = (state.db.clone(), bank_id.clone());
             tokio::task::spawn_blocking(move || {
                 let hits = store::knn(&db, &bank, &embedding, limit)?;
+                // ponytail: one `get` per hit — N+1, with N bounded by
+                // `limit` (<= MAX_LIST_LIMIT = 200). Sequential inside one
+                // blocking task, so it is slow at the ceiling, never a pool
+                // deadlock. Upgrade path when something actually asks for 200
+                // mental models: a batched `get_many` in the shape of
+                // `search::hydrate` / `nodes::created_after` — one statement,
+                // `id IN (SELECT value FROM json_each(?))`.
                 hits.into_iter()
                     .filter_map(|(id, _)| store::get(&db, &bank, &id).transpose())
                     .collect::<memgarden_core::error::Result<Vec<_>>>()
@@ -206,12 +260,7 @@ pub async fn list_mental_models(
                 .map_err(join_err)??
         }
     };
-    Ok(Json(
-        found
-            .into_iter()
-            .map(|m| MentalModelResponse::new(m, now))
-            .collect(),
-    ))
+    Ok(Json(respond(found, now).await?))
 }
 
 pub async fn create_mental_model(
@@ -239,7 +288,7 @@ pub async fn create_mental_model(
     .await?;
     Ok((
         StatusCode::CREATED,
-        Json(MentalModelResponse::new(created, memgarden_core::now_ms())),
+        Json(respond_one(created, memgarden_core::now_ms()).await?),
     ))
 }
 
@@ -249,10 +298,7 @@ pub async fn get_mental_model(
 ) -> Result<Json<MentalModelResponse>, ApiError> {
     require_bank(&state, &bank_id).await?;
     let found = mental::load(&state, &bank_id, &mm_id).await?;
-    Ok(Json(MentalModelResponse::new(
-        found,
-        memgarden_core::now_ms(),
-    )))
+    Ok(Json(respond_one(found, memgarden_core::now_ms()).await?))
 }
 
 /// Sets the fields present in the body. A field cannot be *cleared* through
@@ -283,10 +329,7 @@ pub async fn patch_mental_model(
         },
     )
     .await?;
-    Ok(Json(MentalModelResponse::new(
-        updated,
-        memgarden_core::now_ms(),
-    )))
+    Ok(Json(respond_one(updated, memgarden_core::now_ms()).await?))
 }
 
 pub async fn delete_mental_model(
@@ -319,10 +362,9 @@ pub async fn refresh_mental_model(
 ) -> Result<Json<MentalModelResponse>, ApiError> {
     require_bank(&state, &bank_id).await?;
     let refreshed = mental::refresh(&state, &bank_id, &mm_id).await?;
-    Ok(Json(MentalModelResponse::new(
-        refreshed,
-        memgarden_core::now_ms(),
-    )))
+    Ok(Json(
+        respond_one(refreshed, memgarden_core::now_ms()).await?,
+    ))
 }
 
 /// `POST /v1/banks/{bank_id}/reflect` — one recall plus one LLM call.

@@ -241,12 +241,25 @@ async fn nearest_models(
     bank_id: &str,
     query: &str,
 ) -> Result<Vec<MentalModel>, ApiError> {
+    // This is the query's **second** embed of the request: `recall` already
+    // embedded the same string for its dense arm, so one reflect takes the
+    // single process-wide ONNX mutex twice (review round 1, L6). Known and
+    // deliberately unfixed: the standing rule on this project is that the
+    // mutex wait gets instrumented before anyone spends a lever against it —
+    // the last unmeasured optimisation here came back at −0.10 ms against a
+    // 3 ms spread and was reverted. Threading the vector out of `recall` would
+    // widen its return type for every caller to save an unmeasured
+    // microsecond. Revisit with the instrumentation, not before.
     let Some(embedding) = super::embed_one(state, query.to_string()).await else {
         return Ok(vec![]);
     };
     let (db, bank) = (state.db.clone(), bank_id.to_string());
     tokio::task::spawn_blocking(move || {
         let hits = store::knn(&db, &bank, &embedding, REFLECT_MAX_MENTAL_MODELS)?;
+        // ponytail: one `get` per hit — N+1 with N <= 3
+        // (`REFLECT_MAX_MENTAL_MODELS`), inside one blocking task. The same
+        // batched upgrade path as the list route's copy, and the same trigger:
+        // whichever of the two first needs more than a handful of rows.
         hits.into_iter()
             .filter_map(|(id, _)| store::get(&db, &bank, &id).transpose())
             .collect::<memgarden_core::error::Result<Vec<_>>>()
@@ -280,6 +293,12 @@ fn assemble<'a>(
     let mut mems: Vec<&RecallItem> = memories.iter().collect();
     let mut mms: Vec<&MentalModel> = models.iter().collect();
 
+    // ponytail: re-renders and re-tokenizes the whole payload once per shed,
+    // so O(n^2) BPE work with n = memories + mental models. n is bounded by
+    // the recall `limit` (<= 200, typically ~10) plus 3, and this sits in
+    // front of a multi-second LLM call, so the constant is invisible. Upgrade
+    // path if a caller ever asks for a large `limit`: keep a running total and
+    // subtract each shed item's own token count instead of re-rendering.
     loop {
         let user = render_user(query, &mems, &mms);
         if system_tokens + token_count(&user) <= REFLECT_PROMPT_MAX_TOKENS {
