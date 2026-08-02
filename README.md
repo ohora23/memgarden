@@ -1,12 +1,24 @@
-<!-- Hero image: generated externally, drop the file at assets/hero.png and uncomment.
-<p align="center"><img src="assets/hero.png" alt="MemGarden — a tended garden of machine memory, grown in Rust" width="100%"></p>
--->
+<p align="center"><img src="assets/hero.png" alt="MemGarden — an agent's memory system as a tended garden: inputs flow in, facts take root, connections form, and knowledge is harvested" width="100%"></p>
 
 # MemGarden
 
 A ground-up **Rust rebuild** of my personal long-term memory system for Claude Code — local-LLM fact extraction, hybrid recall, an interactive memory graph, and overhead-free savings metrics, all in one self-contained daemon.
 
-Like a garden, memory here is not just stored but **tended**: sessions rain down through hooks, facts take root in per-project banks, consolidation prunes and grafts them into knowledge, and a ledger keeps honest books on what the garden actually yields. The [Python-era system](https://github.com/ohora23/memgarden-legacy) proved the concept and produced the measurements; this repo replaces its entire automatic layer with a single Rust binary.
+## What it's for
+
+An AI coding assistant starts every session amnesiac. It re-reads the same files, re-derives the same conclusions, and asks you things you settled last week. MemGarden is the layer that stops that: conversations are captured automatically, distilled into facts by a local LLM, linked to each other, and served back — in about seven milliseconds — as the handful of memories that matter for the prompt you just typed.
+
+The name is the design. Memory here is not a bucket you throw things into; it is **tended**. Sessions rain down through hooks. Facts take root in per-project banks. Consolidation prunes duplicates and grafts observations into knowledge. A ledger keeps honest books on what the garden actually yields. Nothing leaves the machine it grows on.
+
+## What makes it different
+
+- **One binary, one file, zero external processes.** SQLite with sqlite-vec and FTS5 does vectors, keywords, and the graph in-process. No database server to start, no restart race to lose data to, and a backup is `cp memgarden.db`.
+- **Fast enough to be invisible.** Recall measures **p50 6.9ms / p95 7.9ms** at 3,000 memories, against a 35ms budget — so the memory layer never becomes the reason a prompt feels slow. Under concurrent ingest at 10x that scale it still clears the 60ms ceiling.
+- **Local by construction, not by policy.** Extraction runs on your own Ollama; embeddings and reranking are compiled into the binary and run on CPU so they never fight the LLM for VRAM. There is no cloud path to accidentally enable.
+- **Honest about its own value.** Every retain records what the input caps saved (**−75.3% measured** on a real session) into a benefit ledger. Metrics collection costs **88ns per request** — 0.00025% of the latency budget — so measuring the system can never distort what it measures.
+- **Korean works properly.** CJK has no word boundaries, so a naive full-text index silently returns nothing. The FTS layer is built for it (unicode61 + prefix indexing + prefix-suffixed terms) and a guard test fails the build if that ever regresses.
+- **Bounded everywhere it touches untrusted input.** Transcripts, tool payloads, entity names, prompt sizes, and queue depth all have caps with tests — because in the previous system each of those, uncapped, produced a real incident.
+- **Reviewed like it matters.** Every change lands as a PR through a three-way review (functional / security / code) with adversarial re-verification: fixes are confirmed by mutation-testing them, and a ported algorithm was differentially fuzzed against its Python original across 4,000 cases.
 
 ## Why rebuild
 
@@ -49,7 +61,7 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 | Phase | Scope | State |
 |---|---|---|
 | A — Foundation | workspace/CI, SQLite schema, REST skeleton, metrics plumbing (CE-1..3, MX-1) | ✅ merged |
-| B — Core pipeline | embeddings CE-4 ✅ · Ollama extraction CE-5a ✅ · retain ingest CE-5b ✅ · hybrid recall CE-6 🔄 · entities/graph CE-7 · temporal CE-8 · consolidation CE-9 · reflect CE-10 · reranker CE-11 | 🔄 in progress |
+| B — Core pipeline | embeddings CE-4 ✅ · Ollama extraction CE-5a ✅ · retain ingest CE-5b ✅ · hybrid recall CE-6 ✅ · entities/graph CE-7 ✅ · temporal CE-8 🔄 · consolidation CE-9 · reflect CE-10 · reranker CE-11 | 🔄 in progress |
 | C — Hooks | 4 Rust hook subcommands, global settings switch | ⏳ |
 | D — Migration | Postgres → SQLite exporter, lossless-verification script | ⏳ |
 | E — UI & metrics | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views | ⏳ |
