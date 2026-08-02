@@ -1,0 +1,16 @@
+[package]
+name = "memgarden-store"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+memgarden-core = { path = "../memgarden-core" }
+rusqlite = { workspace = true }
+r2d2 = { workspace = true }
+r2d2_sqlite = { workspace = true }
+sqlite-vec = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

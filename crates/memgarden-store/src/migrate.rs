@@ -1,0 +1,43 @@
+//! Schema migrations. `PRAGMA user_version` is the authority on what has
+//! been applied; `schema_migrations` is an audit log only.
+
+use rusqlite::{Connection, TransactionBehavior};
+
+use memgarden_core::error::Result;
+use memgarden_core::now_ms;
+
+use crate::store_err;
+
+const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
+
+/// Applies all pending migrations. Idempotent — migrations already
+/// reflected in `PRAGMA user_version` are skipped. Each migration opens its
+/// own `BEGIN IMMEDIATE` transaction (grabbing the write lock up front) and
+/// re-reads `PRAGMA user_version` *inside* that transaction before deciding
+/// whether to apply: two processes racing `Db::open` on the same file will
+/// serialize on the write lock, and the second one to acquire it sees the
+/// first one's already-committed version and skips, so the DDL is never
+/// double-applied.
+pub fn migrate(conn: &mut Connection) -> Result<()> {
+    for &(version, sql) in MIGRATIONS {
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store_err)?;
+        let current: i64 = tx
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(store_err)?;
+        if version <= current {
+            continue;
+        }
+        tx.execute_batch(sql).map_err(store_err)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![version, now_ms()],
+        )
+        .map_err(store_err)?;
+        tx.pragma_update(None, "user_version", version)
+            .map_err(store_err)?;
+        tx.commit().map_err(store_err)?;
+    }
+    Ok(())
+}
