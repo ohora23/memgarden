@@ -674,7 +674,6 @@ fn migrate_upgrades_a_v2_database_in_place() {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
     assert_eq!(version, memgarden_store::LATEST_VERSION);
-    assert_eq!(memgarden_store::LATEST_VERSION, 3);
 
     // 0003's table exists, the new entity columns exist...
     let cooc: i64 = conn
@@ -1111,5 +1110,119 @@ fn resolution_context_keeps_the_most_recently_seen_candidates() {
     assert_eq!(
         ctx.candidates[0].canonical_name, "entity 039",
         "ordered last_seen DESC, so the cap drops the stalest"
+    );
+}
+
+// --- 0004 (CE-9a): consolidation storage --------------------------------
+
+/// A fresh database lands on v4 with every 0004 object in place.
+#[test]
+fn fresh_database_has_the_0004_consolidation_schema() {
+    let db = Db::open_memory().unwrap();
+    let conn = db.read().unwrap();
+
+    assert_eq!(memgarden_store::LATEST_VERSION, 4);
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 4);
+
+    for table in ["node_sources", "consolidation_runs"] {
+        let n: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "{table} exists and is empty");
+    }
+    // The new column defaults to 0 for every node, which `proof_norm` reads
+    // as neutral.
+    banks::create(&db, "b1", None, None).unwrap();
+    let id = nodes::insert(&db, NewNode::new("b1", FactType::World, "a")).unwrap();
+    assert_eq!(
+        memgarden_store::consolidate::proof_count(&db, id).unwrap(),
+        0
+    );
+    // The run ledger's status CHECK is real.
+    let bad = db.write(|tx| {
+        tx.execute(
+            "INSERT INTO consolidation_runs (bank_id, status, started_at) VALUES ('b1', 'nope', 0)",
+            [],
+        )
+        .map_err(store_err)?;
+        Ok(())
+    });
+    assert!(bad.is_err(), "status CHECK rejects an unknown state");
+}
+
+/// The v3-upgrade mirror of the v1/v2 tests: a populated v3 database must
+/// come out at v4 with its rows intact and `proof_count` backfilled to the
+/// DDL default.
+#[test]
+fn migrate_upgrades_a_v3_database_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v3.db");
+
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in [
+            include_str!("../migrations/0001_init.sql"),
+            include_str!("../migrations/0002_retain_jobs.sql"),
+            include_str!("../migrations/0003_entities_graph.sql"),
+        ] {
+            conn.execute_batch(sql).unwrap();
+        }
+        for v in [1, 2, 3] {
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, 0)",
+                rusqlite::params![v],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 3).unwrap();
+        conn.execute(
+            "INSERT INTO banks (bank_id, created_at, updated_at) VALUES ('legacy', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory_nodes (uuid, bank_id, fact_type, text, created_at, updated_at)
+             VALUES ('u1', 'legacy', 'world', 'a fact', 0, 0),
+                    ('u2', 'legacy', 'observation', 'an observation', 0, 0)",
+            [],
+        )
+        .unwrap();
+    }
+
+    let db = Db::open(&path).unwrap();
+    let conn = db.read().unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, memgarden_store::LATEST_VERSION);
+
+    // Pre-existing rows survive and carry the new column at its default.
+    let (nodes_n, proof_sum): (i64, i64) = conn
+        .query_row(
+            "SELECT count(*), sum(proof_count) FROM memory_nodes",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(nodes_n, 2);
+    assert_eq!(proof_sum, 0, "ADD COLUMN backfills the DDL default");
+    // And the new tables are usable against the pre-existing rows: the
+    // observation (id 2) can be given the fact (id 1) as provenance.
+    drop(conn);
+    db.write(|tx| {
+        tx.execute(
+            "INSERT INTO node_sources (observation_id, source_id, created_at) VALUES (2, 1, 0)",
+            [],
+        )
+        .map_err(store_err)?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        memgarden_store::consolidate::sources_of(&db, 2).unwrap(),
+        vec![1]
     );
 }

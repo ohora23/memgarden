@@ -1082,3 +1082,63 @@ async fn hybrid_recall_bench() {
     assert!(p50 <= 35_000, "AC-2: p50 {p50}us > 35ms");
     assert!(p95 <= 60_000, "AC-2: p95 {p95}us > 60ms");
 }
+
+/// CE-9a: `scores.proof` stops being a stub — a well-evidenced observation
+/// reports its log-normalised proof end to end, and a single-source
+/// observation reports exactly the neutral 0.5, so it gets no free lift over
+/// a plain fact.
+///
+/// Scope: this asserts the value *reaches the response*. That the value moves
+/// `final` is `scoring::proof_boost_at_one_and_at_the_clamp`'s job — isolating
+/// the proof factor here would need `passthrough_base`'s pre-sort rank, which
+/// the response deliberately does not expose.
+#[tokio::test]
+async fn proof_count_reaches_the_score_breakdown() {
+    let (app, db) = test_app(|_| {});
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let facts: Vec<i64> = (0..3)
+        .map(|i| {
+            seed(
+                &db,
+                FactType::World,
+                &format!("retain worker source {i}"),
+                &[],
+            )
+        })
+        .collect();
+    let embedding = vec![0.1f32; memgarden_core::EMBEDDING_DIM];
+    let well_evidenced = memgarden_store::consolidate::insert_observation(
+        &db,
+        "b1",
+        "the retain worker commits one chunk per transaction",
+        &embedding,
+        &facts,
+    )
+    .unwrap();
+    let single_source = memgarden_store::consolidate::insert_observation(
+        &db,
+        "b1",
+        "the retain worker holds one permit",
+        &embedding,
+        &facts[..1],
+    )
+    .unwrap();
+
+    let out = recall(&app, json!({ "query": "retain worker" })).await;
+    let by_id: std::collections::HashMap<i64, &Value> = out["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["id"].as_i64().unwrap(), r))
+        .collect();
+
+    // 0.5 + ln(3)/10.
+    let three = by_id[&well_evidenced]["scores"]["proof"].as_f64().unwrap();
+    assert!((three - (0.5 + 3f64.ln() / 10.0)).abs() < 1e-12, "{three}");
+    // One source is exactly neutral, and so is every plain fact.
+    assert_eq!(by_id[&single_source]["scores"]["proof"], 0.5);
+    for f in &facts {
+        assert_eq!(by_id[f]["scores"]["proof"], 0.5, "fact {f}");
+    }
+}

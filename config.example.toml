@@ -110,6 +110,17 @@ wall_timeout_secs = 7200
 # file counts as explicitly set and a profile preset will not override it.
 # include_tool_calls = false
 
+[consolidation]
+# Cosine at or above which a newly stored observation is adjudicated against
+# its nearest existing twin by one focused "merge or keep" LLM call.
+# legacy: DEFAULT_CONSOLIDATION_DEDUP_THRESHOLD, config.py:1157.
+#
+# Set to 1.0 (or higher) to DISABLE semantic dedup entirely — no probe, no
+# LLM call. Lowering it below ~0.95 starts merging observations that differ
+# in a real detail; the LLM is the guard against that, not the threshold, but
+# every extra probe is one more 14B-model call on the background path.
+dedup_threshold = 0.97
+
 [profile]
 # Named preset that fills grouped defaults for a usage pattern. Precedence
 # matches the fork: defaults -> this file -> env -> the preset fills only

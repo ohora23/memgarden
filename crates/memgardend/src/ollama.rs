@@ -84,7 +84,7 @@ impl OllamaClient {
         user: &str,
         schema: &Value,
     ) -> Result<T, OllamaError> {
-        self.chat_json_inner(system, user, schema, Some(ACQUIRE_TIMEOUT))
+        self.chat_json_inner(system, user, schema, Some(ACQUIRE_TIMEOUT), None)
             .await
     }
 
@@ -98,7 +98,30 @@ impl OllamaClient {
         user: &str,
         schema: &Value,
     ) -> Result<T, OllamaError> {
-        self.chat_json_inner(system, user, schema, None).await
+        self.chat_json_inner(system, user, schema, None, None).await
+    }
+
+    /// `chat_json_background` with a per-call `num_predict` **ceiling**.
+    ///
+    /// The configured `ollama.num_predict` (8192) is sized for extraction,
+    /// where one chunk legitimately produces pages of facts. A caller whose
+    /// reply is a small fixed-shape object wants a much smaller number, and
+    /// wants it in code rather than in config: an unbounded reply exhausts
+    /// the context window mid-generation and triggers Ollama's context shift,
+    /// which is the truncation half of the 2026-08-02 consolidation incident
+    /// (see `consolidate::DEDUP_REPLY_MAX_TOKENS`).
+    ///
+    /// This is a ceiling, not an override — a config that already asks for
+    /// less is respected.
+    pub async fn chat_json_background_bounded<T: DeserializeOwned>(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+        num_predict: u32,
+    ) -> Result<T, OllamaError> {
+        self.chat_json_inner(system, user, schema, None, Some(num_predict))
+            .await
     }
 
     async fn chat_json_inner<T: DeserializeOwned>(
@@ -107,6 +130,7 @@ impl OllamaClient {
         user: &str,
         schema: &Value,
         acquire_timeout: Option<Duration>,
+        num_predict: Option<u32>,
     ) -> Result<T, OllamaError> {
         // A closed semaphore is unreachable today, but a request path must
         // never panic.
@@ -132,7 +156,7 @@ impl OllamaClient {
             let mut last_err = OllamaError::Parse("no attempts made".to_string());
 
             for attempt in 0..outer_attempts {
-                match self.try_chat(system, user, schema).await {
+                match self.try_chat(system, user, schema, num_predict).await {
                     Ok(raw) => match serde_json::from_str::<T>(&raw) {
                         Ok(parsed) => return Ok(parsed),
                         Err(e) => {
@@ -183,6 +207,7 @@ impl OllamaClient {
         system: &str,
         user: &str,
         schema: &Value,
+        num_predict: Option<u32>,
     ) -> Result<String, OllamaError> {
         let body = json!({
             "model": self.cfg.model,
@@ -194,7 +219,10 @@ impl OllamaClient {
             "format": schema,
             "options": {
                 "temperature": self.cfg.temperature,
-                "num_predict": self.cfg.num_predict,
+                // A per-call ceiling, never a raise: a config already asking
+                // for less keeps its number.
+                "num_predict": num_predict
+                    .map_or(self.cfg.num_predict, |cap| cap.min(self.cfg.num_predict)),
             },
             "keep_alive": self.cfg.keep_alive,
         });

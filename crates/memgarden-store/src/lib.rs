@@ -1,5 +1,6 @@
 pub mod banks;
 mod conn;
+pub mod consolidate;
 pub mod documents;
 pub mod graph;
 pub mod metrics_store;

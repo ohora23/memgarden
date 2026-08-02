@@ -1,3 +1,4 @@
+pub mod consolidate;
 pub mod embed;
 pub mod embed_task;
 pub mod entities;

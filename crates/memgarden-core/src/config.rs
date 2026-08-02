@@ -33,7 +33,19 @@ pub struct Config {
     pub ollama: OllamaConfig,
     pub retain: RetainConfig,
     pub recall: RecallConfig,
+    pub consolidation: ConsolidationConfig,
     pub profile: ProfileConfig,
+}
+
+/// `[consolidation]` — fact→observation consolidation (CE-9). Only the
+/// dedup knob exists today; CE-9b (PR B8) adds the batch-round parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConsolidationConfig {
+    /// Cosine at or above which a newly created observation is adjudicated
+    /// against its nearest existing twin by one focused LLM call
+    /// (`DEFAULT_CONSOLIDATION_DEDUP_THRESHOLD`, `config.py:1157`).
+    /// **`>= 1.0` disables the whole dedup path** (`consolidator.py:180-182`).
+    pub dedup_threshold: f64,
 }
 
 /// Hard ceiling on `recall.max_tokens` (config and the per-request
@@ -230,6 +242,9 @@ impl Config {
                 cap_per_source: 0,
                 preamble: String::new(),
             },
+            consolidation: ConsolidationConfig {
+                dedup_threshold: 0.97,
+            },
             profile: ProfileConfig {
                 name: String::new(),
                 bank_mission: String::new(),
@@ -407,6 +422,9 @@ pub fn from_parts(
                 cfg.recall.preamble = v;
             }
         }
+        if let Some(v) = parsed.consolidation.and_then(|c| c.dedup_threshold) {
+            cfg.consolidation.dedup_threshold = v;
+        }
         if let Some(profile) = parsed.profile {
             if let Some(v) = profile.name {
                 cfg.profile.name = v;
@@ -521,6 +539,20 @@ pub fn from_parts(
             cfg.recall.max_tokens
         )));
     }
+    // The knob that decides whether a 14B model is called at all. Below the
+    // threshold there is no probe and no call; at 0.0 (or negative) every
+    // candidate clears it, so **every** observation created fires an
+    // adjudication against its nearest neighbour however unrelated — 2.1s of
+    // GPU each, serialised behind `ollama.max_concurrent = 1`, which is a
+    // batch round stalled for minutes. 0.5 is already far below anything
+    // defensible as "near-duplicate"; 1.0 is inclusive because `>= 1.0` is
+    // the documented way to disable the path.
+    if !(0.5..=1.0).contains(&cfg.consolidation.dedup_threshold) {
+        return Err(Error::Config(format!(
+            "consolidation.dedup_threshold must be 0.5..=1.0 (1.0 disables dedup): {}",
+            cfg.consolidation.dedup_threshold
+        )));
+    }
     if cfg.retain.chunk_size == 0 {
         return Err(Error::Config("retain.chunk_size must be > 0".to_string()));
     }
@@ -580,7 +612,13 @@ struct TomlConfig {
     ollama: Option<TomlOllama>,
     retain: Option<TomlRetain>,
     recall: Option<TomlRecall>,
+    consolidation: Option<TomlConsolidation>,
     profile: Option<TomlProfile>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TomlConsolidation {
+    dedup_threshold: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -700,6 +738,9 @@ mod tests {
                 max_tokens: 1024,
                 cap_per_source: 0,
                 preamble: String::new(),
+            },
+            consolidation: ConsolidationConfig {
+                dedup_threshold: 0.97,
             },
             profile: ProfileConfig {
                 name: String::new(),
@@ -823,6 +864,37 @@ mod tests {
         let mut zero_concurrent = defaults();
         zero_concurrent.ollama.max_concurrent = 0;
         assert!(from_parts(zero_concurrent, None, &env).is_err());
+    }
+
+    /// The knob decides whether a 14B model is called at all, so an
+    /// out-of-range value is a GPU-cost bug, not a taste question. 1.0 must
+    /// stay legal — it is the documented way to switch dedup off.
+    #[test]
+    fn consolidation_dedup_threshold_is_range_checked() {
+        let env = HashMap::new();
+        assert_eq!(defaults().consolidation.dedup_threshold, 0.97);
+
+        for bad in [0.0, -1.0, 0.49, 1.01, f64::NAN] {
+            let mut cfg = defaults();
+            cfg.consolidation.dedup_threshold = bad;
+            assert!(
+                from_parts(cfg, None, &env).is_err(),
+                "dedup_threshold {bad} must be rejected"
+            );
+        }
+        for ok in [0.5, 0.97, 1.0] {
+            let mut cfg = defaults();
+            cfg.consolidation.dedup_threshold = ok;
+            assert!(from_parts(cfg, None, &env).is_ok(), "{ok} must be accepted");
+        }
+
+        let cfg = from_parts(
+            defaults(),
+            Some("[consolidation]\ndedup_threshold = 1.0\n"),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(cfg.consolidation.dedup_threshold, 1.0);
     }
 
     #[test]

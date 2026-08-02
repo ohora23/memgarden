@@ -128,6 +128,54 @@ pub fn delete(db: &Db, id: i64) -> Result<()> {
     })
 }
 
+/// Replaces a node's text and **invalidates its embedding** (Critic
+/// Revision R4). Without the second half, a text update leaves the old vector
+/// on `memory_nodes.embedding` forever: the node keeps answering semantic
+/// queries about text it no longer contains, and nothing ever re-embeds it
+/// because the backlog worker only looks at `embedding IS NULL`.
+///
+/// Setting the column NULL puts the node straight back on
+/// `idx_memory_nodes_embed_backlog`, so `embed_task` re-embeds it on its next
+/// tick. The FTS index needs no help — `memory_nodes_fts_au` fires on the same
+/// UPDATE.
+///
+/// **The stale `vec_nodes` row is deliberately left in place** — a
+/// review-driven deviation from R4's literal wording, which also said to
+/// delete it. Deleting it makes the node *invisible* to the vector arm for
+/// the whole backlog window (~`embedding.backlog_poll_secs`, and unbounded if
+/// embeddings are disabled or the model failed to load), which is strictly
+/// worse than a stale hit: the replacement text is the reason this was
+/// called, and it is far closer to the old text than "no result at all" is.
+/// `set_embedding` / `set_embeddings_batch` both delete-then-insert, so the
+/// stale row is replaced, never duplicated. The one place that does see the
+/// gap is `rebuild_vec_index`, which reinserts only from non-NULL embeddings
+/// and so drops a row in this state — a manual repair op, and the backlog
+/// puts it straight back.
+///
+/// Shared by CE-9's dedup merge (in-transaction, via
+/// [`update_text_tx`](self::update_text_tx)), CE-9b's `updates`, and CE-10's
+/// mental-model refresh.
+pub fn update_text(db: &Db, node_id: i64, text: &str) -> Result<()> {
+    db.write(|tx| update_text_tx(tx, node_id, text, now_ms()).map(|_| ()))
+}
+
+/// `update_text`'s body, for callers that already hold a write transaction
+/// and must not split the update across two of them (the dedup merge).
+/// Returns rows affected — 0 means the node is gone, which every caller must
+/// treat as an error rather than continuing.
+pub(crate) fn update_text_tx(
+    tx: &rusqlite::Transaction,
+    node_id: i64,
+    text: &str,
+    now: i64,
+) -> Result<usize> {
+    tx.execute(
+        "UPDATE memory_nodes SET text = ?1, embedding = NULL, updated_at = ?2 WHERE id = ?3",
+        params![text, now, node_id],
+    )
+    .map_err(store_err)
+}
+
 /// Writes the embedding BLOB on `memory_nodes` and upserts the matching
 /// `vec_nodes` row (vec0 has no native upsert, so this deletes then inserts).
 pub fn set_embedding(db: &Db, node_id: i64, bank_id: &str, embedding: &[f32]) -> Result<()> {
