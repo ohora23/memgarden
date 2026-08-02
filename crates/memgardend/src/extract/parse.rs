@@ -19,10 +19,11 @@ use memgarden_core::types::FactType;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum RawFactsResponse {
-    Wrapped {
-        #[serde(default)]
-        facts: Vec<Value>,
-    },
+    // No #[serde(default)] on `facts`: with it, this variant matches EVERY
+    // JSON object ({"error":...} → 0 facts, no retry) — the silent-zero-facts
+    // class the plan bans (legacy issue #1833). A missing `facts` key must
+    // fail deserialization so chat_json retries.
+    Wrapped { facts: Vec<Value> },
     Bare(Vec<Value>),
 }
 
@@ -63,12 +64,39 @@ pub struct ParsedFact {
 /// rejection — an empty result for an all-filler chunk is a valid, expected
 /// outcome (legacy logs it and moves on, `:1437-1445`), not an error.
 pub fn parse_facts(raw_facts: Vec<Value>) -> Vec<ParsedFact> {
-    raw_facts
+    let parsed: Vec<Option<ParsedFact>> = raw_facts
         .iter()
         .enumerate()
-        .filter_map(|(i, llm_fact)| {
-            let obj = llm_fact.as_object()?;
-            parse_one(obj, i)
+        .map(|(i, llm_fact)| llm_fact.as_object().and_then(|obj| parse_one(obj, i)))
+        .collect();
+
+    // legacy: `_remap_causal_relations`, orchestrator.py:625-654 — the LLM's
+    // target_index values are raw-array ordinals, but drops compact the
+    // output. Rewrite each index to the survivor ordinal; a relation whose
+    // target was rejected disappears rather than silently pointing at the
+    // next surviving fact.
+    let mut new_index = vec![None; parsed.len()];
+    let mut next = 0usize;
+    for (i, p) in parsed.iter().enumerate() {
+        if p.is_some() {
+            new_index[i] = Some(next);
+            next += 1;
+        }
+    }
+    parsed
+        .into_iter()
+        .flatten()
+        .map(|mut fact| {
+            fact.causal_relations.retain_mut(|rel| {
+                match new_index.get(rel.target_index).copied().flatten() {
+                    Some(idx) => {
+                        rel.target_index = idx;
+                        true
+                    }
+                    None => false,
+                }
+            });
+            fact
         })
         .collect()
 }
@@ -193,6 +221,8 @@ fn get_value<'a>(fact: &'a serde_json::Map<String, Value>, field: &str) -> Optio
     present.then_some(v)
 }
 
+// Deliberately narrower than legacy: `{"what": 42}` is skipped here, while
+// Python's get_value would take the number (and then crash in " | ".join).
 fn get_str(fact: &serde_json::Map<String, Value>, field: &str) -> Option<String> {
     get_value(fact, field)
         .and_then(Value::as_str)
@@ -364,6 +394,25 @@ mod tests {
             ]},
         ]));
         let facts = parse_facts(raw);
+        assert_eq!(facts[1].causal_relations.len(), 1);
+        assert_eq!(facts[1].causal_relations[0].target_index, 0);
+    }
+
+    #[test]
+    fn causal_target_index_remapped_after_drops() {
+        // Review HIGH finding: raw index 0 is degenerate and dropped, so the
+        // survivors compact. A raw relation 2→1 must become 1→0, NOT stay 1
+        // (which would be a self-link on the compacted list).
+        let raw = wrapped(json!([
+            {"what": "..."}, // degenerate, dropped
+            {"what": "real fact A"},
+            {"what": "real fact B", "causal_relations": [
+                {"target_index": 0, "relation_type": "caused_by"}, // → dropped fact: relation removed
+                {"target_index": 1, "relation_type": "caused_by"}, // → fact A: remapped to 0
+            ]},
+        ]));
+        let facts = parse_facts(raw);
+        assert_eq!(facts.len(), 2);
         assert_eq!(facts[1].causal_relations.len(), 1);
         assert_eq!(facts[1].causal_relations[0].target_index, 0);
     }

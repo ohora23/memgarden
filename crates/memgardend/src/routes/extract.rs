@@ -31,11 +31,31 @@ pub struct DryRunExtractResponse {
 /// debug route, `api/http.py:4092`). 404 for an unknown bank; 503 when
 /// Ollama is unreachable or the request timed out waiting for a permit
 /// (Critic Revision R11).
+/// Security review M1: one oversized `text` would hold the single Ollama
+/// permit for the whole prompt-eval. ~10x legacy's 3000-char chunk; B3's
+/// retain ingest chunks at legacy size and never comes near this.
+const MAX_TEXT_BYTES: usize = 32 * 1024;
+const MAX_MISSION_BYTES: usize = 4 * 1024;
+
 pub async fn dry_run_extract(
     State(state): State<AppState>,
     Path(bank_id): Path<String>,
     Json(body): Json<DryRunExtractRequest>,
 ) -> Result<Json<DryRunExtractResponse>, ApiError> {
+    if body.text.len() > MAX_TEXT_BYTES {
+        return Err(memgarden_core::Error::Invalid(format!(
+            "text too long: {} bytes (max {MAX_TEXT_BYTES})",
+            body.text.len()
+        ))
+        .into());
+    }
+    if body.mission.as_deref().is_some_and(|m| m.len() > MAX_MISSION_BYTES) {
+        return Err(memgarden_core::Error::Invalid(format!(
+            "mission too long (max {MAX_MISSION_BYTES} bytes)"
+        ))
+        .into());
+    }
+
     let db = state.db.clone();
     let id = bank_id.clone();
     let found = tokio::task::spawn_blocking(move || banks::get(&db, &id))
@@ -55,16 +75,16 @@ pub async fn dry_run_extract(
     .map_err(|e| {
         let message = e.to_string();
         match &e {
-            // Busy/Transport/Http: Ollama itself is the problem — 503, so
-            // the client knows to retry rather than treat this as a bad
-            // request.
-            OllamaError::Busy | OllamaError::Transport(_) | OllamaError::Http { .. } => {
+            // Busy/Transport/5xx: Ollama is temporarily the problem — 503,
+            // so the client knows to retry.
+            OllamaError::Busy | OllamaError::Transport(_) => ApiError::unavailable(message),
+            OllamaError::Http { status, .. } if *status >= 500 => {
                 ApiError::unavailable(message)
             }
-            // Parse: Ollama answered but never produced valid JSON across
-            // all retries — a real extraction failure, not an availability
-            // problem.
-            OllamaError::Parse(_) => ApiError::internal(message),
+            // Permanent upstream refusal (e.g. 404 model-not-found; not
+            // retried, see ollama.rs) or garbage across all retries — 502:
+            // the upstream misbehaved, retrying blindly won't fix it.
+            OllamaError::Http { .. } | OllamaError::Parse(_) => ApiError::bad_gateway(message),
         }
     })?;
 

@@ -213,6 +213,10 @@ pub fn event_date_str(unix_ms: i64) -> String {
 /// and narrator sections are omitted here — `dry-run-extract`'s request
 /// contract (`{text, event_date?, mission?}`) has no metadata/agent_name
 /// inputs to carry them; B3's full retain path adds them when it exists.
+// Legacy also runs chunk/context through `sanitize_llm_output`
+// (fact_extraction.py:1215-1216: strips C0 controls + lone surrogates).
+// Deliberately not ported: Rust `String` cannot hold lone surrogates, and
+// serde_json escapes control chars on serialization.
 pub fn user_message(
     mission_preamble: &str,
     event_date_ms: Option<i64>,
@@ -263,6 +267,15 @@ mod tests {
     fn system_prompt_always_carries_output_shape() {
         let prompt = system_prompt(false);
         assert!(prompt.contains("\"facts\":[{"));
+    }
+
+    #[test]
+    fn system_prompt_length_snapshot() {
+        // Poor man's snapshot (plan: "a prompt edit is visible in the diff"):
+        // any edit to the ported constants moves these lengths, forcing the
+        // editor to acknowledge the change here.
+        assert_eq!(system_prompt(false).chars().count(), 6999);
+        assert_eq!(system_prompt(true).chars().count(), 7615);
     }
 
     #[test]

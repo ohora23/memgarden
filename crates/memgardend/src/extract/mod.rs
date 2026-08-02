@@ -58,3 +58,36 @@ pub async fn extract(
     let raw: parse::RawFactsResponse = client.chat_json(&system, &user, &output_schema()).await?;
     Ok(parse::parse_facts(raw.into_facts()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ollama::OllamaClient;
+
+    /// Live end-to-end against the real Ollama (spec: PR B2 Tests bullet).
+    /// The `/api/chat` schema-ignoring behavior is only observable live, so
+    /// this is the one test that catches a genuine prompt/model mismatch.
+    /// Run: `cargo test -p memgardend live_extract -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "requires a running Ollama with the configured model"]
+    async fn live_extract() {
+        let cfg = memgarden_core::config::Config::defaults()
+            .expect("default config")
+            .ollama;
+        let client = OllamaClient::new(cfg).expect("client");
+        let text = "User: Our recall latency regressed to 830ms after wiring the reranker.\n\n\
+                    Assistant: Confirmed the cause: the embedding model was competing for VRAM \
+                    with the resident 13GB Ollama model, so I forced CPU inference for embeddings \
+                    and the reranker. Recall p50 is now 20-37ms.";
+        let started = std::time::Instant::now();
+        let facts = extract(&client, text, Some(1_754_100_000_000), None)
+            .await
+            .expect("live extraction should succeed");
+        println!(
+            "live_extract: {} facts in {:.1}s",
+            facts.len(),
+            started.elapsed().as_secs_f64()
+        );
+        assert!(!facts.is_empty(), "live extraction returned zero facts");
+    }
+}

@@ -248,6 +248,27 @@ pub fn from_parts(
         cfg.ollama.model = model.clone();
     }
 
+    // Fail at startup, not per-request: a typo'd base_url would otherwise
+    // surface only as transport errors + a permanently DEGRADED /healthz,
+    // and a zero timeout/concurrency wedges the client silently.
+    if !cfg.ollama.base_url.starts_with("http://") && !cfg.ollama.base_url.starts_with("https://")
+    {
+        return Err(Error::Config(format!(
+            "ollama.base_url must start with http:// or https://: {}",
+            cfg.ollama.base_url
+        )));
+    }
+    if cfg.ollama.request_timeout_secs == 0 {
+        return Err(Error::Config(
+            "ollama.request_timeout_secs must be > 0".to_string(),
+        ));
+    }
+    if cfg.ollama.max_concurrent == 0 {
+        return Err(Error::Config(
+            "ollama.max_concurrent must be > 0".to_string(),
+        ));
+    }
+
     Ok(cfg)
 }
 

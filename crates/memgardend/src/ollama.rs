@@ -25,6 +25,10 @@ const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(15);
 const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(10);
 
+/// Hard ceiling on one `chat_json` call including all retries (security
+/// review M2) — bounds permit-hold time whatever the config says.
+const TOTAL_DEADLINE_CAP: Duration = Duration::from_secs(600);
+
 #[derive(Debug, thiserror::Error)]
 pub enum OllamaError {
     #[error("timed out waiting for an Ollama request slot")]
@@ -77,36 +81,62 @@ impl OllamaClient {
         let permit = tokio::time::timeout(ACQUIRE_TIMEOUT, self.sem.acquire())
             .await
             .map_err(|_| OllamaError::Busy)?
-            .expect("semaphore never closed");
+            .map_err(|_| OllamaError::Busy)?; // closed semaphore: unreachable today, but no panics on a request path
 
-        let outer_attempts = self.cfg.max_retries + 1;
-        let mut backoff = BACKOFF_START;
-        let mut last_err = OllamaError::Parse("no attempts made".to_string());
+        // Security review M2: without a total deadline, misconfigured
+        // request_timeout × max_retries lets one caller hold the permit for
+        // hours. Per-attempt timeouts still apply inside; this is the outer
+        // ceiling.
+        let deadline = Duration::from_secs(self.cfg.request_timeout_secs)
+            .saturating_mul(self.cfg.max_retries.saturating_add(1))
+            .min(TOTAL_DEADLINE_CAP);
 
-        for attempt in 0..outer_attempts {
-            match self.try_chat(system, user, schema).await {
-                Ok(raw) => match serde_json::from_str::<T>(&raw) {
-                    Ok(parsed) => {
-                        drop(permit);
-                        return Ok(parsed);
-                    }
+        let result = tokio::time::timeout(deadline, async {
+            let outer_attempts = self.cfg.max_retries.saturating_add(1);
+            let mut backoff = BACKOFF_START;
+            let mut last_err = OllamaError::Parse("no attempts made".to_string());
+
+            for attempt in 0..outer_attempts {
+                match self.try_chat(system, user, schema).await {
+                    Ok(raw) => match serde_json::from_str::<T>(&raw) {
+                        Ok(parsed) => return Ok(parsed),
+                        Err(e) => {
+                            // Security review L1: `raw` is LLM output steered
+                            // by caller text — escape (Debug) and truncate
+                            // before it touches the log stream.
+                            let snippet: String = raw.chars().take(512).collect();
+                            tracing::warn!(attempt, error = %e, raw = ?snippet, "ollama response failed to parse");
+                            last_err = OllamaError::Parse(e.to_string());
+                        }
+                    },
                     Err(e) => {
-                        tracing::warn!(attempt, error = %e, raw = %raw, "ollama response failed to parse");
-                        last_err = OllamaError::Parse(e.to_string());
+                        tracing::warn!(attempt, error = %e, "ollama request failed");
+                        // 4xx (except 429) is permanent — a typo'd model name
+                        // will not heal with retries; fail fast and free the
+                        // permit.
+                        let permanent = matches!(
+                            &e,
+                            OllamaError::Http { status, .. }
+                                if (400..500).contains(status) && *status != 429
+                        );
+                        last_err = e;
+                        if permanent {
+                            return Err(last_err);
+                        }
                     }
-                },
-                Err(e) => {
-                    tracing::warn!(attempt, error = %e, "ollama request failed");
-                    last_err = e;
+                }
+                if attempt + 1 < outer_attempts {
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(BACKOFF_CAP);
                 }
             }
-            if attempt + 1 < outer_attempts {
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(BACKOFF_CAP);
-            }
-        }
+            Err(last_err)
+        })
+        .await
+        .unwrap_or(Err(OllamaError::Busy));
+
         drop(permit);
-        Err(last_err)
+        result
     }
 
     /// One HTTP round trip: POST `/api/chat`, return the assistant message's
@@ -141,9 +171,12 @@ impl OllamaClient {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
+            // Security review L1: this body ends up in logs and in the 503
+            // envelope — keep it bounded.
+            let body: String = text.chars().take(2048).collect();
             return Err(OllamaError::Http {
                 status: status.as_u16(),
-                body: text,
+                body,
             });
         }
 

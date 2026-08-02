@@ -37,6 +37,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/banks/{bank_id}/reindex", post(embed::reindex_bank))
         .route("/v1/embed", post(embed::embed_debug))
+        // Unlike /v1/embed this debug route is deliberately ungated: it is
+        // B2's only end-to-end verification surface until B3 wires retain,
+        // and AC-1's quality A/B runs against it. Input size is capped in
+        // the handler; the single Ollama permit bounds concurrency.
         .route(
             "/v1/banks/{bank_id}/dry-run-extract",
             post(extract::dry_run_extract),
