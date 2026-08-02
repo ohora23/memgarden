@@ -20,6 +20,7 @@ use memgarden_core::types::FactType;
 use memgarden_store::search::{self, CandidateRow};
 
 use crate::error::{ApiError, join_err};
+use crate::rerank;
 use crate::retain::token_count;
 use crate::state::AppState;
 use crate::temporal::query::{Constraint, extract_constraint};
@@ -329,8 +330,81 @@ pub async fn recall(
     }
 
     // --- Pass 2: fuse all four arms, score, rank. ------------------------
-    let merged = fusion::reciprocal_rank_fusion(&arms, fusion::RRF_K);
+    let mut merged = fusion::reciprocal_rank_fusion(&arms, fusion::RRF_K);
+    // Counted before the reranker's truncation below: this is "how many
+    // distinct nodes the arms produced", which is an arm-health number and
+    // must not change meaning depending on a ranking config.
     let candidates = merged.len();
+
+    // --- Cross-encoder rerank (CE-11), OFF by default. -------------------
+    // Legacy truncates the candidate list to `rerank_limit` and cross-encodes
+    // what survives (`memory_engine.py:5266`), dropping the tail outright;
+    // `top_k` is that knob at a tenth the depth (10 vs 600), so it also caps
+    // what recall can return whenever it is below `limit`.
+    //
+    // The `enabled` check comes first and short-circuits: with the reranker
+    // off, `merged` is untouched and the base below stays
+    // `scoring::passthrough_base`, so this whole block is provably a no-op
+    // rather than a different-but-similar path. That is the parity claim.
+    //
+    // Keyed by node id, not by position: the scoring loop below re-filters
+    // through `by_id`, and a positional zip would pair scores with the wrong
+    // documents the first time a hydrate ever comes back short.
+    let reranked: Option<std::collections::HashMap<i64, f64>> = if state.cfg.reranker.enabled {
+        // Poisoned lock: recover for the same reason the embedder does — the
+        // guarded value is an `Option<Arc<_>>` and cannot be torn.
+        let reranker = state
+            .reranker
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        match reranker {
+            Some(reranker) => {
+                let candidates: Vec<rerank::Candidate<'_>> = merged
+                    .iter()
+                    .filter_map(|m| by_id.get(&m.id))
+                    .map(|row| rerank::Candidate {
+                        id: row.id,
+                        text: &row.text,
+                        context: row.context.as_deref(),
+                        occurred_start: row.occurred_start,
+                    })
+                    .collect();
+                let (ids, docs) = rerank::rerank_inputs(&candidates, state.cfg.reranker.top_k);
+                drop(candidates); // borrows `by_id`, which the scoring loop reads
+                let q = query.clone();
+                let scored = tokio::task::spawn_blocking(move || reranker.scores(&q, &docs))
+                    .await
+                    .map_err(join_err)?;
+                match scored {
+                    Ok(scores) => {
+                        // Truncated only on success, deliberately: it makes the
+                        // failure arm below a *pure* passthrough, byte-identical
+                        // to `enabled = false`, instead of a third behaviour
+                        // (top_k results in RRF order) that nothing tests and
+                        // no reader expects.
+                        merged.truncate(state.cfg.reranker.top_k);
+                        Some(ids.into_iter().zip(scores).collect())
+                    }
+                    // Degrade, do not 500. `Reranker::load`'s contract already
+                    // promises the passthrough when the model is absent; a
+                    // model that is present but erroring — a bad re-export, an
+                    // ONNX runtime fault — is the same situation arriving
+                    // later, and the same answer is the right one.
+                    Err(e) => {
+                        tracing::warn!(error = %e, "rerank failed; falling back to RRF passthrough");
+                        None
+                    }
+                }
+            }
+            // Still loading, or it failed to load. Degrade to the passthrough
+            // rather than 503: a ranking refinement being absent is not an
+            // outage, and this is the ordering the rest of Phase B ships.
+            None => None,
+        }
+    } else {
+        None
+    };
 
     let n = merged.len();
     let mut scored: Vec<(f64, RecallItem)> = merged
@@ -338,9 +412,14 @@ pub async fn recall(
         .enumerate()
         .filter_map(|(rank0, m)| {
             let row = by_id.get(&m.id)?;
-            // merged is already sorted by rrf_score desc, so its index IS
+            // Base relevance. With the cross-encoder on it is the
+            // sigmoid-normalized logit (`reranking.py:298-312`); with it off,
+            // `merged` is already sorted by rrf_score desc, so its index IS
             // the passthrough reranker's `new_rank` (reranking.py:143).
-            let base = scoring::passthrough_base(n, rank0);
+            let base = match &reranked {
+                Some(scores) => scores.get(&m.id).copied().unwrap_or(0.0),
+                None => scoring::passthrough_base(n, rank0),
+            };
             let recency = scoring::recency(
                 scoring::effective_time(row.occurred_start, row.mentioned_at, row.occurred_end),
                 p.now_ms,

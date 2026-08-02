@@ -11,6 +11,7 @@ pub mod metrics_task;
 pub mod middleware;
 pub mod ollama;
 pub mod recall;
+pub mod rerank;
 pub mod retain;
 pub mod routes;
 pub mod state;

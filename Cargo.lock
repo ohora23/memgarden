@@ -1266,6 +1266,7 @@ dependencies = [
  "anyhow",
  "axum",
  "fastembed",
+ "hf-hub",
  "http-body-util",
  "jiff",
  "memgarden-core",

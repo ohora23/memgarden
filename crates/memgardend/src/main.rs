@@ -12,6 +12,11 @@ async fn main() -> anyhow::Result<()> {
     init_tracing(&cfg.log_level);
 
     tracing::info!(bind = %cfg.bind, db_path = %cfg.db_path.display(), "starting memgardend");
+    // Cheap, and it stops a future config edit from silently blowing AC-2's
+    // 35ms p50 — the cross-encoder's cost is linear in `top_k`.
+    if let Some(warning) = memgardend::rerank::top_k_warning(&cfg.reranker) {
+        tracing::warn!("{warning}");
+    }
 
     let db = Arc::new(open_db_secured(&cfg.db_path)?);
     let cfg = Arc::new(cfg);
@@ -55,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
         cfg: cfg.clone(),
         started_at_ms,
         embedder: Arc::new(RwLock::new(None)),
+        reranker: Arc::new(RwLock::new(None)),
         ollama: ollama_client.clone(),
         consolidating: Default::default(),
         refreshing: Default::default(),
@@ -72,6 +78,8 @@ async fn main() -> anyhow::Result<()> {
     // Spawned *after* the listener binds (decision #1): a first-run model
     // download must not delay the port bind.
     tokio::spawn(embed_task::load_at_startup(state.clone()));
+    // Same rule, and a no-op unless `[reranker] enabled` is set.
+    tokio::spawn(memgardend::rerank::load_at_startup(state.clone()));
     let embed_backlog_handle = tokio::spawn(embed_task::run_backlog(db.clone(), state.clone()));
     tokio::spawn(ollama::run_prober(ollama_client));
     let consolidation_handle =

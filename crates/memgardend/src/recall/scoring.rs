@@ -1,8 +1,11 @@
 //! Combined scoring, ported from `engine/search/reranking.py:10-196`.
 //!
-//! MemGarden ships no cross-encoder, so the production path is legacy's
-//! *passthrough* path: the base relevance signal is derived from the RRF
-//! rank and the three multiplicative boosts modulate it.
+//! The production path is legacy's *passthrough* path: the base relevance
+//! signal is derived from the RRF rank and the three multiplicative boosts
+//! modulate it. CE-11 ships an embedded cross-encoder that replaces
+//! [`passthrough_base`] with a sigmoid-normalized logit, but it is off by
+//! default — which is parity, since the live legacy daemon runs
+//! `RERANKER_PROVIDER=rrf`. The boosts below are identical either way.
 
 /// `reranking.py:15-17`.
 pub const RECENCY_ALPHA: f64 = 0.2;

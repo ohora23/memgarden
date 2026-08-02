@@ -110,6 +110,51 @@ wall_timeout_secs = 7200
 # file counts as explicitly set and a profile preset will not override it.
 # include_tool_calls = false
 
+[reranker]
+# Embedded cross-encoder reranking (CE-11). When on, the model's
+# sigmoid-normalised logit replaces the RRF-rank passthrough as the base
+# relevance score; the recency / temporal / proof boosts are unchanged.
+#
+# OFF BY DEFAULT, AND OFF IS PARITY. The live hindsight daemon this rebuild
+# is matched against runs HINDSIGHT_API_RERANKER_PROVIDER=rrf — a disabled
+# cross-encoder — adopted as part of its 830ms -> 20ms latency fix. Turning
+# this on is a divergence from the reference system, not a return to it.
+enabled = false
+
+# Hugging Face repo id. The ONNX export of
+# cross-encoder/ms-marco-MiniLM-L-6-v2, which is the exact model legacy loads
+# (engine/cross_encoder.py:103,131). fastembed has no built-in entry for it,
+# so the five files (onnx/model.onnx + the four tokenizer files) are fetched
+# by repo id into [embedding] model_dir on first run — ~90MB, cached after.
+model = "Xenova/ms-marco-MiniLM-L-6-v2"
+
+# How many RRF-ordered candidates the cross-encoder sees. The tail is
+# DROPPED, exactly as legacy drops everything past rerank_limit, so this also
+# caps what recall returns whenever it is below [recall] limit.
+#
+# Measured in-situ (interleaved-paired, 5 pairs) at top_k = 10: the whole
+# recall gains +13.7ms p50 / +31.8ms p95, i.e. ~1.4ms/candidate at p50 and
+# ~3.2ms/candidate at p95. AC-2 allows 35ms p50 / 60ms p95 for the ENTIRE
+# recall; at top_k = 10 both still pass, with the margin cut from 28/51ms to
+# 15/19ms. Legacy's thinking_budget*2 = 600 would be 10-30 SECONDS.
+#
+# 10 is the supported depth, and the choice against 20 is a LATENCY one, not
+# a ranking one. Measured over 13 gold queries, top_k = 20 actually wins
+# nDCG@10 (0.382 vs 0.379), recall@10 (0.397 vs 0.347) and the identifier
+# stratum (0.595 vs 0.495); top_k = 10 wins MRR decisively (0.739 vs 0.606),
+# which is the metric that matters for a rank-ordered injection. 20 costs
+# double and drags background ingest below 90% of offered load.
+# See docs/design/ce-11-reranker.md before changing this.
+#
+# Above 20 the daemon logs a startup warning — that threshold is about
+# latency only; it does not mean 11..20 has been measured.
+top_k = 10
+
+# ONNX Runtime intra-op threads, same trade-off as [embedding] intra_threads.
+threads = 4
+# Query-document pairs per forward pass.
+batch_size = 16
+
 [consolidation]
 # Cosine at or above which a newly stored observation is adjudicated against
 # its nearest existing twin by one focused "merge or keep" LLM call.

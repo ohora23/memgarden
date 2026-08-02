@@ -58,6 +58,7 @@ fn test_app_on(
         cfg: Arc::new(cfg),
         started_at_ms: memgarden_core::now_ms(),
         embedder: embedder.clone(),
+        reranker: Default::default(),
         ollama,
         consolidating: Default::default(),
         refreshing: Default::default(),
@@ -546,6 +547,202 @@ async fn injected_text_carries_the_scores_and_the_block() {
 }
 
 // ---------------------------------------------------------------------------
+// CE-11 reranker
+// ---------------------------------------------------------------------------
+
+/// **The parity claim, asserted byte-for-byte.** CE-11 added a branch to the
+/// hot path of every recall; with the cross-encoder off, that branch must be
+/// a provable no-op, not merely a similar one. Off is also the *default*, and
+/// the default is what matches the live legacy daemon
+/// (`RERANKER_PROVIDER=rrf`) — so this is the test that says shipping the
+/// reranker disabled changed nothing.
+///
+/// Three configurations must produce an identical response body:
+///   1. the untouched default (`enabled = false`);
+///   2. `enabled = false` with a deliberately small `top_k`, which would cut
+///      the result list to two if the truncation ever escaped its branch;
+///   3. `enabled = true` with an empty reranker slot — the load-failed and
+///      still-loading states, which degrade to the passthrough rather than
+///      erroring or silently reordering.
+///
+/// The whole `RecallOutcome` is compared, not a projection of it:
+/// `injected_text`, `counts` and every `scores` field travel together, so a
+/// base-score change of 1e-9 fails here rather than surviving as "close
+/// enough". Driven through `recall::recall` rather than the HTTP route so
+/// `now_ms` can be pinned — the route reads the wall clock, which puts a
+/// millisecond of drift into `recency` and defeats an exact comparison.
+/// `uuid` (v7, minted per insert) is blanked for the same reason; the
+/// deterministic `id` still pins the ordering.
+#[tokio::test]
+async fn reranker_disabled_is_a_pure_passthrough() {
+    /// 2026-08-02T04:55:41Z.
+    const NOW: i64 = 1_785_646_541_000;
+
+    async fn body(tweak: impl FnOnce(&mut memgarden_core::config::Config)) -> Value {
+        let (_app, db, _embedder, state) = test_app_parts(|c| {
+            c.recall.preamble = "Relevant memories:".to_string();
+            tweak(c);
+        });
+        banks::create(&db, "b1", None, None).unwrap();
+        for (i, text) in [
+            "the retain worker commits one chunk per transaction",
+            "the retain worker holds a single Ollama permit",
+            "the embedding backlog drains in batches of eight",
+            "the recall pipeline fuses four arms with RRF",
+            "메모리 회수 파이프라인은 하이브리드 검색을 쓴다",
+        ]
+        .iter()
+        .enumerate()
+        {
+            seed(
+                &db,
+                if i % 2 == 0 {
+                    FactType::World
+                } else {
+                    FactType::Observation
+                },
+                text,
+                &[],
+            );
+        }
+        // One term from each seeded fact, so the OR-joined FTS query returns
+        // all five: `top_k = 2` below can only be shown to be inert if the
+        // untruncated list is longer than 2.
+        let params = memgardend::recall::RecallParams {
+            query: "retain embedding recall 메모리 transaction".to_string(),
+            limit: state.cfg.recall.limit,
+            budget: "mid".to_string(),
+            max_tokens: memgarden_core::config::MAX_RECALL_TOKENS,
+            fact_types: state.cfg.recall.types.clone(),
+            tags: vec![],
+            tags_match: memgardend::recall::TagsMatch::Any,
+            cap_per_source: 0,
+            preamble: state.cfg.recall.preamble.clone(),
+            now_ms: NOW,
+        };
+        let outcome = memgardend::recall::recall(&state, "b1".to_string(), params)
+            .await
+            .unwrap();
+        let mut out = serde_json::to_value(&outcome).unwrap();
+        for r in out["results"].as_array_mut().unwrap() {
+            r["uuid"] = Value::Null;
+        }
+        out
+    }
+
+    let default = body(|_| {}).await;
+    assert!(
+        default["counts"]["returned"].as_u64().unwrap() >= 4,
+        "the fixture must return enough results for a truncation to be visible: {default}"
+    );
+
+    let explicitly_off = body(|c| {
+        c.reranker.enabled = false;
+        c.reranker.top_k = 2;
+    })
+    .await;
+    assert_eq!(
+        default, explicitly_off,
+        "enabled = false must change nothing"
+    );
+
+    let enabled_but_unloaded = body(|c| {
+        c.reranker.enabled = true;
+        c.reranker.top_k = 2;
+    })
+    .await;
+    assert_eq!(
+        default, enabled_but_unloaded,
+        "an unloaded reranker must degrade to the passthrough, not truncate or reorder"
+    );
+}
+
+/// CE-11 end to end against the real ONNX model. `#[ignore]`d per the Phase B
+/// rule that model-loading tests stay out of CI (network-free), run manually:
+///   cargo test -p memgardend --test recall_api -- --ignored --nocapture live_rerank_recall
+///
+/// Two claims, each measured at the `top_k` it needs, and the pair is the
+/// point:
+///
+///   * **at `top_k = 8` the cross-encoder lifts the on-topic fact to rank 1**,
+///     where BM25 leaves it fourth. That is the quality claim.
+///   * **at `top_k = 3` it does not**, because the answer is at RRF rank 4 and
+///     the reranker never sees it — and recall returns exactly 3 results,
+///     because legacy drops everything past the rerank depth
+///     (`memory_engine.py:5266`) and this ports that. That is the `top_k`
+///     value arriving at the wire, and it is also the structural limit worth
+///     knowing: **a reranker can only reorder what retrieval already
+///     surfaced.** At the shipped `top_k = 10` nothing below RRF rank 10 is
+///     reachable, which is why recall@10 cannot move and nDCG@10 is the
+///     column to read.
+#[tokio::test]
+#[ignore]
+async fn live_rerank_recall() {
+    /// Returns the ordered result texts for one `top_k`.
+    async fn run(top_k: usize) -> Vec<String> {
+        let (app, db, _embedder, state) = test_app_parts(|c| {
+            c.reranker.enabled = true;
+            c.reranker.top_k = top_k;
+        });
+        banks::create(&db, "b1", None, None).unwrap();
+
+        // Every fact mentions "retain", so BM25 hands the arm eight
+        // candidates and the ordering under test is the cross-encoder's, not
+        // the filter's.
+        for text in [
+            "the retain queue capacity is 32 slots",
+            "the retain chunk size is 3000 characters",
+            "the retain worker tags files it touched",
+            "the per-job retain wall clock is 7200 seconds",
+            "the retain backfill cap keeps the last 300 messages",
+            "the retain endpoint answers 429 when the queue is full",
+            "the retain job status is polled over HTTP",
+            "the retain path never holds the write lock across an await",
+        ] {
+            seed(&db, FactType::World, text, &[]);
+        }
+
+        let cfg = state.cfg.reranker.clone();
+        let model_dir = state.cfg.embedding.model_dir.clone();
+        let reranker = tokio::task::spawn_blocking(move || {
+            memgardend::rerank::Reranker::load(&cfg, &model_dir).unwrap()
+        })
+        .await
+        .unwrap();
+        *state.reranker.write().unwrap() = Some(Arc::new(reranker));
+
+        let out = recall(
+            &app,
+            json!({ "query": "how long may a retain job run before it is killed" }),
+        )
+        .await;
+        println!("live_rerank_recall: top_k={top_k} -> {:?}", texts(&out));
+        texts(&out)
+    }
+
+    const ANSWER: &str = "the per-job retain wall clock is 7200 seconds";
+
+    let deep = run(8).await;
+    assert_eq!(deep.len(), 8, "top_k = 8 does not truncate 8 candidates");
+    assert_eq!(
+        deep[0], ANSWER,
+        "the cross-encoder must lift the on-topic fact to rank 1"
+    );
+
+    let shallow = run(3).await;
+    assert_eq!(
+        shallow.len(),
+        3,
+        "top_k = 3 must reach the wire, not just the config struct"
+    );
+    assert!(
+        !shallow.contains(&ANSWER.to_string()),
+        "the answer is at RRF rank 4; a top_k = 3 rerank cannot reach it, and pretending \
+         otherwise would hide the limit this test exists to record: {shallow:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Contract edges + metrics
 // ---------------------------------------------------------------------------
 
@@ -858,6 +1055,12 @@ async fn hybrid_recall_bench() {
     }
     let nodes_n = env_usize("MEMGARDEN_BENCH_NODES", 2500);
     let requests = env_usize("MEMGARDEN_BENCH_REQUESTS", 200);
+    // CE-11: `MEMGARDEN_BENCH_RERANK=<top_k>` turns the cross-encoder on for
+    // the run. An env toggle rather than a second harness on purpose — the
+    // paired measurement this PR reports alternates two runs of the *same*
+    // binary, so the only difference between the arms is this one value.
+    // 0 (the default) leaves the reranker off, which is production.
+    let rerank_top_k = env_usize("MEMGARDEN_BENCH_RERANK", 0);
 
     let cfg_defaults = memgarden_core::config::Config::defaults().unwrap();
     // File-backed, unlike every other test here: production runs on a file
@@ -887,6 +1090,10 @@ async fn hybrid_recall_bench() {
         Arc::new(Db::open(dir.path().join("bench.db")).unwrap()),
         move |c| {
             c.embedding = embedding_cfg;
+            if rerank_top_k > 0 {
+                c.reranker.enabled = true;
+                c.reranker.top_k = rerank_top_k;
+            }
             if let Some(url) = stub_url {
                 c.ollama.base_url = url;
                 c.ollama.request_timeout_secs = 5;
@@ -1015,6 +1222,21 @@ async fn hybrid_recall_bench() {
 
     // Turn the semantic arm on: the router holds a clone of this very Arc.
     *embedder_slot.write().unwrap() = Some(embedder.clone());
+
+    // CE-11: and the cross-encoder, if this is the reranked arm. Loaded here
+    // rather than at app-build time so the model download never counts
+    // against the seeding timings above.
+    if rerank_top_k > 0 {
+        let cfg = state.cfg.reranker.clone();
+        let model_dir = state.cfg.embedding.model_dir.clone();
+        let reranker = tokio::task::spawn_blocking(move || {
+            memgardend::rerank::Reranker::load(&cfg, &model_dir)
+                .expect("reranker model must be cached (run CE-11's live_rerank first)")
+        })
+        .await
+        .unwrap();
+        *state.reranker.write().unwrap() = Some(Arc::new(reranker));
+    }
 
     // `MEMGARDEN_BENCH_CONTROL=1` reproduces CE-7's harness exactly — five
     // queries, none temporal, no date spread — so a run on this build is
@@ -1219,7 +1441,8 @@ async fn hybrid_recall_bench() {
     let under = |bound: u64| samples.iter().filter(|&&us| us <= bound).count();
 
     println!(
-        "bench: nodes={nodes_n} requests={requests} queries={} control={control} wall={:.1}s\n\
+        "bench: nodes={nodes_n} requests={requests} queries={} control={control} \
+         rerank_top_k={rerank_top_k} wall={:.1}s\n\
          bench: p50={p50}us p90={p90}us p95={p95}us p99={p99}us max={}us mean={:.0}us\n\
          bench: under_35ms={} under_60ms={} (of {} samples)",
         queries.len(),
@@ -1231,8 +1454,21 @@ async fn hybrid_recall_bench() {
         samples.len(),
     );
 
-    assert!(p50 <= 35_000, "AC-2: p50 {p50}us > 35ms");
-    assert!(p95 <= 60_000, "AC-2: p95 {p95}us > 60ms");
+    // The AC-2 gate is stated for the *production* configuration. A run with
+    // `MEMGARDEN_BENCH_RERANK` set is a deliberate experiment on a
+    // non-default config, so its numbers are reported rather than enforced:
+    // turning "the cross-encoder costs more than its budget" into a red test
+    // would destroy the measurement instead of recording it.
+    if rerank_top_k == 0 {
+        assert!(p50 <= 35_000, "AC-2: p50 {p50}us > 35ms");
+        assert!(p95 <= 60_000, "AC-2: p95 {p95}us > 60ms");
+    } else {
+        println!(
+            "bench: AC-2 (not enforced on a reranked run) p50<=35ms {} p95<=60ms {}",
+            p50 <= 35_000,
+            p95 <= 60_000
+        );
+    }
 }
 
 /// CE-9a: `scores.proof` stops being a stub — a well-evidenced observation
