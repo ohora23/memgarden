@@ -40,6 +40,7 @@ use memgarden_store::{documents, nodes, retain_jobs};
 use crate::extract;
 use crate::extract::parse::ParsedFact;
 use crate::state::AppState;
+use crate::temporal::parse::parse_iso_ms;
 use crate::{entities, links};
 
 /// Ordering offset applied per fact so retrieval can distinguish facts that
@@ -652,33 +653,6 @@ impl NodeDraft {
             metadata: Value::Object(meta).to_string(),
         }
     }
-}
-
-/// Best-effort ISO-8601 -> unix ms. Accepts a full timestamp
-/// (`2024-06-10T00:00:00Z`), a naive datetime (assumed **UTC**, legacy
-/// `orchestrator.py:228-258`), or a bare date. The full relative-expression
-/// resolver (`_infer_temporal_date`) is CE-8/B6.
-pub fn parse_iso_ms(raw: &str) -> Option<i64> {
-    let s = raw.trim();
-    if s.is_empty() {
-        return None;
-    }
-    if let Ok(ts) = s.parse::<jiff::Timestamp>() {
-        return Some(ts.as_millisecond());
-    }
-    if let Ok(dt) = s.parse::<jiff::civil::DateTime>() {
-        return dt
-            .to_zoned(jiff::tz::TimeZone::UTC)
-            .ok()
-            .map(|z| z.timestamp().as_millisecond());
-    }
-    if let Ok(date) = s.parse::<jiff::civil::Date>() {
-        return date
-            .to_zoned(jiff::tz::TimeZone::UTC)
-            .ok()
-            .map(|z| z.timestamp().as_millisecond());
-    }
-    None
 }
 
 #[cfg(test)]

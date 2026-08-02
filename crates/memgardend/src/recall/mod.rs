@@ -22,6 +22,7 @@ use memgarden_store::search::{self, CandidateRow};
 use crate::error::{ApiError, join_err};
 use crate::retain::token_count;
 use crate::state::AppState;
+use crate::temporal::query::{Constraint, extract_constraint};
 use fusion::ArmHit;
 
 /// Queries shorter than this are not worth a round trip — the fork hook
@@ -102,9 +103,10 @@ pub struct RecallParams {
     pub now_ms: i64,
 }
 
-/// Per-result score breakdown. `temporal` and `proof` are stubbed at
-/// `scoring::NEUTRAL` here and filled in by CE-8/CE-9 — the *fields* ship
-/// now (Critic Revision R12) so the response shape never changes again.
+/// Per-result score breakdown. `proof` is still stubbed at
+/// `scoring::NEUTRAL` and filled in by CE-9; `temporal` is live as of CE-8
+/// whenever the query carries a constraint (`scoring::NEUTRAL` when it does
+/// not, which is the same number the stub returned).
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct Scores {
     #[serde(rename = "final")]
@@ -213,12 +215,26 @@ pub async fn recall(
         None => None,
     };
 
+    // --- Arm 3 (temporal): what, if anything, the query says about time. --
+    // Pure string work, so it happens out here; only the SQL it implies goes
+    // into the blocking hop below. `Unconstrainable` and "no expression" both
+    // mean the same thing to the arm — no window, no query — but they are not
+    // the same *decision*, which is why the third state exists upstream.
+    let window = match extract_constraint(&query, p.now_ms) {
+        Some(Constraint::Range { start_ms, end_ms }) => Some((start_ms, end_ms)),
+        Some(Constraint::Unconstrainable) | None => None,
+    };
+
     // --- All DB work in one blocking hop. -------------------------------
+    // Three arms plus the hydrate share this hop deliberately: at CE-7 the
+    // loaded p95 had 11.3ms of headroom against the 60ms gate, and each extra
+    // spawn_blocking is a scheduler round trip on the hot path. The temporal
+    // arm is one more statement here, not one more hop.
     let db = state.db.clone();
     let bank = bank_id.clone();
     let match_query = search::fts_query_string(&query);
     let types = p.fact_types.clone();
-    let (semantic_raw, keyword_raw, rows) = tokio::task::spawn_blocking(move || {
+    let (semantic_raw, keyword_raw, temporal_raw, rows) = tokio::task::spawn_blocking(move || {
         let semantic = match &query_embedding {
             Some(emb) => search::knn(&db, &bank, emb, fetch)?,
             None => vec![],
@@ -227,13 +243,18 @@ pub async fn recall(
         // an excluded type from consuming the LIMIT); vec0 partitions on
         // bank_id only, so the semantic arm is filtered below in Rust.
         let keyword = search::fts_candidates_filtered(&db, &bank, &match_query, &types, fetch)?;
+        let temporal = match window {
+            Some((lo, hi)) => search::temporal_candidates(&db, &bank, lo, hi, fetch)?,
+            None => vec![],
+        };
 
         let mut ids: Vec<i64> = semantic.iter().map(|(id, _)| *id).collect();
         ids.extend(keyword.iter().map(|(id, _)| *id));
+        ids.extend(temporal.iter().copied());
         ids.sort_unstable();
         ids.dedup();
         let rows = search::hydrate(&db, &bank, &ids)?;
-        Ok::<_, memgarden_core::Error>((semantic, keyword, rows))
+        Ok::<_, memgarden_core::Error>((semantic, keyword, temporal, rows))
     })
     .await
     .map_err(join_err)??;
@@ -256,6 +277,14 @@ pub async fn recall(
         .filter(|(id, _)| keep(&by_id, &p, *id))
         .map(|(id, score)| ArmHit { id, score })
         .collect();
+    // The temporal arm's hits are already recency-ordered by SQL; RRF reads
+    // position only, and slot 3 has no named raw-score field
+    // (`fusion::SOURCE_NAMES`), so the score is unused and stays 0.
+    let temporal: Vec<ArmHit> = temporal_raw
+        .into_iter()
+        .filter(|id| keep(&by_id, &p, *id))
+        .map(|id| ArmHit { id, score: 0.0 })
+        .collect();
 
     // --- Pass 1: fuse the retrieval arms to pick graph seeds (R13). ------
     // The graph slot stays empty here; positions still matter, so it is a
@@ -264,7 +293,7 @@ pub async fn recall(
         fusion::cap_per_source(&semantic, p.cap_per_source).to_vec(),
         fusion::cap_per_source(&keyword, p.cap_per_source).to_vec(),
         vec![], // graph, filled below
-        vec![], // temporal, CE-8
+        fusion::cap_per_source(&temporal, p.cap_per_source).to_vec(),
     ];
     let seeds: Vec<i64> = fusion::reciprocal_rank_fusion(&arms, fusion::RRF_K)
         .into_iter()
@@ -315,7 +344,21 @@ pub async fn recall(
                 scoring::effective_time(row.occurred_start, row.mentioned_at, row.occurred_end),
                 p.now_ms,
             );
-            let final_score = scoring::combined(base, recency, scoring::NEUTRAL, scoring::NEUTRAL);
+            // Neutral without a constraint — there is no window to be close
+            // to, and NEUTRAL is exactly the 1.0 boost CE-6 shipped.
+            let temporal = match window {
+                Some((lo, hi)) => scoring::temporal_proximity(
+                    scoring::temporal_best_time(
+                        row.occurred_start,
+                        row.occurred_end,
+                        row.mentioned_at,
+                    ),
+                    lo,
+                    hi,
+                ),
+                None => scoring::NEUTRAL,
+            };
+            let final_score = scoring::combined(base, recency, temporal, scoring::NEUTRAL);
             Some((
                 final_score,
                 RecallItem {
@@ -334,7 +377,7 @@ pub async fn recall(
                         keyword: m.keyword,
                         rrf: m.rrf_score,
                         recency,
-                        temporal: scoring::NEUTRAL,
+                        temporal,
                         proof: scoring::NEUTRAL,
                     },
                 },

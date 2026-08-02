@@ -37,6 +37,65 @@ pub fn effective_time(
     occurred_start.or(mentioned_at).or(occurred_end)
 }
 
+/// The date a node is measured *against a temporal constraint* by
+/// (`retrieval.py:686-693`): the midpoint of a known interval, else whichever
+/// single endpoint exists, else the mention.
+///
+/// This is the **third** COALESCE order in the codebase and it is not a
+/// mistake that it differs from the other two:
+///
+/// | order | where | why |
+/// |---|---|---|
+/// | `occurred_start ?? mentioned_at ?? occurred_end` | [`effective_time`] (recency, `reranking.py:156`) | recency wants when we *learned* it before an inferred end date |
+/// | `occurred_start ?? mentioned_at` | the temporal arm's SQL (`search::temporal_candidates`) | a two-branch COALESCE is indexable-adjacent and matches the plan's entry predicate |
+/// | `midpoint ?? occurred_start ?? occurred_end ?? mentioned_at` | here | proximity to a *window* wants the centre of the interval, and prefers any real occurrence over a mention |
+///
+/// Unifying them would change ranking for exactly the nodes that carry
+/// partial dates — the ones the temporal arm exists for. `the_three_coalesce_
+/// orders_are_deliberately_different` pins the divergence.
+pub fn temporal_best_time(
+    occurred_start: Option<i64>,
+    occurred_end: Option<i64>,
+    mentioned_at: Option<i64>,
+) -> Option<i64> {
+    match (occurred_start, occurred_end) {
+        (Some(s), Some(e)) => Some(s + (e - s) / 2),
+        (Some(s), None) => Some(s),
+        (None, Some(e)) => Some(e),
+        (None, None) => mentioned_at,
+    }
+}
+
+/// How close a node sits to the centre of the query's constraint window
+/// (`retrieval.py:698-699`): 1.0 at the midpoint, 0.0 at either edge and
+/// beyond, `NEUTRAL` for a node carrying no date at all (`:701`).
+///
+/// A zero-width window (a single instant) is 1.0 for anything dated, matching
+/// legacy's `if total_days > 0 else 1.0`. An **inverted** window is not: it
+/// is a bug upstream, and legacy cannot produce one (`since_constraint`
+/// returns the sentinel rather than a backwards range,
+/// `chinese_temporal_periods.py:451-454`, which `extract_constraint` ports).
+/// Returning 1.0 there would hand every dated candidate a uniform +10% over
+/// every dateless one on a query where the arm contributed nothing — so the
+/// zero-width shortcut is spelled `start == end`, and anything backwards is
+/// neutral. Defence in depth: the guard upstream is the fix, this is the
+/// blast radius if it ever regresses.
+pub fn temporal_proximity(best_time: Option<i64>, start_ms: i64, end_ms: i64) -> f64 {
+    let Some(best) = best_time else {
+        return NEUTRAL;
+    };
+    if start_ms > end_ms {
+        return NEUTRAL;
+    }
+    let total_ms = (end_ms - start_ms) as f64;
+    if total_ms <= 0.0 {
+        return 1.0;
+    }
+    let mid = start_ms + (end_ms - start_ms) / 2;
+    let from_mid = (best - mid).abs() as f64;
+    1.0 - (from_mid / (total_ms / 2.0)).min(1.0)
+}
+
 /// Linear age -> freshness in `[0.1, 1.0]` (`reranking.py:54`). Future dates
 /// (negative `days_ago`) clamp to 1.0 rather than being penalised.
 pub fn recency_decay(days_ago: f64) -> f64 {
@@ -101,6 +160,94 @@ mod tests {
         assert_eq!(effective_time(None, Some(2), Some(3)), Some(2));
         assert_eq!(effective_time(None, None, Some(3)), Some(3));
         assert_eq!(effective_time(None, None, None), None);
+    }
+
+    #[test]
+    fn temporal_proximity_over_the_window() {
+        let (start, end) = (NOW, NOW + 10 * DAY_MS);
+        let mid = NOW + 5 * DAY_MS;
+        // 1.0 dead centre, 0.0 at both edges, 0.5 half way out.
+        assert_eq!(temporal_proximity(Some(mid), start, end), 1.0);
+        assert_eq!(temporal_proximity(Some(start), start, end), 0.0);
+        assert_eq!(temporal_proximity(Some(end), start, end), 0.0);
+        assert!(
+            (temporal_proximity(Some(mid - 2 * DAY_MS + DAY_MS / 2), start, end) - 0.7).abs()
+                < 1e-12
+        );
+        assert_eq!(
+            temporal_proximity(Some(mid + 2 * DAY_MS + DAY_MS / 2), start, end),
+            0.5
+        );
+        // Outside the window clamps at 0, never negative.
+        assert_eq!(
+            temporal_proximity(Some(start - 400 * DAY_MS), start, end),
+            0.0
+        );
+        // A dateless node is neutral — NOT "maximally far away".
+        assert_eq!(temporal_proximity(None, start, end), NEUTRAL);
+        // Zero-width window: anything dated is 1.0 (`total_days > 0` guard).
+        assert_eq!(temporal_proximity(Some(NOW), NOW, NOW), 1.0);
+        // Inverted window: neutral, NOT the zero-width 1.0. `extract_constraint`
+        // cannot produce one; if it ever does, the damage is nothing rather
+        // than a uniform boost for every dated candidate.
+        assert_eq!(temporal_proximity(Some(NOW), end, start), NEUTRAL);
+        assert_eq!(temporal_proximity(Some(NOW), NOW + 1, NOW), NEUTRAL);
+    }
+
+    /// The boosts at the three named proximities. `combined` multiplies by
+    /// `1 + 0.2 * (temporal - 0.5)`, so 0.0 -> 0.9x, 0.5 -> 1.0x, 1.0 -> 1.1x.
+    #[test]
+    fn temporal_boost_at_zero_half_and_one() {
+        let base = 0.8;
+        for (temporal, want) in [(0.0, 0.9), (0.5, 1.0), (1.0, 1.1)] {
+            let got = combined(base, NEUTRAL, temporal, NEUTRAL);
+            assert!(
+                (got - base * want).abs() < 1e-12,
+                "temporal={temporal} -> {got}"
+            );
+        }
+    }
+
+    /// The three COALESCE orders must coexist. Named explicitly, because the
+    /// obvious "cleanup" is to collapse them into one helper — and the inputs
+    /// below are exactly the partial-date shapes where that would change
+    /// ranking.
+    #[test]
+    fn the_three_coalesce_orders_are_deliberately_different() {
+        // A node with an interval AND a mention: all three disagree.
+        let (start, end, mentioned) = (Some(1_000), Some(3_000), Some(9_000));
+
+        // 1. recency (`effective_time`, reranking.py:156):
+        //    occurred_start ?? mentioned_at ?? occurred_end
+        assert_eq!(effective_time(start, mentioned, end), Some(1_000));
+
+        // 2. the temporal arm's entry predicate (SQL in
+        //    `memgarden_store::search::temporal_candidates`). This leg is
+        //    written in Rust rather than executed: the SQL's own behaviour —
+        //    the same order, plus boundaries, bank scoping and the
+        //    `event_date` exclusion — is pinned by
+        //    `search::tests::temporal_candidates_range_boundaries_and_coalesce_order`.
+        //    Change one and that test fails, not this one.
+        let arm_order = start.or(mentioned);
+        assert_eq!(arm_order, Some(1_000));
+
+        // 3. temporal proximity (`temporal_best_time`, retrieval.py:686-693):
+        //    midpoint ?? occurred_start ?? occurred_end ?? mentioned_at
+        assert_eq!(temporal_best_time(start, end, mentioned), Some(2_000));
+
+        // The end-only node is where 1 and 3 part company: recency reaches
+        // for the mention, proximity reaches for the occurrence.
+        assert_eq!(effective_time(None, mentioned, end), Some(9_000));
+        assert_eq!(temporal_best_time(None, end, mentioned), Some(3_000));
+        // ...and where 2 parts company with 3: the arm cannot see occurred_end
+        // at all, so it falls through to the mention.
+        assert_eq!(None.or(mentioned), Some(9_000));
+
+        // With only a start, all three agree — the divergence is specific to
+        // partial dates, which is why one helper "looks" sufficient.
+        assert_eq!(effective_time(start, None, None), Some(1_000));
+        assert_eq!(temporal_best_time(start, None, None), Some(1_000));
+        assert_eq!(start.or(None), Some(1_000));
     }
 
     #[test]

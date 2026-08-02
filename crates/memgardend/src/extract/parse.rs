@@ -63,11 +63,19 @@ pub struct ParsedFact {
 /// facts that survive both the `what`-presence check and degenerate-text
 /// rejection — an empty result for an all-filler chunk is a valid, expected
 /// outcome (legacy logs it and moves on, `:1437-1445`), not an error.
-pub fn parse_facts(raw_facts: Vec<Value>) -> Vec<ParsedFact> {
+///
+/// `event_date_ms` is the reference instant for the relative-expression
+/// fallback (CE-8); `None` disables it, exactly as a `None` event_date does
+/// in legacy.
+pub fn parse_facts(raw_facts: Vec<Value>, event_date_ms: Option<i64>) -> Vec<ParsedFact> {
     let parsed: Vec<Option<ParsedFact>> = raw_facts
         .iter()
         .enumerate()
-        .map(|(i, llm_fact)| llm_fact.as_object().and_then(|obj| parse_one(obj, i)))
+        .map(|(i, llm_fact)| {
+            llm_fact
+                .as_object()
+                .and_then(|obj| parse_one(obj, i, event_date_ms))
+        })
         .collect();
 
     // legacy: `_remap_causal_relations`, orchestrator.py:625-654 — the LLM's
@@ -101,7 +109,11 @@ pub fn parse_facts(raw_facts: Vec<Value>) -> Vec<ParsedFact> {
         .collect()
 }
 
-fn parse_one(fact: &serde_json::Map<String, Value>, i: usize) -> Option<ParsedFact> {
+fn parse_one(
+    fact: &serde_json::Map<String, Value>,
+    i: usize,
+    event_date_ms: Option<i64>,
+) -> Option<ParsedFact> {
     // legacy: fact_extraction.py:1462-1476 — what -> factual_core -> text;
     // missing all three skips the fact entirely.
     let what = get_str(fact, "what")
@@ -160,12 +172,15 @@ fn parse_one(fact: &serde_json::Map<String, Value>, i: usize) -> Option<ParsedFa
         .unwrap_or("conversation")
         .to_string();
 
-    // legacy: fact_extraction.py:1513-1529. Only the LLM's own
-    // occurred_start/occurred_end are read here — the relative-expression
-    // fallback (_infer_temporal_date, e.g. "yesterday" -> an absolute date)
-    // needs the temporal module that lands in B6/CE-8 and is not ported yet.
+    // legacy: fact_extraction.py:1513-1529. Event facts only, and only when
+    // the LLM gave no `occurred_start`: fall back to a relative expression in
+    // the combined text ("yesterday" -> an absolute midnight), resolved
+    // against the retain job's event_date (CE-8, `_infer_temporal_date`).
     let (occurred_start, occurred_end) = if fact_kind == "event" {
-        let start = get_str(fact, "occurred_start");
+        let start = get_str(fact, "occurred_start").or_else(|| {
+            crate::temporal::parse::infer_temporal_date(&text, event_date_ms)
+                .map(|ts| ts.to_string())
+        });
         // Point-event default: occurred_end = occurred_start when the LLM
         // only gave one endpoint (fact_extraction.py:1525-1529).
         let end = get_str(fact, "occurred_end").or_else(|| start.clone());
@@ -304,7 +319,7 @@ mod tests {
     #[test]
     fn accepts_wrapped_shape() {
         let raw = wrapped(json!([{"what": "hello world", "fact_type": "world"}]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].text, "hello world");
         assert_eq!(facts[0].fact_type, FactType::World);
@@ -314,7 +329,7 @@ mod tests {
     fn accepts_bare_top_level_array() {
         let raw: RawFactsResponse =
             serde_json::from_value(json!([{"what": "bare array works"}])).unwrap();
-        let facts = parse_facts(raw.into_facts());
+        let facts = parse_facts(raw.into_facts(), None);
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].text, "bare array works");
     }
@@ -324,7 +339,7 @@ mod tests {
         let raw = wrapped(json!([
             {"what": "fact text", "when": "n/a", "who": "N/A", "why": ""}
         ]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(facts[0].text, "fact text");
     }
 
@@ -333,7 +348,7 @@ mod tests {
         let raw = wrapped(json!([
             {"what": "fact text", "entities": [], "causal_relations": {}}
         ]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert!(facts[0].entities.is_empty());
         assert!(facts[0].causal_relations.is_empty());
     }
@@ -345,7 +360,7 @@ mod tests {
             {"text": "from text field"},
             {"why": "no what/factual_core/text at all"},
         ]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(facts.len(), 2);
         assert_eq!(facts[0].text, "from factual_core");
         assert_eq!(facts[1].text, "from text field");
@@ -359,7 +374,7 @@ mod tests {
             {"what": "no fact_type, fact_kind assistant", "fact_kind": "assistant"},
             {"what": "no fact_type at all"},
         ]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(facts[0].fact_type, FactType::Experience);
         assert_eq!(facts[1].fact_type, FactType::World);
         assert_eq!(facts[2].fact_type, FactType::Experience);
@@ -375,7 +390,7 @@ mod tests {
             "who": "Alice",
             "why": "new job",
         }]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(
             facts[0].text,
             "Alice moved to Boston | When: last week | Involving: Alice | new job"
@@ -388,7 +403,7 @@ mod tests {
         for junk in ["...", "-", "***", "_, _, _", "   ", ".."] {
             let raw = wrapped(json!([{"what": junk}]));
             assert!(
-                parse_facts(raw).is_empty(),
+                parse_facts(raw, None).is_empty(),
                 "expected {junk:?} to be rejected as degenerate"
             );
         }
@@ -397,12 +412,12 @@ mod tests {
     #[test]
     fn short_non_alphanumeric_rejected_but_short_word_kept() {
         let raw = wrapped(json!([{"what": "-,"}]));
-        assert!(parse_facts(raw).is_empty());
+        assert!(parse_facts(raw, None).is_empty());
 
         // len<=2 but alphanumeric survives (e.g. an "OK" style fact,
         // however unlikely — the check is about punctuation, not length).
         let raw = wrapped(json!([{"what": "ok"}]));
-        assert_eq!(parse_facts(raw).len(), 1);
+        assert_eq!(parse_facts(raw, None).len(), 1);
     }
 
     #[test]
@@ -415,7 +430,7 @@ mod tests {
                 {"target_index": -1, "relation_type": "caused_by"}, // negative, invalid
             ]},
         ]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(facts[1].causal_relations.len(), 1);
         assert_eq!(facts[1].causal_relations[0].target_index, 0);
     }
@@ -433,7 +448,7 @@ mod tests {
                 {"target_index": 1, "relation_type": "caused_by"}, // → fact A: remapped to 0
             ]},
         ]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(facts.len(), 2);
         assert_eq!(facts[1].causal_relations.len(), 1);
         assert_eq!(facts[1].causal_relations[0].target_index, 0);
@@ -451,7 +466,7 @@ mod tests {
                 {"target_index": 2, "relation_type": "caused_by"},
             ]},
         ]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(facts[3].causal_relations.len(), 2);
     }
 
@@ -461,7 +476,7 @@ mod tests {
             "what": "fact",
             "entities": ["Alice", {"text": "Bob"}, {"nope": "dropped"}, 42],
         }]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(
             facts[0].entities,
             vec!["Alice".to_string(), "Bob".to_string()]
@@ -475,9 +490,47 @@ mod tests {
             "fact_kind": "event",
             "occurred_start": "2024-06-10",
         }]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(facts[0].occurred_start.as_deref(), Some("2024-06-10"));
         assert_eq!(facts[0].occurred_end.as_deref(), Some("2024-06-10"));
+    }
+
+    /// CE-8 wiring: no `occurred_start` from the LLM, but the combined text
+    /// says "yesterday" — resolved against the job's event_date
+    /// (2024-06-10T14:23:45Z) and truncated to midnight. `occurred_end`
+    /// follows the inferred start, not the raw event_date.
+    #[test]
+    fn event_kind_infers_occurred_start_from_a_relative_expression() {
+        const EVENT: i64 = 1_718_029_425_000;
+        let raw = wrapped(json!([{
+            "what": "the daemon crashed",
+            "when": "yesterday",
+            "fact_kind": "event",
+        }]));
+        let facts = parse_facts(raw, Some(EVENT));
+        assert_eq!(
+            facts[0].occurred_start.as_deref(),
+            Some("2024-06-09T00:00:00Z")
+        );
+        assert_eq!(
+            facts[0].occurred_end.as_deref(),
+            Some("2024-06-09T00:00:00Z")
+        );
+
+        // The LLM's own value always wins over the inference.
+        let raw = wrapped(json!([{
+            "what": "the daemon crashed yesterday",
+            "fact_kind": "event",
+            "occurred_start": "2024-01-02",
+        }]));
+        assert_eq!(
+            parse_facts(raw, Some(EVENT))[0].occurred_start.as_deref(),
+            Some("2024-01-02")
+        );
+
+        // No event_date, no inference (legacy's first line).
+        let raw = wrapped(json!([{ "what": "it broke yesterday", "fact_kind": "event" }]));
+        assert!(parse_facts(raw, None)[0].occurred_start.is_none());
     }
 
     #[test]
@@ -487,7 +540,7 @@ mod tests {
             "fact_kind": "conversation",
             "occurred_start": "2024-06-10",
         }]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert!(facts[0].occurred_start.is_none());
         assert!(facts[0].occurred_end.is_none());
     }
@@ -495,7 +548,7 @@ mod tests {
     #[test]
     fn unknown_fact_kind_defaults_to_conversation() {
         let raw = wrapped(json!([{"what": "fact", "fact_kind": "bogus"}]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(facts[0].fact_kind, "conversation");
     }
 
@@ -505,7 +558,7 @@ mod tests {
             { "what": "x".repeat(2001) },
             { "what": "y".repeat(2000) },
         ]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(facts.len(), 1, "only the 2000-char fact survives");
         assert_eq!(facts[0].text.chars().count(), 2000);
     }
@@ -515,7 +568,7 @@ mod tests {
         let mut entities: Vec<Value> = (0..50).map(|i| json!(format!("e{i}"))).collect();
         entities.push(json!("z".repeat(257)));
         let raw = wrapped(json!([{ "what": "fact", "entities": entities }]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(facts[0].entities.len(), 32);
         assert!(facts[0].entities.iter().all(|e| e.chars().count() <= 256));
     }
@@ -523,7 +576,7 @@ mod tests {
     #[test]
     fn non_dict_entries_are_skipped() {
         let raw = wrapped(json!(["not a dict", {"what": "real fact"}, 42]));
-        let facts = parse_facts(raw);
+        let facts = parse_facts(raw, None);
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].text, "real fact");
     }
