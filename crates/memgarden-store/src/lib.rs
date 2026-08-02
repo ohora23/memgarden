@@ -3,6 +3,7 @@ mod conn;
 pub mod consolidate;
 pub mod documents;
 pub mod graph;
+pub mod mental_models;
 pub mod metrics_store;
 mod migrate;
 pub mod models;

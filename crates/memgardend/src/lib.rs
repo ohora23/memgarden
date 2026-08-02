@@ -6,6 +6,7 @@ pub mod error;
 pub mod extract;
 pub mod json;
 pub mod links;
+pub mod mental;
 pub mod metrics_task;
 pub mod middleware;
 pub mod ollama;

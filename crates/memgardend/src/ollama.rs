@@ -88,6 +88,33 @@ impl OllamaClient {
             .await
     }
 
+    /// `chat_json` (interactive acquire — bounded wait, `Busy` on timeout)
+    /// with the same per-call `num_predict` ceiling and optional `num_ctx`
+    /// that `chat_json_background_bounded` gives background callers.
+    ///
+    /// Both halves are needed together on `/reflect` (CE-10): it is a
+    /// user-facing route, so it must fail fast rather than queue (Critic
+    /// Revision R11), *and* its reply has to be bounded in code, since
+    /// `ollama.num_predict` defaults to 8192 and bounds nothing.
+    pub async fn chat_json_bounded<T: DeserializeOwned>(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+        num_predict: u32,
+        num_ctx: Option<u32>,
+    ) -> Result<T, OllamaError> {
+        self.chat_json_inner(
+            system,
+            user,
+            schema,
+            Some(ACQUIRE_TIMEOUT),
+            Some(num_predict),
+            num_ctx,
+        )
+        .await
+    }
+
     /// Same as `chat_json` but waits **untimed** for the concurrency permit.
     /// For the retain worker only: it is not answering an HTTP request, so
     /// "Ollama is busy" is a reason to queue, not to fail. Callers must
