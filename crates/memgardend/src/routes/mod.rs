@@ -1,6 +1,7 @@
 mod banks;
 mod embed;
 mod extract;
+mod graph;
 mod health;
 mod metrics;
 mod recall;
@@ -57,6 +58,7 @@ pub fn router(state: AppState) -> Router {
             post(retain::retain).layer(DefaultBodyLimit::max(retain::MAX_RETAIN_BODY_BYTES)),
         )
         .route("/v1/banks/{bank_id}/recall", post(recall::recall_bank))
+        .route("/v1/banks/{bank_id}/graph", get(graph::get_graph))
         .route("/v1/retain/{job_id}", get(retain::get_job))
         .layer(from_fn(track_http));
 

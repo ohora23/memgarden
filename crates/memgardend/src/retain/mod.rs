@@ -33,12 +33,14 @@ use memgarden_core::metrics::METRICS;
 use memgarden_core::types::FactType;
 use memgarden_store::models::NewNode;
 use memgarden_store::nodes::NewNodeWithTags;
+use memgarden_store::graph as store_graph;
 use memgarden_store::retain_jobs::{JobProgress, JobStatus};
 use memgarden_store::{documents, nodes, retain_jobs};
 
 use crate::extract;
 use crate::extract::parse::ParsedFact;
 use crate::state::AppState;
+use crate::{entities, links};
 
 /// Ordering offset applied per fact so retrieval can distinguish facts that
 /// share a base date. legacy: `SECONDS_PER_FACT = 0.01`
@@ -465,7 +467,10 @@ async fn write_facts(
     let context = task.context.clone();
     let document_id = task.document_id;
     let tags = task.tags.clone();
-    let ids = tokio::task::spawn_blocking(move || {
+    // `drafts` comes back out of the closure: `write_graph` below needs each
+    // draft's fact_type and event_date, and moving them in and back beats
+    // cloning the batch.
+    let (ids, drafts) = tokio::task::spawn_blocking(move || {
         let items: Vec<NewNodeWithTags> = drafts
             .iter()
             .map(|d| NewNodeWithTags {
@@ -484,7 +489,9 @@ async fn write_facts(
                 tags: &tags,
             })
             .collect();
-        nodes::insert_batch(&db, &items)
+        let ids = nodes::insert_batch(&db, &items)?;
+        drop(items);
+        Ok::<_, memgarden_core::Error>((ids, drafts))
     })
     .await
     .map_err(|e| memgarden_core::Error::Storage(format!("node write task panicked: {e}")))??;
@@ -492,7 +499,101 @@ async fn write_facts(
     METRICS
         .nodes_written
         .fetch_add(ids.len() as u64, Ordering::Relaxed);
+
+    // CE-7: entities, co-occurrences and the two write-time link types.
+    // Best-effort — the facts are already committed and a graph that is one
+    // chunk short is worth more than a chunk that never lands.
+    if let Err(e) = write_graph(state, task, &facts, &drafts, &ids).await {
+        tracing::warn!(job_id = %task.job_id, error = %e, "retain graph write failed");
+    }
+
     Ok(ids.len())
+}
+
+/// Entity resolution + upsert, then the temporal and causal links, for one
+/// chunk's freshly written nodes (CE-7 / PR B5).
+///
+/// Semantic links are **not** created here: B3 writes `embedding = NULL`, so
+/// a retain-time KNN would always find nothing. They are created by the
+/// backlog worker right after each embedding commit instead
+/// (`embed_task::on_batch_embedded`, Critic Revision R2 / legacy's streaming
+/// design, `orchestrator.py:418-420`).
+async fn write_graph(
+    state: &AppState,
+    task: &RetainTask,
+    facts: &[ParsedFact],
+    drafts: &[NodeDraft],
+    ids: &[i64],
+) -> memgarden_core::error::Result<()> {
+    let db = state.db.clone();
+    let bank_id = task.bank_id.clone();
+    let now = memgarden_core::now_ms();
+
+    // What the entity pass needs: (node id, raw mentions, the fact's date).
+    let mentions: Vec<(i64, Vec<String>, Option<i64>)> = facts
+        .iter()
+        .zip(drafts)
+        .zip(ids)
+        .filter(|((fact, _), _)| !fact.entities.is_empty())
+        .map(|((fact, draft), id)| (*id, fact.entities.clone(), draft.event_date))
+        .collect();
+
+    // What the temporal pass needs, and the window it has to look at.
+    let timed: Vec<links::TimedNode> = drafts
+        .iter()
+        .zip(ids)
+        .filter_map(|(d, id)| {
+            d.event_date.map(|event_date| links::TimedNode {
+                id: *id,
+                fact_type: d.fact_type.as_str().to_string(),
+                event_date,
+            })
+        })
+        .collect();
+    let causal = links::causal_links(facts, ids);
+
+    tokio::task::spawn_blocking(move || {
+        if !mentions.is_empty() {
+            let ctx = store_graph::load_resolution_context(&db, &bank_id)?;
+            // Each fact carries its *own* date into first_seen/last_seen and
+            // last_cooccurred (`entity_processing.py:28`); `now` is only the
+            // fallback for a fact with no date at all. A chunk-wide stamp
+            // would flatten the 0.2 temporal term, which is frequently what
+            // carries a resolution over the 0.6 gate (review MEDIUM 3).
+            let resolved: Vec<store_graph::EntityMentions> = mentions
+                .iter()
+                .map(|(id, raw, date)| {
+                    (
+                        *id,
+                        entities::resolve_fact(raw, *date, &ctx),
+                        date.unwrap_or(now),
+                    )
+                })
+                .filter(|(_, names, _)| !names.is_empty())
+                .collect();
+            store_graph::write_entities(&db, &bank_id, &resolved, now)?;
+        }
+
+        let mut batch = causal;
+        if !timed.is_empty() {
+            const WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
+            let lo = timed.iter().map(|n| n.event_date).min().unwrap_or(now) - WINDOW_MS;
+            let hi = timed.iter().map(|n| n.event_date).max().unwrap_or(now) + WINDOW_MS;
+            let window: Vec<links::TimedNode> = store_graph::nodes_in_window(&db, &bank_id, lo, hi)?
+                .into_iter()
+                .map(|(id, fact_type, event_date)| links::TimedNode {
+                    id,
+                    fact_type,
+                    event_date,
+                })
+                .collect();
+            batch.extend(links::temporal_links(&timed, &window));
+        }
+        store_graph::insert_links(&db, &batch, now)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| memgarden_core::Error::Storage(format!("graph write task panicked: {e}")))?
 }
 
 struct NodeDraft {

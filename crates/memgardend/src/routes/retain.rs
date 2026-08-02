@@ -126,7 +126,16 @@ async fn retain_inner(
         }
     };
 
-    let event_date_ms = body.event_date.unwrap_or_else(memgarden_core::now_ms);
+    // Clamped at the trust boundary: `event_date` is client-supplied and
+    // flows into `(a - b).abs()` in entity resolution and temporal linking,
+    // where i64::MIN overflows. Year 1 .. year 9999 in unix ms — the range
+    // SQLite's own date functions accept.
+    const MIN_EVENT_DATE_MS: i64 = -62_135_596_800_000;
+    const MAX_EVENT_DATE_MS: i64 = 253_402_300_799_000;
+    let event_date_ms = body
+        .event_date
+        .unwrap_or_else(memgarden_core::now_ms)
+        .clamp(MIN_EVENT_DATE_MS, MAX_EVENT_DATE_MS);
     let job_id = Uuid::now_v7().to_string();
     let doc_key = body
         .document_id

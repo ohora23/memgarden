@@ -3,9 +3,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use memgarden_store::{Db, nodes};
+use memgarden_store::{Db, graph, nodes, search};
 
 use crate::embed::{self, EmbedStatus, Embedder};
+use crate::links;
 use crate::state::AppState;
 
 /// Loads the embedding model in a blocking thread and publishes it into
@@ -128,8 +129,9 @@ async fn drain_once(db: &Arc<Db>, state: &AppState) {
             .collect();
 
         let db3 = db.clone();
+        let embedded = batch.clone();
         match tokio::task::spawn_blocking(move || nodes::set_embeddings_batch(&db3, &batch)).await {
-            Ok(Ok(())) => on_batch_embedded(db, &ids_and_banks),
+            Ok(Ok(())) => on_batch_embedded(db, embedded).await,
             Ok(Err(e)) => {
                 tracing::warn!(error = %e, "set_embeddings_batch failed");
                 return;
@@ -147,10 +149,51 @@ async fn drain_once(db: &Arc<Db>, state: &AppState) {
     }
 }
 
-/// Hook point for B5 (Critic Revision R2): the legacy design streams
-/// semantic-link creation right after each embedding commit
-/// (orchestrator.py:418-420, :2163), not at retain time — B3 writes
-/// `embedding = NULL`, so retain-time linking would be permanently empty.
-/// B5 fills this in with per-fact_type KNN (top-k 20, threshold 0.7) over
-/// `embedded`. No-op in B1.
-fn on_batch_embedded(_db: &Arc<Db>, _embedded: &[(i64, String)]) {}
+/// Semantic-link pass (CE-7, Critic Revision R2). Legacy streams link
+/// creation right after each embedding commit (`orchestrator.py:418-420`,
+/// `:2163`) rather than at retain time — B3 writes `embedding = NULL`, so a
+/// retain-time KNN would find nothing forever.
+///
+/// For each node just embedded: KNN inside its bank, keep the same-fact_type
+/// neighbours at cosine `>= 0.7`, cap at 20 (`orchestrator.py:1232`).
+/// Best-effort: the embeddings are already committed and a missing link is a
+/// weaker graph, not a lost fact.
+///
+/// `pub` for testing: the only production caller is `drain_once` above, which
+/// cannot run without a loaded 133MB model, and the two things that live
+/// *here* rather than in `links::semantic_links` — the `1.0 - distance`
+/// cosine conversion and the `TOP_K * 5` over-fetch — need coverage that does
+/// not depend on it (architect F1). See `tests/graph_api.rs`.
+pub async fn on_batch_embedded(db: &Arc<Db>, embedded: Vec<(i64, String, Vec<f32>)>) {
+    if embedded.is_empty() {
+        return;
+    }
+    let db = db.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let ids: Vec<i64> = embedded.iter().map(|(id, ..)| *id).collect();
+        let types = graph::node_types(&db, &ids)?;
+        let mut batch: Vec<graph::NewLink> = Vec::new();
+        for (id, bank_id, embedding) in &embedded {
+            let Some((_, fact_type)) = types.get(id) else {
+                continue;
+            };
+            // Over-fetch: vec0 partitions on bank_id only, so the fact_type
+            // restriction is applied in Rust and needs headroom to still
+            // yield 20 same-type neighbours.
+            let neighbors: Vec<(i64, f64)> =
+                search::knn(&db, bank_id, embedding, links::SEMANTIC_LINK_TOP_K * 5)?
+                    .into_iter()
+                    // vec0's cosine `distance` is `1 - cosine_similarity`.
+                    .map(|(id, distance)| (id, 1.0 - distance))
+                    .collect();
+            batch.extend(links::semantic_links(*id, fact_type, &neighbors, &types));
+        }
+        graph::insert_links(&db, &batch, memgarden_core::now_ms())
+    })
+    .await;
+    match result {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => tracing::warn!(error = %e, "semantic link pass failed"),
+        Err(e) => tracing::warn!(error = %e, "semantic link task panicked"),
+    }
+}

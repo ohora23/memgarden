@@ -11,6 +11,7 @@ use crate::store_err;
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_retain_jobs.sql")),
+    (3, include_str!("../migrations/0003_entities_graph.sql")),
 ];
 
 /// The schema version this build expects, i.e. the highest entry in

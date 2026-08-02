@@ -8,6 +8,7 @@
 
 pub mod budget;
 pub mod fusion;
+pub mod graph;
 pub mod scoring;
 
 use std::sync::atomic::Ordering;
@@ -161,6 +162,20 @@ impl RecallOutcome {
     }
 }
 
+/// A candidate survives if its row is loaded and passes both the type and
+/// the tag filter. A free function rather than a closure because `by_id`
+/// grows once the graph arm hydrates its new nodes, and a closure would hold
+/// it borrowed across that.
+fn keep(
+    by_id: &std::collections::HashMap<i64, CandidateRow>,
+    p: &RecallParams,
+    id: i64,
+) -> bool {
+    by_id.get(&id).is_some_and(|row| {
+        p.fact_types.contains(&row.fact_type) && p.tags_match.matches(&row.tags, &p.tags)
+    })
+}
+
 /// Runs the whole pipeline. The caller has already verified the bank exists.
 pub async fn recall(
     state: &AppState,
@@ -228,17 +243,12 @@ pub async fn recall(
     .map_err(join_err)??;
 
     // --- Filter both arms through one tag/type implementation. ----------
-    let by_id: std::collections::HashMap<i64, CandidateRow> =
+    let mut by_id: std::collections::HashMap<i64, CandidateRow> =
         rows.into_iter().map(|r| (r.id, r)).collect();
-    let keep = |id: i64| -> bool {
-        by_id.get(&id).is_some_and(|row| {
-            p.fact_types.contains(&row.fact_type) && p.tags_match.matches(&row.tags, &p.tags)
-        })
-    };
 
     let semantic: Vec<ArmHit> = semantic_raw
         .into_iter()
-        .filter(|(id, _)| keep(*id))
+        .filter(|(id, _)| keep(&by_id, &p, *id))
         // vec0's cosine `distance` is `1 - cosine_similarity`.
         .map(|(id, distance)| ArmHit {
             id,
@@ -247,15 +257,52 @@ pub async fn recall(
         .collect();
     let keyword: Vec<ArmHit> = keyword_raw
         .into_iter()
-        .filter(|(id, _)| keep(*id))
+        .filter(|(id, _)| keep(&by_id, &p, *id))
         .map(|(id, score)| ArmHit { id, score })
         .collect();
 
-    // --- Fuse, score, rank. ---------------------------------------------
-    let arms = vec![
+    // --- Pass 1: fuse the retrieval arms to pick graph seeds (R13). ------
+    // The graph slot stays empty here; positions still matter, so it is a
+    // placeholder rather than a missing list.
+    let mut arms = vec![
         fusion::cap_per_source(&semantic, p.cap_per_source).to_vec(),
         fusion::cap_per_source(&keyword, p.cap_per_source).to_vec(),
+        vec![], // graph, filled below
+        vec![], // temporal, CE-8
     ];
+    let seeds: Vec<i64> = fusion::reciprocal_rank_fusion(&arms, fusion::RRF_K)
+        .into_iter()
+        .take(graph::GRAPH_SEEDS)
+        .map(|m| m.id)
+        .collect();
+
+    // --- Graph arm: 1 hop off the seeds, then hydrate whatever is new. ---
+    if !seeds.is_empty() {
+        let db = state.db.clone();
+        let bank = bank_id.clone();
+        let known: std::collections::HashSet<i64> = by_id.keys().copied().collect();
+        let (hits, extra) = tokio::task::spawn_blocking(move || {
+            let hits = graph::arm(&db, &bank, &seeds)?;
+            let new_ids: Vec<i64> = hits
+                .iter()
+                .map(|h| h.id)
+                .filter(|id| !known.contains(id))
+                .collect();
+            let extra = search::hydrate(&db, &bank, &new_ids)?;
+            Ok::<_, memgarden_core::Error>((hits, extra))
+        })
+        .await
+        .map_err(join_err)??;
+
+        by_id.extend(extra.into_iter().map(|r| (r.id, r)));
+        let graph_hits: Vec<ArmHit> = hits
+            .into_iter()
+            .filter(|h| keep(&by_id, &p, h.id))
+            .collect();
+        arms[2] = fusion::cap_per_source(&graph_hits, p.cap_per_source).to_vec();
+    }
+
+    // --- Pass 2: fuse all four arms, score, rank. ------------------------
     let merged = fusion::reciprocal_rank_fusion(&arms, fusion::RRF_K);
     let candidates = merged.len();
 
