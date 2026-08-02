@@ -201,6 +201,18 @@ The disabled arm reproduces AX-2's recorded baseline **digit-for-digit on every
 query and every stratum**, which is the parity claim measured at corpus scale
 rather than on a fixture.
 
+> **Re-baselined 2026-08-03 by `fix/ce-8-korean-absolute-dates`.** That PR made
+> `8월 2일` parse, so q17 now exercises the temporal arm and its retrieval
+> changed in all three arms. All three were re-run at this configuration
+> exactly (`gold/results.jsonl` lines 5-7, commit `33d49519`); **only q17
+> moved**, every other query reproducing digit-for-digit including its uuid
+> list. Every table below carries the re-baselined figures. **This is not
+> cosmetic: the reranker's aggregate nDCG@10 gain drops from +0.077 to +0.008
+> and its temporal gain inverts from +0.251 to −0.192.** The decision —
+> reranker off by default — is unchanged and, if anything, better supported;
+> it was settled on latency unconditionally. The superseded figures are in
+> `docs/design/ax-2-recall-quality.md` under *Superseded*.
+
 **Every table below is 13 queries with the conclusion stratum excluded**, both
 arms, no exceptions. That basis is stated once here because switching it
 between tables is exactly how a reader gets misled — and an earlier draft of
@@ -214,7 +226,7 @@ this note did switch it, which is how `top_k = 20` came to be described as
 | identifier / proper noun | 4 | 0.4163 | **0.4952** | **+0.079** |
 | memcompare | 5 | 0.2032 | 0.2399 | +0.037 |
 | graph | 2 | 0.5489 | 0.5462 | −0.003 |
-| temporal | 2 | 0.0745 | 0.3254 | +0.251 — **but see the warning below: neither query exercises the temporal arm** |
+| temporal | 2 | 0.3142 | 0.1220 | **−0.192** — a real regression now that q17 exercises the arm; see below |
 | conclusion | 1 | — | — | **excluded — structurally unmeasurable, see below** |
 
 MRR, same arms:
@@ -224,21 +236,33 @@ MRR, same arms:
 | identifier | 0.6875 | **0.8750** | +0.188 |
 | memcompare | 0.3833 | 0.6000 | +0.217 |
 | graph | 0.7500 | 1.0000 | +0.250 |
-| temporal | 0.0500 | 0.5556 | +0.506 — **neither query exercises the temporal arm** |
+| temporal | 0.5000 | 0.3056 | **−0.194** |
 
 ### Aggregate, conclusion stratum excluded (13 scored queries)
 
 | metric | baseline | `top_k = 10` | Δ |
 |---|---|---|---|
-| recall@1 | 0.0222 | 0.0657 | +0.044 |
-| recall@5 | 0.1969 | 0.2466 | +0.050 |
-| recall@10 | 0.3449 | 0.3468 | +0.002 |
-| MRR | 0.4821 | **0.7393** | **+0.257** |
-| nDCG@10 | 0.3021 | **0.3787** | **+0.077** |
+| recall@1 | 0.0414 | 0.0465 | +0.005 |
+| recall@5 | 0.2546 | 0.2466 | −0.008 |
+| recall@10 | 0.4026 | 0.3468 | **−0.056** |
+| MRR | 0.5513 | **0.7009** | **+0.150** |
+| nDCG@10 | 0.3390 | 0.3474 | +0.008 |
+
+**Read against the re-baseline, the reranker's case is much narrower than this
+note originally recorded.** It was `+0.257` MRR and `+0.077` nDCG@10; it is now
+`+0.150` and `+0.008`, and recall@10 has gone from flat (+0.002) to a **0.056
+loss**. The reason is entirely q17: a temporal constraint puts four relevant
+nodes into the baseline's top 10, and the cross-encoder — which scores text
+pairs and cannot see a date window — pushes three of them back out.
+
+**MRR remains the honest headline**, for the reason in the tie-break section
+below (top-of-block injection lives on rank 1), and it is still a large gain.
+But an earlier reading of this note as "+0.077 nDCG@10" no longer holds, and
+nothing here should be quoted as a general ranking-quality win.
 
 For reference, the 14-query figure the harness prints (which folds the
-conclusion stratum back in) is `0.021/0.183/0.335/0.458/0.289` →
-`0.061/0.229/0.336/0.697/0.360`. It is printed by the tool, not used for any
+conclusion stratum back in) is `0.038/0.236/0.388/0.522/0.323` →
+`0.043/0.229/0.336/0.661/0.331`. It is printed by the tool, not used for any
 judgement here.
 
 **The conclusion stratum is excluded, not averaged in.** AX-2 established that
@@ -250,22 +274,39 @@ export does not cover. Its `top_k = 10` value is identical to baseline (0.1131)
 point on it, so it is out of every table above **and out of the `top_k = 20`
 comparison below**, where it would otherwise have decided the outcome.
 
-### The temporal stratum's +0.251 does not mean the temporal arm improved
+### The temporal stratum: half of it is now valid, and on that half the reranker hurts
 
-Reported here rather than in a tail bullet, because the stratum table alone
-tells a reader the opposite. **Neither temporal query exercises the temporal
-arm at all:**
+This section originally warned that the stratum's **+0.251** was meaningless
+because *neither* query exercised the temporal arm. After the re-baseline the
+caveat is narrower and the number has inverted, so both halves are restated.
 
-* **q15 (`지난주`)** resolves, with `now` pinned to Monday 2026-08-03, to a
-  window containing 2697 of the corpus's 2718 facts. The arm fires and
-  contributes a near-uniform fourth ranked list — effectively a no-op.
-* **q17 (`8월 2일`)** extracts **no constraint at all**, so `window` is `None`,
-  the arm never runs, and `scores.temporal` is `NEUTRAL` for every candidate.
+* **q17 (`8월 2일`) now DOES exercise the temporal arm.** It previously
+  extracted no constraint at all — `window` was `None`, the arm never ran, and
+  `scores.temporal` was `NEUTRAL` for every candidate.
+  `fix/ce-8-korean-absolute-dates` fixed that: it now resolves to a single-day
+  2026-08-02 window and the arm runs. On the off arm q17 goes nDCG@10
+  0.149 → 0.628, MRR 0.100 → 1.000, recall@10 0.250 → 1.000.
+* **q15 (`지난주`) still does not**, and that is not fixable here. It resolves,
+  with `now` pinned to Monday 2026-08-03, to a window containing 2697 of the
+  corpus's 2718 facts. The arm fires and contributes a near-uniform fourth
+  ranked list — effectively a no-op. **This is a property of a four-day
+  corpus, not a defect in the window logic**, and AX-2 records it as
+  explicitly not-a-bug. It needs a corpus spanning more calendar time.
 
-So "+0.251 temporal" is two lexical/semantic queries wearing a temporal label,
-and the cross-encoder improving them says nothing about CE-8. Both facts are
-AX-2's findings; what is new is that q17's cause turns out to be a **parity
-gap, not a coverage gap** — see the next section and `docs/parity-gaps.md`.
+**On the half that is now valid, the cross-encoder is a regression:**
+temporal nDCG@10 **0.3142 → 0.1220** at `top_k = 10`, where this note
+previously recorded 0.0745 → 0.3254. The mechanism is legible rather than
+mysterious — the reranker scores query-document *text* pairs and knows nothing
+about the date constraint that selected the candidates, so on a query whose
+answer is defined by a date it demotes three of the four relevant nodes out of
+the top 10.
+
+Two caveats, both weakening the finding, both stated because the temptation is
+to over-read a number that moved this far: the stratum is **two queries wide**
+and q17 has only **four** relevant nodes; and one of those two queries is still
+invalid. This is a signal to widen the gold set, not a proven property of
+cross-encoders. It does not move CE-11's decision, which was settled on latency
+unconditionally.
 
 ### The identifier guardrail: passed against baseline, traded against `top_k = 20`
 
@@ -291,12 +332,15 @@ never meet:
 larger than the +0.079 that `top_k = 10` gains over baseline. Choosing 10 is
 knowingly declining that, for the reasons in the next section.
 
-`recall@10` is nearly flat (+0.002) at `top_k = 10`, as expected: the reranker
-reorders the RRF top-10 and drops the tail, so the *set* inside the measurement
-window is close to the baseline's. It is not pinned at zero — the baseline's
-top-10 is ordered by `passthrough_base × boosts`, so the ±21 % envelope can
-swap items across the rank-10 boundary in either direction, and the memcompare
-stratum actually **drops** 0.3476 → 0.3276. **Read MRR and nDCG@10.**
+`recall@10` **loses 0.056** at `top_k = 10`. The mechanism was always expected
+to hold it near flat — the reranker reorders the RRF top-10 and drops the tail,
+so the *set* inside the measurement window should be close to the baseline's —
+but it is not pinned at zero: the baseline's top-10 is ordered by
+`passthrough_base × boosts`, so the ±21 % envelope can swap items across the
+rank-10 boundary in either direction. It does, in both: the memcompare stratum
+drops 0.3476 → 0.3276 and, post-re-baseline, the temporal stratum drops
+0.5000 → 0.1875, which is where most of the aggregate loss comes from.
+(Pre-re-baseline this line read "+0.002, nearly flat".) **Read MRR.**
 
 ### `top_k = 20`: the ranking evidence is split, and latency settles it
 
@@ -304,19 +348,27 @@ Same 13-query basis as everything above.
 
 | metric (13q) | baseline | `top_k = 10` | `top_k = 20` | ranking winner |
 |---|---|---|---|---|
-| recall@1 | 0.0222 | **0.0657** | 0.0379 | 10 |
-| recall@5 | 0.1969 | **0.2466** | 0.2363 | 10 |
-| recall@10 | 0.3449 | 0.3468 | **0.3968** | 20 |
-| MRR | 0.4821 | **0.7393** | 0.6059 | 10, decisively |
-| nDCG@10 | 0.3021 | 0.3787 | **0.3824** | 20, narrowly |
+| recall@1 | 0.0414 | **0.0465** | 0.0379 | 10 |
+| recall@5 | 0.2546 | 0.2466 | **0.2555** | 20, but neither beats baseline by much |
+| recall@10 | 0.4026 | 0.3468 | **0.4353** | 20 |
+| MRR | 0.5513 | **0.7009** | 0.6187 | 10, decisively |
+| nDCG@10 | 0.3390 | 0.3474 | **0.4121** | 20, no longer narrowly |
 | identifier nDCG@10 | 0.4163 | 0.4952 | **0.5954** | 20 |
 | graph nDCG@10 | 0.5489 | **0.5462** | 0.4966 | 10 |
 | memcompare nDCG@10 | 0.2032 | 0.2399 | **0.2578** | 20 |
+| temporal nDCG@10 (2q, half valid) | 0.3142 | 0.1220 | **0.3470** | 20 |
 
-**`top_k = 20` wins nDCG@10, recall@10, the identifier guardrail and
-memcompare. `top_k = 10` wins MRR by 0.133, recall@1, recall@5 and graph.**
+**`top_k = 20` wins nDCG@10, recall@5, recall@10, the identifier guardrail,
+memcompare and temporal. `top_k = 10` wins MRR by 0.082, recall@1 and graph.**
 On ranking alone this is not a clean call, and any sentence claiming it is
 depends on which metric is quoted first.
+
+**The re-baseline widened `top_k = 20`'s ranking lead**, which is worth stating
+because it cuts against the configuration that shipped: nDCG@10 was `0.3787`
+vs `0.3824` (+0.004 to 20) and is now `0.3474` vs `0.4121` (+0.065 to 20).
+`top_k = 20` recovers q17's temporal nodes that `top_k = 10` drops. Latency
+still decides, and latency still says 10 — but the ranking cost of that choice
+is larger than this note first recorded.
 
 **Latency settles it, and latency is unconditional.** `top_k = 20` doubles a
 cost that already triples p50 against a 35 ms budget and already drags the
@@ -327,19 +379,26 @@ The ranking tie-break, given latency has already decided: MRR is the metric a
 top-of-block injection lives on. Recalled memories are prepended to a prompt in
 rank order and the client model reads down; the *first* relevant item arriving
 at rank 1 rather than rank 3 is worth more than one extra relevant item
-appearing at rank 9. 0.739 vs 0.606 is a large gap on exactly that.
+appearing at rank 9. 0.701 vs 0.619 is a real gap on exactly that — though it
+is 0.082, not the 0.133 this note first recorded, so it carries less weight
+than it did.
 
-**What is being given up, stated plainly:** +0.100 identifier nDCG@10, +0.050
-recall@10, +0.004 aggregate nDCG@10. The guardrail column is the real cost, and
-it is a cost, not a non-event. If a future caller's budget absorbs the latency,
-`top_k = 20` is the better *ranking* configuration and this note should not be
-read as saying otherwise.
+**What is being given up, stated plainly:** +0.100 identifier nDCG@10, +0.089
+recall@10, +0.065 aggregate nDCG@10, +0.225 temporal nDCG@10. The guardrail
+column is the real cost, and it is a cost, not a non-event. **The re-baseline
+made this bill larger on every line**: the aggregate nDCG@10 concession was
++0.004 and is now +0.065. If a future caller's budget absorbs the latency,
+`top_k = 20` is the better *ranking* configuration by a clearer margin than
+this note first recorded, and it should not be read as saying otherwise.
 
-Two `top_k = 20` observations that are **not** admissible evidence and were
-cited as such in an earlier draft: the temporal stratum's collapse (0.325 →
-0.154) rests on the two queries that do not exercise the temporal arm, and
-"q11 goes to zero" is the conclusion stratum, excluded six paragraphs above.
-Neither is used here.
+One `top_k = 20` observation that is **not** admissible evidence and was cited
+as such in an earlier draft: "q11 goes to zero" is the conclusion stratum,
+excluded six paragraphs above. Not used here. The other — the temporal
+stratum's apparent collapse — was inadmissible for a reason that has since been
+half-repaired: it read `0.325 → 0.154` when *neither* query exercised the arm,
+and post-re-baseline it reads `0.122 → 0.347`, i.e. `top_k = 20` now *wins* the
+stratum. It is admitted to the table above with the two-query / four-label
+caveat attached, and it does not decide anything on its own.
 
 ## Measured — latency
 
@@ -435,12 +494,13 @@ legacy's side with sentence-transformers on CPU and the raw logits
   records). The deltas are computed against the same labels on both arms, so
   a labelling error largely cancels — but the absolute figures inherit AX-2's
   caveat and should not be quoted without it.
-* **Two strata are one or two queries wide, and the temporal one is worse than
-  thin — it is invalid.** Neither of its two queries exercises the temporal arm
-  (q15's window covers 2697/2718 facts; q17 extracts no constraint because of
-  the Korean-date parity gap). Its +0.251 measures the cross-encoder on two
-  lexical queries and says nothing about CE-8. The identifier stratum (4
-  queries) and memcompare (5) are the ones to trust.
+* **Two strata are one or two queries wide, and the temporal one is half
+  valid.** q17 now exercises the temporal arm (the Korean-date gap is closed);
+  q15 still does not, because its `지난주` window covers 2697/2718 facts — a
+  corpus property, not a bug. Its figure has flipped from +0.251 to **−0.192**
+  on the strength of that one repaired query, which is a signal to widen the
+  gold set rather than a proven property. The identifier stratum (4 queries)
+  and memcompare (5) remain the ones to trust.
 * **`rerank_latency` is a hard precondition on `enabled = true`, not a
   follow-up.** `/metrics.json` reports whole-recall latency only, so the
   cross-encoder's share is visible only by differencing two offline runs —
@@ -453,9 +513,11 @@ legacy's side with sentence-transformers on CPU and the raw logits
   `top_k = 10` batch (`ponytail:` marker at `Reranker::scores`). A second
   session would fix that and would also be a second copy of the model in RAM;
   RAM-first, so not now, and gated on the histogram above.
-* **`recall@10` barely moves at `top_k = 10`** (+0.002, and *negative* on the
-  memcompare stratum) and should not be used as this PR's success criterion by
-  a reader skimming the table. It is not, however, pinned at zero — see above.
+* **`recall@10` is now *negative* at `top_k = 10`** (−0.056 on the aggregate,
+  and negative on memcompare and temporal individually). It was +0.002 before
+  the re-baseline. The reranker is a reordering, not a retrieval improvement,
+  and on this metric it is a small net loss — do not use recall@10 as this
+  PR's success criterion in either direction.
 * **The AX-2 baseline itself is `provisional-pending-user-review`**, and every
   post-CE-11 recall delta — this note's and any future one measured against
   these records — inherits that caveat until the corpus owner signs the labels
@@ -480,22 +542,28 @@ metric, no stratum selection and no aggregation basis:
 * The reference system AC-1 compares against runs the passthrough, so enabling
   this by default would make every A/B measure two changes at once.
 
-**Quality says the cross-encoder is genuinely worth having**, which is why it
-ships as a supported opt-in rather than as a rejected experiment: +0.257 MRR
-and +0.077 nDCG@10 over 13 queries, with the identifier guardrail up from 0.416
-to 0.495. That is a large reordering win and not one the boosts or the fusion
-could have produced.
+**Quality says the cross-encoder is worth having as an opt-in, on a narrower
+case than this note first recorded.** Post-re-baseline it is **+0.150 MRR** and
+**+0.008 nDCG@10** over 13 queries, with the identifier guardrail up from 0.416
+to 0.495 — against the +0.257 / +0.077 originally reported. The MRR gain is
+still large and still the metric a top-of-block injection lives on, and the
+guardrail column is untouched. But recall@10 is now a 0.056 *loss*, and the
+aggregate nDCG@10 gain has all but vanished. It ships as a supported opt-in
+rather than a rejected experiment; it does not ship as a general quality win,
+and this paragraph should not be quoted as one.
 
 **And here is what choosing `top_k = 10` gives up, stated rather than
 presented around.** On a consistent 13-query basis the ranking evidence is
-*split*: `top_k = 20` wins nDCG@10 (0.3824 vs 0.3787), recall@10 (0.397 vs
-0.347), memcompare, and the identifier guardrail by **+0.100 nDCG@10** —
-more than the +0.079 that `top_k = 10` gains over baseline on that same
-column. `top_k = 10` wins MRR by 0.133, recall@1, recall@5 and graph. An
-earlier draft of this note called 20 "flat on nDCG" and "worse on ranking";
-both were artifacts of comparing a 13-query table against a 14-query one and
-of citing q11 — the conclusion stratum, excluded as inadmissible six
-paragraphs earlier — as evidence. On a consistent basis neither claim holds.
+*split*, and the re-baseline moved it further toward 20: `top_k = 20` wins
+nDCG@10 (0.4121 vs 0.3474), recall@10 (0.435 vs 0.347), recall@5, memcompare,
+temporal, and the identifier guardrail by **+0.100 nDCG@10** — more than the
++0.079 that `top_k = 10` gains over baseline on that same column. `top_k = 10`
+wins MRR by 0.082, recall@1 and graph. Two earlier drafts of this note have now
+been wrong about this comparison in the same direction — first by mixing a
+13-query table with a 14-query one and citing the excluded conclusion stratum,
+now by resting on a baseline in which q17's temporal constraint never fired.
+The claim that survives both corrections is the unconditional one: **latency
+chooses 10**, and the ranking bill for that is real and has grown.
 
 10 is still right, because latency already settled it and MRR is the better
 tie-break for this consumer: recalled memories are prepended in rank order and

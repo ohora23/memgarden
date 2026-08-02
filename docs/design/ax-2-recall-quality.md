@@ -179,6 +179,16 @@ does and does not capture.
 
 ## Baseline
 
+> **Re-baselined 2026-08-03 by `fix/ce-8-korean-absolute-dates`.** That PR made
+> `8월 2일` parse, which changes q17's retrieval — finding 1 under *Two
+> temporal findings* below was acted on. The table in this section is the
+> **current** baseline (`gold/results.jsonl` line 5, commit `33d49519`); every
+> future delta is measured against it. The superseded pre-fix figures are kept
+> immediately after it, because CE-11's recorded numbers were measured against
+> those and a reader comparing the two notes needs both. **Only q17 moved** —
+> every other query reproduces digit-for-digit, including its retrieved uuid
+> list.
+
 **Note on the recorded commit.** `gold/results.jsonl` line 1 stamps
 `commit: f1b7d143`, but its numbers already include the two gold-label
 corrections that landed in `2247246` — the harness reads `git rev-parse HEAD`
@@ -187,15 +197,17 @@ correct and reproduce exactly (CE-11 re-ran them digit-for-digit at
 `52a8288`, appended as line 2); only the stamp is stale. Records written from
 CE-11 onward are stamped correctly.
 
-**Commit `d616556066542daa0bdb132efe1ab93feb705b3e`**, corpus
+**Commit `33d495197`** (`gold/results.jsonl` line 5), corpus
 `baee3f40…4bda868` (2718 nodes), `now = 1785715200000`,
 `|R|` = labelled relevant nodes, `ceil` = `min(10,|R|)/|R|`.
-The same run is line 1 of `gold/results.jsonl`, with the full per-query
-breakdown and the retrieved uuid lists.
+The record carries the full per-query breakdown and the retrieved uuid lists.
 
-Reproduced three times digit-for-digit: twice from separate `import` runs into
-fresh databases, and once more after rebasing onto CE-10 (schema v6). CE-10
-touches no recall path, and the harness says so rather than assuming it.
+The pre-fix baseline was reproduced three times digit-for-digit: twice from
+separate `import` runs into fresh databases, and once more after rebasing onto
+CE-10 (schema v6). CE-11 reproduced it a fourth time at `52a8288` (line 2).
+The re-baseline run below imported into a fresh database again and reproduced
+this note's own structure counts exactly — 2718 nodes, 2129 entity rows from
+1471 facts, 54 012 temporal links.
 
 ```
 query  stratum        |R|     r@1     r@5     r@10     ceil     mrr  nDCG@10
@@ -210,17 +222,32 @@ q08    identifier      13   0.077   0.308    0.462    0.769   1.000    0.665
 q09    identifier      17   0.000   0.176    0.412    0.588   0.500    0.365
 q11    conclusion       5   0.000   0.000    0.200    1.000   0.143    0.113
 q15    temporal        16   0.000   0.000    0.000    0.625   0.000    0.000
-q17    temporal         4   0.000   0.000    0.250    1.000   0.100    0.149
+q17    temporal         4   0.250   0.750    1.000    1.000   1.000    0.628
 q18    graph            9   0.111   0.556    0.556    1.000   1.000    0.612
 q19    graph           15   0.000   0.200    0.267    0.667   0.500    0.486
 
 (5)    memcompare       -   0.000   0.164    0.348    0.875   0.383    0.203
 (4)    identifier       -   0.044   0.246    0.418    0.839   0.688    0.416
 (1)    conclusion       -   0.000   0.000    0.200    1.000   0.143    0.113
-(2)    temporal         -   0.000   0.000    0.125    0.812   0.050    0.074
+(2)    temporal         -   0.125   0.375    0.500    0.812   0.500    0.314
 (2)    graph            -   0.056   0.378    0.411    0.833   0.750    0.549
+(14)   ALL              -   0.038   0.236    0.388    0.859   0.522    0.323
+```
+
+### Superseded: the pre-fix baseline (lines 1-2, commit `d6165560`)
+
+Kept because CE-11's tables were measured against it. The **only** rows that
+differ are q17 and the two aggregates it feeds:
+
+```
+q17    temporal         4   0.000   0.000    0.250    1.000   0.100    0.149
+(2)    temporal         -   0.000   0.000    0.125    0.812   0.050    0.074
 (14)   ALL              -   0.021   0.183    0.335    0.859   0.458    0.289
 ```
+
+On the 13-query basis CE-11 uses (conclusion excluded), the re-baseline moves
+recall@1 0.0222 → 0.0414, recall@5 0.1969 → 0.2546, recall@10 0.3449 → 0.4026,
+MRR 0.4821 → 0.5513, nDCG@10 0.3021 → 0.3390.
 
 ### Reading these numbers
 
@@ -242,9 +269,9 @@ visible on this axis:
 |---|---|---|
 | identifier (proper noun) | **0.688** | **0.416** |
 | graph | 0.750 | 0.549 |
+| temporal | 0.500 | 0.314 |
 | memcompare | 0.383 | 0.203 |
 | conclusion | 0.143 | 0.113 |
-| temporal | 0.050 | 0.074 |
 
 Identifier queries land a relevant node at rank 1-2 on average (two of the four
 have MRR 1.0), against 0.143 for conclusion queries. The lexical arm is doing
@@ -254,9 +281,13 @@ un-ported**, and CE-11 must not regress this column while chasing precision.
 **Weak spots the aggregate would have hidden:**
 
 * **q15 scores 0.000 on everything** despite 16 labelled relevant nodes. The
-  worst single result in the set.
-* **Temporal is the weakest stratum by a wide margin** and both of its scored
-  queries have a temporal-arm problem rather than a ranking problem — see below.
+  worst single result in the set. Still true after the re-baseline, and still
+  not a bug — see finding 2 below.
+* ~~**Temporal is the weakest stratum by a wide margin**~~ — it was, at
+  0.050 MRR / 0.074 nDCG@10, and both of its scored queries had a temporal-arm
+  problem rather than a ranking problem. Finding 1 below has since been fixed,
+  which took the stratum to 0.500 / 0.314 on q17 alone. **Conclusion is now
+  the weakest**, for the structural reason two sections down.
 * **q05 has MRR 0.500 but recall@10 0.182**: it surfaces one related node early
   and then misses all six core nodes entirely.
 * **conclusion has one scored query out of four.** Its 0.113 is a sample of one
@@ -295,18 +326,34 @@ The four-stratum design still did its job: the stratification is what made this
 visible at all. An aggregate-only harness would have reported 0.287 overall and
 hidden the fact that one of its four axes is unmeasurable.
 
-### Two temporal findings worth acting on
+### Two temporal findings worth acting on — one fixed, one not a bug
 
-1. **`8월 2일` extracts no constraint at all** (q17). The period table has no
-   absolute Korean dates and `fallback_date` requires ISO (`2026-08-02`), so the
-   temporal arm never fires for the most natural way to write an absolute date
-   in Korean. Not a bug in what CE-8 shipped — a gap in what it covers.
+1. **`8월 2일` extracts no constraint at all** (q17). **FIXED**, and this
+   note's baseline is the post-fix one. The period table had no absolute
+   Korean dates and `fallback_date` required ISO (`2026-08-02`), so the
+   temporal arm never fired for the most natural way to write an absolute date
+   in Korean. It turned out to be a parity gap rather than a coverage gap, and
+   then — once legacy's dateparser was re-checked under an explicit
+   `RELATIVE_BASE` — not even that: legacy resolves the *month* only and takes
+   the day and year from today. `fix/ce-8-korean-absolute-dates` implements it
+   day-precisely as a deliberate divergence. q17: nDCG@10 0.149 → **0.628**,
+   MRR 0.100 → **1.000**, recall@10 0.250 → **1.000**. See
+   `docs/design/ce-8-korean-absolute-dates.md`.
 2. **`지난주` covers almost the whole corpus** (q15). With `now` pinned to
    Monday 2026-08-03, `Period::Week(-1)` resolves to 2026-07-27..08-02, which
    contains 2697 of 2718 facts. The window is nearly a no-op, so the temporal
    arm contributes a near-uniform fourth ranked list and q15 is effectively a
-   lexical/semantic test that fails. A corpus spanning more calendar time would
-   exercise this arm properly; this one cannot.
+   lexical/semantic test that fails.
+
+   **This is not a bug and must not be "fixed".** It is a property of a corpus
+   whose facts all fall within four days, not a defect in the window logic —
+   the window is correct, there is simply nothing outside it to exclude.
+   Changing `Period::Week` to make this number move would be breaking working
+   code to flatter a metric. The fix is a corpus spanning more calendar time
+   (see Follow-ups); this one cannot exercise the arm.
+
+   Net effect on the stratum: it is now **half** valid. q17 exercises the
+   temporal arm end to end; q15 still does not.
 
 ## Diverged from legacy
 
