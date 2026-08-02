@@ -21,14 +21,61 @@ fn migrate_is_idempotent() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, memgarden_store::LATEST_VERSION);
     let count: i64 = conn
         .query_row("SELECT count(*) FROM schema_migrations", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
-        count, 1,
+        count,
+        memgarden_store::LATEST_VERSION,
         "schema_migrations must log each migration exactly once"
     );
+}
+
+/// A database created by an older build (schema v1) must upgrade in place
+/// when a newer binary opens it — `0002` is the first migration that has to
+/// prove this, since `0001` only ever runs against an empty file.
+#[test]
+fn migrate_upgrades_a_v1_database_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v1.db");
+
+    // Build a v1 database the way the previous release left it: apply
+    // 0001 only, then stamp user_version = 1.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!("../migrations/0001_init.sql"))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (1, 0)",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        // Pre-existing data must survive the upgrade.
+        conn.execute(
+            "INSERT INTO banks (bank_id, created_at, updated_at) VALUES ('legacy', 0, 0)",
+            [],
+        )
+        .unwrap();
+    }
+
+    let db = Db::open(&path).unwrap();
+    let conn = db.read().unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, memgarden_store::LATEST_VERSION);
+    // 0002's table exists...
+    let jobs: i64 = conn
+        .query_row("SELECT count(*) FROM retain_jobs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(jobs, 0);
+    // ...and the v1 row is still there.
+    let banks: i64 = conn
+        .query_row("SELECT count(*) FROM banks WHERE bank_id = 'legacy'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(banks, 1);
 }
 
 #[test]

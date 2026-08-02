@@ -8,7 +8,15 @@ use memgarden_core::now_ms;
 
 use crate::store_err;
 
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_init.sql")),
+    (2, include_str!("../migrations/0002_retain_jobs.sql")),
+];
+
+/// The schema version this build expects, i.e. the highest entry in
+/// `MIGRATIONS`. `/healthz` reports it; `tests/schema.rs` asserts a fresh DB
+/// and a DB opened at an older `user_version` both land here.
+pub const LATEST_VERSION: i64 = MIGRATIONS[MIGRATIONS.len() - 1].0;
 
 /// Applies all pending migrations. Idempotent — migrations already
 /// reflected in `PRAGMA user_version` are skipped. Each migration opens its

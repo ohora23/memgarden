@@ -20,12 +20,28 @@ async fn main() -> anyhow::Result<()> {
         .started_at_ms
         .store(started_at_ms as u64, Ordering::Relaxed);
     let ollama_client = Arc::new(ollama::OllamaClient::new(cfg.ollama.clone())?);
+
+    // The retain queue lives in memory, so anything left `pending`/`running`
+    // by the previous process will never be picked up — close those rows out
+    // now rather than leave the Phase C hook's progress view stuck.
+    match memgarden_store::retain_jobs::fail_stale(&db, "daemon restarted before the job finished")
+    {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(count = n, "closed out retain jobs orphaned by a restart"),
+        Err(e) => tracing::warn!(error = %e, "failed to close out orphaned retain jobs"),
+    }
+    // 21ms one-time cl100k_base init, paid here instead of on the first
+    // retain request (decision #5).
+    memgardend::retain::warm_tokenizer();
+
+    let (retain_tx, retain_rx) = tokio::sync::mpsc::channel(cfg.retain.queue_capacity);
     let state = AppState {
         db: db.clone(),
         cfg: cfg.clone(),
         started_at_ms,
         embedder: Arc::new(RwLock::new(None)),
         ollama: ollama_client.clone(),
+        retain_tx,
     };
 
     let app = routes::router(state.clone());
@@ -39,8 +55,9 @@ async fn main() -> anyhow::Result<()> {
     // Spawned *after* the listener binds (decision #1): a first-run model
     // download must not delay the port bind.
     tokio::spawn(embed_task::load_at_startup(state.clone()));
-    let embed_backlog_handle = tokio::spawn(embed_task::run_backlog(db.clone(), state));
+    let embed_backlog_handle = tokio::spawn(embed_task::run_backlog(db.clone(), state.clone()));
     tokio::spawn(ollama::run_prober(ollama_client));
+    let retain_worker_handle = tokio::spawn(memgardend::retain::run_worker(state, retain_rx));
 
     axum::serve(listener, app)
         .with_graceful_shutdown(memgardend::shutdown_signal())
@@ -51,6 +68,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Err(e) = embed_backlog_handle.await {
         tracing::warn!(error = %e, "embed backlog task join error during shutdown");
+    }
+    if let Err(e) = retain_worker_handle.await {
+        tracing::warn!(error = %e, "retain worker join error during shutdown");
     }
 
     tracing::info!("shutting down: checkpointing WAL");

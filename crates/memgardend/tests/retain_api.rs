@@ -1,0 +1,934 @@
+//! End-to-end retain ingest (CE-5b, PR B3): the HTTP contract, the ledger
+//! row, and the background worker writing nodes.
+//!
+//! Extraction is driven by a **stub Ollama** — a tiny axum app bound to a
+//! loopback port that the daemon's real `OllamaClient` talks to over real
+//! HTTP. That keeps the production code free of a trait/mock abstraction
+//! introduced solely for tests, while still exercising the whole path:
+//! chunking, retries, per-chunk failure handling (Critic Revision R14), node
+//! writes and the `+10ms` ordering offsets.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use memgarden_core::config::Config;
+use memgarden_store::Db;
+use memgardend::{retain, routes, state::AppState};
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+// ---------------------------------------------------------------------------
+// Stub Ollama
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct StubState {
+    calls: Arc<AtomicUsize>,
+    /// 1-based call ordinals that should answer HTTP 500 instead of facts.
+    fail_on: Arc<Vec<usize>>,
+}
+
+/// Spawns a stub `/api/chat` on a free loopback port; returns its base URL and
+/// the call counter.
+async fn spawn_stub_ollama(fail_on: Vec<usize>) -> (String, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let state = StubState {
+        calls: calls.clone(),
+        fail_on: Arc::new(fail_on),
+    };
+    let app = axum::Router::new()
+        .route("/api/chat", axum::routing::post(stub_chat))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}"), calls)
+}
+
+async fn stub_chat(
+    axum::extract::State(state): axum::extract::State<StubState>,
+    axum::Json(body): axum::Json<Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let n = state.calls.fetch_add(1, Ordering::SeqCst) + 1;
+    if state.fail_on.contains(&n) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "stub failure").into_response();
+    }
+    // Two facts per chunk, one of each fact_type, so the test can check the
+    // `assistant` -> `experience` rename and the ordering offsets.
+    let user = body["messages"][1]["content"].as_str().unwrap_or("");
+    let marker: String = user.chars().rev().take(8).collect();
+    let facts = json!({
+        "facts": [
+            { "what": format!("chunk fact A [{marker}]"), "fact_type": "world",
+              "fact_kind": "event", "occurred_start": "2024-06-10" },
+            { "what": format!("chunk fact B [{marker}]"), "fact_type": "assistant",
+              "fact_kind": "conversation" },
+        ]
+    });
+    axum::Json(json!({ "message": { "content": facts.to_string() } })).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Fixture
+// ---------------------------------------------------------------------------
+
+struct Harness {
+    app: axum::Router,
+    db: Arc<Db>,
+}
+
+fn build(
+    ollama_url: &str,
+    tweak: impl FnOnce(&mut Config),
+) -> (Harness, tokio::sync::mpsc::Receiver<retain::RetainTask>, AppState) {
+    let db = Arc::new(Db::open_memory().unwrap());
+    let mut cfg = Config::defaults().unwrap();
+    cfg.bind = "127.0.0.1:0".to_string();
+    cfg.db_path = std::path::PathBuf::from(":memory:");
+    cfg.embedding.enabled = false;
+    cfg.ollama.base_url = ollama_url.to_string();
+    cfg.ollama.request_timeout_secs = 5;
+    cfg.ollama.max_retries = 0;
+    cfg.retain.include_tool_calls = true;
+    tweak(&mut cfg);
+
+    let ollama = Arc::new(memgardend::ollama::OllamaClient::new(cfg.ollama.clone()).unwrap());
+    let (retain_tx, retain_rx) = tokio::sync::mpsc::channel(cfg.retain.queue_capacity);
+    let state = AppState {
+        db: db.clone(),
+        cfg: Arc::new(cfg),
+        started_at_ms: memgarden_core::now_ms(),
+        embedder: Arc::new(std::sync::RwLock::new(None)),
+        ollama,
+        retain_tx,
+    };
+    let app = routes::router(state.clone());
+    (Harness { app, db }, retain_rx, state)
+}
+
+/// Router + a live background worker: the full daemon minus the listener.
+async fn with_worker(ollama_url: &str, tweak: impl FnOnce(&mut Config)) -> Harness {
+    let (harness, rx, state) = build(ollama_url, tweak);
+    tokio::spawn(retain::run_worker(state, rx));
+    harness
+}
+
+fn post(uri: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("host", "127.0.0.1:9100")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn get(uri: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("host", "127.0.0.1:9100")
+        .body(Body::empty())
+        .unwrap()
+}
+
+async fn body_json(response: axum::response::Response) -> Value {
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+/// Polls the job row until it leaves `pending`/`running`. 12s is plenty for
+/// the stub-Ollama tests; the live test passes its own budget.
+async fn await_job(db: &Db, job_id: &str) -> memgarden_store::retain_jobs::RetainJob {
+    await_job_within(db, job_id, Duration::from_secs(12)).await
+}
+
+async fn await_job_within(
+    db: &Db,
+    job_id: &str,
+    budget: Duration,
+) -> memgarden_store::retain_jobs::RetainJob {
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        let job = memgarden_store::retain_jobs::get(db, job_id)
+            .unwrap()
+            .expect("job row must exist the moment the 202 lands");
+        if job.status == "done" || job.status == "failed" {
+            return job;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("retain job {job_id} did not finish within {budget:?}");
+}
+
+/// `(id, fact_type, text, mentioned_at, occurred_start)` as read back from
+/// `memory_nodes` in the worker test.
+type NodeRow = (i64, String, String, Option<i64>, Option<i64>);
+
+/// A transcript long enough to split into several chunks at `chunk_size`.
+fn transcript(turns: usize) -> Vec<Value> {
+    (0..turns)
+        .map(|i| {
+            json!({
+                "role": if i % 2 == 0 { "user" } else { "assistant" },
+                "content": format!("turn {i}: {}", "discussing the retain pipeline. ".repeat(6)),
+            })
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Endpoint contract
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn unknown_bank_is_404() {
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    let response = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/nope/retain",
+            json!({ "messages": [{ "role": "user", "content": "a long enough message here" }], "is_initial": true }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn empty_messages_is_400() {
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+    let response = harness
+        .app
+        .oneshot(post("/v1/banks/b1/retain", json!({ "messages": [], "is_initial": true })))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["code"], "invalid");
+}
+
+#[tokio::test]
+async fn nothing_to_retain_is_a_clean_skip_not_an_error() {
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+    // Only injected memories: everything is stripped, nothing is left.
+    let response = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": [
+                { "role": "user", "content": "<memgarden_memories>injected</memgarden_memories>" }
+            ], "is_initial": true }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["status"], "skipped");
+}
+
+#[tokio::test]
+async fn full_queue_is_429_and_leaves_no_rows_behind() {
+    // capacity 1, no worker draining it: the second request must 429.
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |cfg| cfg.retain.queue_capacity = 1);
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let body = json!({ "messages": transcript(4), "session_id": "s1", "is_initial": true });
+    let first = harness.app.clone().oneshot(post("/v1/banks/b1/retain", body)).await.unwrap();
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+
+    let body = json!({ "messages": transcript(4), "session_id": "s2", "is_initial": true });
+    let second = harness.app.clone().oneshot(post("/v1/banks/b1/retain", body)).await.unwrap();
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body_json(second).await["error"]["code"], "queue_full");
+
+    // The rejected request reserved its slot before touching the DB, so it
+    // created neither a document nor a job.
+    let jobs: i64 = harness
+        .db
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM retain_jobs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(jobs, 1);
+    let docs: i64 = harness
+        .db
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM documents", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(docs, 1);
+}
+
+#[tokio::test]
+async fn identical_content_is_a_duplicate_only_after_a_clean_ingest() {
+    let (url, _calls) = spawn_stub_ollama(vec![]).await;
+    let harness = with_worker(&url, |_| {}).await;
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+    let body = json!({ "messages": transcript(4), "session_id": "same-session", "is_initial": true });
+
+    let first = harness
+        .app
+        .clone()
+        .oneshot(post("/v1/banks/b1/retain", body.clone()))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let first = body_json(first).await;
+    let first_doc = first["document_id"].clone();
+    let job = await_job(&harness.db, first["job_id"].as_str().unwrap()).await;
+    assert_eq!(job.status, "done");
+
+    // Only now — after the worker stamped the content hash — is a re-POST a
+    // duplicate (review HIGH 1).
+    let second = harness
+        .app
+        .clone()
+        .oneshot(post("/v1/banks/b1/retain", body))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+    let second_body = body_json(second).await;
+    assert_eq!(second_body["status"], "duplicate");
+    assert_eq!(second_body["document_id"], first_doc);
+    assert_eq!(second_body["job_id"], Value::Null);
+
+    let jobs: i64 = harness
+        .db
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM retain_jobs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(jobs, 1);
+}
+
+#[tokio::test]
+async fn a_partially_failed_job_is_retryable_not_a_permanent_duplicate() {
+    // Review HIGH 1, the data-loss case: chunk 2 of 3 fails, so the document
+    // must NOT be marked fully ingested. Re-POSTing the identical transcript
+    // has to start a fresh job, not answer "duplicate" forever.
+    let (url, _calls) = spawn_stub_ollama(vec![2]).await;
+    let harness = with_worker(&url, |cfg| cfg.retain.chunk_size = 400).await;
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+    let body = json!({ "messages": transcript(6), "session_id": "retryable", "is_initial": true });
+
+    let first = body_json(
+        harness
+            .app
+            .clone()
+            .oneshot(post("/v1/banks/b1/retain", body.clone()))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let job = await_job(&harness.db, first["job_id"].as_str().unwrap()).await;
+    assert_eq!(job.status, "done");
+    assert_eq!(job.chunks_failed, 1, "the fixture must actually fail a chunk");
+
+    let second = harness
+        .app
+        .clone()
+        .oneshot(post("/v1/banks/b1/retain", body.clone()))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::ACCEPTED);
+    let second = body_json(second).await;
+    assert_eq!(second["status"], "accepted", "a partial ingest must be retryable");
+    assert_eq!(second["document_id"], first["document_id"]);
+    assert_ne!(second["job_id"], first["job_id"]);
+
+    // The retry succeeds end to end (the stub only fails call #2), stamps the
+    // hash, and only THEN is a third post a duplicate.
+    let job = await_job(&harness.db, second["job_id"].as_str().unwrap()).await;
+    assert_eq!(job.status, "done");
+    assert_eq!(job.chunks_failed, 0);
+    let third = harness
+        .app
+        .oneshot(post("/v1/banks/b1/retain", body))
+        .await
+        .unwrap();
+    assert_eq!(body_json(third).await["status"], "duplicate");
+}
+
+#[tokio::test]
+async fn a_duplicate_records_no_second_ledger_row() {
+    // The ledger measures work avoided, not requests received: a re-sent
+    // transcript ingests nothing, so it must not inflate the numbers.
+    let (url, _calls) = spawn_stub_ollama(vec![]).await;
+    let harness = with_worker(&url, |_| {}).await;
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+    let body = json!({
+        "messages": [
+            { "role": "user", "content": "write the module" },
+            { "role": "assistant", "content": [
+                { "type": "tool_use", "name": "Write", "input": {
+                    "file_path": "/repo/src/a.rs", "content": "fn a() {}\n".repeat(300) } },
+            ]},
+        ],
+        "session_id": "dup-ledger",
+        "cwd": "/repo",
+        "is_initial": true,
+    });
+
+    let first = body_json(
+        harness
+            .app
+            .clone()
+            .oneshot(post("/v1/banks/b1/retain", body.clone()))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        memgarden_store::metrics_store::list_ledger(&harness.db, 10).unwrap().len(),
+        1
+    );
+    await_job(&harness.db, first["job_id"].as_str().unwrap()).await;
+
+    let second = harness.app.clone().oneshot(post("/v1/banks/b1/retain", body)).await.unwrap();
+    assert_eq!(body_json(second).await["status"], "duplicate");
+    assert_eq!(
+        memgarden_store::metrics_store::list_ledger(&harness.db, 10).unwrap().len(),
+        1,
+        "a duplicate must not write a second retain_cap_saving row"
+    );
+}
+
+#[tokio::test]
+async fn coding_profile_supplies_a_default_bank_mission() {
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |cfg| {
+        cfg.profile.name = "coding".to_string();
+        cfg.profile.bank_mission = "You are a coding assistant.".to_string();
+    });
+    let created = harness
+        .app
+        .clone()
+        .oneshot(post("/v1/banks", json!({ "bank_id": "inherits" })))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+    assert_eq!(body_json(created).await["mission"], "You are a coding assistant.");
+
+    // An explicit mission still wins.
+    let created = harness
+        .app
+        .oneshot(post("/v1/banks", json!({ "bank_id": "explicit", "mission": "mine" })))
+        .await
+        .unwrap();
+    assert_eq!(body_json(created).await["mission"], "mine");
+}
+
+#[tokio::test]
+async fn unknown_job_id_is_404() {
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    let response = harness.app.oneshot(get("/v1/retain/nope")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// Ledger
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cap_saving_writes_a_ledger_row_with_the_right_ratio() {
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    // A 6KB Write: tier-1 field truncation removes almost all of it.
+    let messages = json!([
+        { "role": "user", "content": "please write the reranker module" },
+        { "role": "assistant", "content": [
+            { "type": "text", "text": "writing it now" },
+            { "type": "tool_use", "name": "Write", "input": {
+                "file_path": "/repo/src/rerank.rs",
+                "content": "fn rerank() { /* body */ }\n".repeat(250),
+            }},
+        ]},
+    ]);
+    let response = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": messages, "session_id": "sess-ledger", "cwd": "/repo", "is_initial": true }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+
+    let raw = body["raw_tokens"].as_u64().unwrap();
+    let capped = body["capped_tokens"].as_u64().unwrap();
+    let saved = body["saved_tokens"].as_u64().unwrap();
+    let ratio = body["saving_ratio"].as_f64().unwrap();
+    assert_eq!(saved, raw - capped);
+    assert!(
+        ratio > 0.55,
+        "a 6KB Write must land in the measured -55%..-87% band, got {ratio}"
+    );
+
+    let ledger = memgarden_store::metrics_store::list_ledger(&harness.db, 10).unwrap();
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0].kind, "retain_cap_saving");
+    assert_eq!(ledger[0].bank_id.as_deref(), Some("b1"));
+    let detail: Value = serde_json::from_str(ledger[0].detail.as_deref().unwrap()).unwrap();
+    assert_eq!(detail["raw_tokens"], raw);
+    assert_eq!(detail["capped_tokens"], capped);
+    assert_eq!(detail["saved"], saved);
+    assert_eq!(detail["session_id"], "sess-ledger");
+    assert!((detail["ratio"].as_f64().unwrap() - ratio).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn no_ledger_row_when_nothing_was_capped() {
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let response = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": transcript(4), "session_id": "sess-plain", "is_initial": true }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    assert_eq!(body["saved_tokens"], 0);
+    assert_eq!(body["saving_ratio"], 0.0);
+    assert!(
+        memgarden_store::metrics_store::list_ledger(&harness.db, 10)
+            .unwrap()
+            .is_empty(),
+        "the ledger must record real benefit only"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Worker
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn worker_writes_nodes_with_tags_and_ordering_offsets() {
+    let (url, calls) = spawn_stub_ollama(vec![]).await;
+    // Small chunks so the transcript really splits and the absolute fact
+    // index has to survive a chunk boundary.
+    let harness = with_worker(&url, |cfg| cfg.retain.chunk_size = 400).await;
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let mut messages = transcript(6);
+    messages.push(json!({
+        "role": "assistant",
+        "content": [{ "type": "tool_use", "name": "Edit",
+                      "input": { "file_path": "/repo/src/retain.rs" } }],
+    }));
+    let response = harness
+        .app
+        .clone()
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({
+                "messages": messages,
+                "session_id": "sess-worker",
+                "cwd": "/repo",
+                "is_initial": true,
+                "context": "claude-code",
+                "tags": ["agent:claude-code", "", "  ", "bad\u{7}tag"],
+                "event_date": 1_717_977_600_000i64,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(response).await["job_id"].as_str().unwrap().to_string();
+
+    let job = await_job(&harness.db, &job_id).await;
+    assert_eq!(job.status, "done");
+    assert!(job.chunks_total > 1, "the transcript must have split");
+    assert_eq!(job.chunks_done, job.chunks_total);
+    assert_eq!(job.chunks_failed, 0);
+    assert_eq!(job.facts_written, job.chunks_total * 2);
+    assert_eq!(calls.load(Ordering::SeqCst) as i64, job.chunks_total);
+
+    let conn = harness.db.read().unwrap();
+    let rows: Vec<NodeRow> = conn
+        .prepare(
+            "SELECT id, fact_type, text, mentioned_at, occurred_start
+             FROM memory_nodes WHERE bank_id = 'b1' ORDER BY id",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(rows.len() as i64, job.facts_written);
+
+    // +10ms per fact, counted across the WHOLE document (NIT 16) — not
+    // restarted per chunk.
+    let base = 1_717_977_600_000i64;
+    for (i, row) in rows.iter().enumerate() {
+        assert_eq!(
+            row.3,
+            Some(base + i as i64 * 10),
+            "fact {i} must carry the document-absolute ordering offset"
+        );
+    }
+    // The stub alternates world / experience ("assistant" is renamed).
+    assert_eq!(rows[0].1, "world");
+    assert_eq!(rows[1].1, "experience");
+    // Event facts got occurred_start (offset too); conversation facts did not.
+    assert_eq!(rows[0].4, Some(1_717_977_600_000));
+    assert_eq!(rows[1].4, None);
+
+    // Tags: configured + session: + file:.
+    let tags = memgarden_store::nodes::tags_of(&harness.db, rows[0].0).unwrap();
+    assert!(tags.contains(&"agent:claude-code".to_string()));
+    assert!(tags.contains(&"session:sess-worker".to_string()));
+    assert!(tags.contains(&"file:src/retain.rs".to_string()));
+    // The request also carried "", "  " and a control-character tag; all
+    // three are dropped before anything is written (security review).
+    assert_eq!(tags.len(), 3, "junk tags must not reach node_tags: {tags:?}");
+
+    // Embeddings are left NULL for B1's backlog worker (documented divergence).
+    let pending = memgarden_store::nodes::pending_embeddings(&harness.db, 100).unwrap();
+    assert_eq!(pending.len(), rows.len());
+
+    // The document carries the comma-joined files_modified.
+    let doc_meta = memgarden_store::documents::get_metadata(&harness.db, job.document_id.unwrap())
+        .unwrap()
+        .unwrap();
+    let doc_meta: Value = serde_json::from_str(&doc_meta).unwrap();
+    assert_eq!(doc_meta["files_modified"], "src/retain.rs");
+    assert_eq!(doc_meta["session_id"], "sess-worker");
+
+    // GET /v1/retain/{job_id} mirrors the row.
+    let response = harness
+        .app
+        .clone()
+        .oneshot(get(&format!("/v1/retain/{job_id}")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["status"], "done");
+    assert_eq!(body["facts_written"], job.facts_written);
+    assert_eq!(body["detail"]["message_count"], 7);
+}
+
+#[tokio::test]
+async fn one_failed_chunk_does_not_fail_the_job() {
+    // Critic Revision R14: the second of three chunks fails; the job still
+    // completes with the other two written.
+    let (url, calls) = spawn_stub_ollama(vec![2]).await;
+    let harness = with_worker(&url, |cfg| cfg.retain.chunk_size = 400).await;
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let response = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": transcript(6), "session_id": "sess-partial", "is_initial": true }),
+        ))
+        .await
+        .unwrap();
+    let job_id = body_json(response).await["job_id"].as_str().unwrap().to_string();
+
+    let job = await_job(&harness.db, &job_id).await;
+    assert_eq!(job.status, "done", "a partial failure is not a failed job");
+    assert_eq!(job.chunks_failed, 1);
+    assert_eq!(job.chunks_done, job.chunks_total - 1);
+    assert_eq!(job.facts_written, (job.chunks_total - 1) * 2);
+    assert!(job.error.is_some(), "the failure is recorded, not swallowed");
+    assert!(calls.load(Ordering::SeqCst) >= 3);
+}
+
+#[tokio::test]
+async fn every_chunk_failing_fails_the_job() {
+    let (url, _calls) = spawn_stub_ollama(vec![1, 2, 3, 4, 5, 6, 7, 8]).await;
+    let harness = with_worker(&url, |cfg| cfg.retain.chunk_size = 400).await;
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let response = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": transcript(6), "session_id": "sess-dead", "is_initial": true }),
+        ))
+        .await
+        .unwrap();
+    let job_id = body_json(response).await["job_id"].as_str().unwrap().to_string();
+
+    let job = await_job(&harness.db, &job_id).await;
+    assert_eq!(job.status, "failed");
+    assert_eq!(job.chunks_done, 0);
+    assert_eq!(job.facts_written, 0);
+    assert!(job.error.unwrap().contains("500"));
+}
+
+#[tokio::test]
+async fn wall_timeout_fails_the_job_and_keeps_partial_progress() {
+    // Critic Revision R11: `wall_timeout_secs = 0` would be rejected by
+    // config validation, so use 1s against a stub that sleeps.
+    let (url, _calls) = spawn_stub_ollama(vec![]).await;
+    let harness = with_worker(&url, |cfg| {
+        cfg.retain.chunk_size = 200;
+        cfg.retain.wall_timeout_secs = 1;
+    })
+    .await;
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let response = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": transcript(200), "session_id": "sess-slow", "is_initial": true }),
+        ))
+        .await
+        .unwrap();
+    let job_id = body_json(response).await["job_id"].as_str().unwrap().to_string();
+    let job = await_job(&harness.db, &job_id).await;
+
+    // Either it finished inside the second (a fast stub, many small chunks)
+    // or the wall clock cut it off — in the latter case the partial progress
+    // must be intact and the reason recorded.
+    if job.status == "failed" {
+        assert!(job.error.unwrap().contains("wall timeout"));
+        assert!(job.chunks_done > 0, "partial progress must be preserved");
+        assert!(job.chunks_done < job.chunks_total);
+    } else {
+        assert_eq!(job.status, "done");
+    }
+}
+
+#[tokio::test]
+async fn backfill_cap_applies_only_to_the_initial_retain() {
+    let (url, _calls) = spawn_stub_ollama(vec![]).await;
+    let (harness, _rx, _state) = build(&url, |cfg| cfg.retain.max_initial_messages = 4);
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let messages = transcript(20);
+    let initial = harness
+        .app
+        .clone()
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": messages, "is_initial": true, "session_id": "s-init" }),
+        ))
+        .await
+        .unwrap();
+    let initial = body_json(initial).await;
+
+    let messages = transcript(20);
+    let delta = harness
+        .app
+        .clone()
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": messages, "is_initial": false, "session_id": "s-delta" }),
+        ))
+        .await
+        .unwrap();
+    let delta = body_json(delta).await;
+
+    // Same raw baseline (all 20 messages), but the initial retain's capped
+    // payload is far smaller because only the last 4 survived.
+    assert_eq!(initial["raw_tokens"], delta["raw_tokens"]);
+    assert!(
+        initial["capped_tokens"].as_u64().unwrap() < delta["capped_tokens"].as_u64().unwrap() / 3,
+        "the last-4 backfill cap must dominate: initial={} delta={}",
+        initial["capped_tokens"],
+        delta["capped_tokens"]
+    );
+    assert!(initial["saved_tokens"].as_u64().unwrap() > 0);
+    assert_eq!(delta["saved_tokens"], 0);
+}
+
+#[tokio::test]
+async fn degenerate_chunks_never_reach_ollama() {
+    // CE-5a review carry-over. Two independent guards keep a zero-information
+    // chunk away from the (single-permit, seconds-per-call) LLM:
+    //   1. the chunker never emits a blank piece, and
+    //   2. run_job re-checks each chunk with the same degenerate-text
+    //      predicate the fact parser uses.
+    for junk in ["...", "   ", "--", "\u{2026}", "_, _, _"] {
+        assert!(
+            memgardend::extract::parse::is_degenerate_text(junk),
+            "{junk:?} must be recognised as degenerate"
+        );
+    }
+    assert!(!memgardend::extract::parse::is_degenerate_text(
+        "[role: user]\nreal content\n[user:end]"
+    ));
+
+    let padded = format!("{}\n\n   \n\n{}", "a. ".repeat(400), "b. ".repeat(400));
+    for chunk in memgardend::retain::chunk::chunk_text(&padded, 300) {
+        assert!(!chunk.trim().is_empty(), "the chunker must not emit blanks");
+    }
+
+    // And end to end: a junk-only transcript still round-trips cleanly (the
+    // role markers make the transcript itself non-degenerate, exactly as in
+    // legacy) rather than erroring.
+    let (url, _calls) = spawn_stub_ollama(vec![]).await;
+    let harness = with_worker(&url, |cfg| cfg.retain.include_tool_calls = false).await;
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+    let response = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": [{ "role": "user", "content": "..." }], "session_id": "s-junk", "is_initial": true }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(response).await["job_id"].as_str().unwrap().to_string();
+    assert_eq!(await_job(&harness.db, &job_id).await.status, "done");
+}
+
+#[tokio::test]
+async fn the_raised_body_limit_is_scoped_to_the_retain_route() {
+    // axum's 2MB default still guards every other route; only /retain is
+    // allowed a real transcript (review LOW 17).
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let big = "p".repeat(3 * 1024 * 1024);
+    let rejected = harness
+        .app
+        .clone()
+        .oneshot(post("/v1/banks", json!({ "bank_id": "x", "mission": big })))
+        .await
+        .unwrap();
+    assert_eq!(
+        rejected.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "the 2MB default must still apply to /v1/banks"
+    );
+
+    let big = "p".repeat(3 * 1024 * 1024);
+    let accepted = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({
+                "messages": [{ "role": "user", "content": big }],
+                "session_id": "big",
+                "is_initial": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        accepted.status(),
+        StatusCode::ACCEPTED,
+        "a 3MB transcript must get through the retain route"
+    );
+}
+
+#[tokio::test]
+async fn metrics_expose_the_retain_counters() {
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+    let response = harness
+        .app
+        .clone()
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": transcript(4), "session_id": "s-metrics", "is_initial": true }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+    let response = harness.app.oneshot(get("/metrics.json")).await.unwrap();
+    let body = body_json(response).await;
+    assert!(body["retain_requests"].as_u64().unwrap() >= 1);
+    assert!(body["retain_tokens_raw"].as_u64().unwrap() > 0);
+    assert!(body["retain_tokens_capped"].as_u64().unwrap() > 0);
+    assert!(body["retain_chunks_failed"].is_number());
+    assert!(body["retain_cap_savings"].is_number());
+    assert!(body["retain_latency"].is_object());
+}
+
+// ---------------------------------------------------------------------------
+// Live (manual)
+// ---------------------------------------------------------------------------
+
+/// The plan's §PR B3 manual verification, automated: replay a realistic
+/// Claude Code transcript through the real Ollama and print the observed
+/// `saving_ratio` so it can be checked against `docs/measurement.md`'s
+/// -55% / -87% band, plus the ledger row and the facts written.
+///
+/// Run: `cargo test -p memgardend --test retain_api live_retain -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "requires a running Ollama with the configured model"]
+async fn live_retain() {
+    let cfg = Config::defaults().expect("default config");
+    let (harness, rx, state) = build(&cfg.ollama.base_url.clone(), |c| {
+        c.retain.include_tool_calls = true;
+        c.profile.name = "coding".to_string();
+        c.ollama = cfg.ollama.clone();
+    });
+    tokio::spawn(retain::run_worker(state, rx));
+    memgarden_store::banks::create(&harness.db, "live", None, None).unwrap();
+
+    let messages = json!([
+        { "role": "user", "content": "recall latency regressed to 830ms after wiring the reranker. fix it." },
+        { "role": "assistant", "content": [
+            { "type": "text", "text": "The embedding model is competing for VRAM with the resident 13GB Ollama model. Forcing CPU inference for embeddings and the reranker." },
+            { "type": "tool_use", "name": "Edit", "input": {
+                "file_path": "/repo/hindsight_api/engine/local_device.py",
+                "old_string": "device = 'cuda'\n".repeat(120),
+                "new_string": "device = 'cpu'  # VRAM contention with the resident LLM\n".repeat(120),
+            }},
+            { "type": "tool_result", "tool_use_id": "t1", "content": "ok\n".repeat(2000) },
+            { "type": "text", "text": "Recall p50 is now 20-37ms. The per-request gc.collect in the reranker was the other half." },
+        ]},
+    ]);
+
+    let started = std::time::Instant::now();
+    let response = harness
+        .app
+        .clone()
+        .oneshot(post(
+            "/v1/banks/live/retain",
+            json!({
+                "messages": messages,
+                "session_id": "live-session",
+                "cwd": "/repo",
+                "context": "claude-code",
+                "is_initial": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    println!(
+        "live_retain: raw={} capped={} saved={} ratio={:.3}",
+        body["raw_tokens"], body["capped_tokens"], body["saved_tokens"], body["saving_ratio"]
+    );
+
+    let job_id = body["job_id"].as_str().unwrap().to_string();
+    let job = await_job_within(&harness.db, &job_id, Duration::from_secs(600)).await;
+    println!(
+        "live_retain: status={} chunks={}/{} failed={} facts={} wall={:.1}s",
+        job.status,
+        job.chunks_done,
+        job.chunks_total,
+        job.chunks_failed,
+        job.facts_written,
+        started.elapsed().as_secs_f64()
+    );
+    for entry in memgarden_store::metrics_store::list_ledger(&harness.db, 5).unwrap() {
+        println!("live_retain: ledger {} {:?}", entry.kind, entry.detail);
+    }
+    assert_eq!(job.status, "done");
+    assert!(job.facts_written > 0, "live retain wrote no facts");
+}

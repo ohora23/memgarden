@@ -2,9 +2,11 @@ use std::sync::{Arc, RwLock};
 
 use memgarden_core::config::Config;
 use memgarden_store::Db;
+use tokio::sync::mpsc;
 
 use crate::embed::Embedder;
 use crate::ollama::OllamaClient;
+use crate::retain::RetainTask;
 
 /// Shared app state, cheap to clone (all fields are `Arc` or `Copy`).
 #[derive(Clone)]
@@ -23,4 +25,9 @@ pub struct AppState {
     /// reachability lives in `ollama::ollama_status()`, updated by the
     /// background prober.
     pub ollama: Arc<OllamaClient>,
+    /// Bounded queue into the background retain worker
+    /// (`retain::run_worker`). Capacity is `retain.queue_capacity`; the
+    /// endpoint reserves a slot with `try_reserve` and answers 429 when the
+    /// queue is full rather than buffering transcripts in RAM.
+    pub retain_tx: mpsc::Sender<RetainTask>,
 }

@@ -36,3 +36,9 @@ reqwest = { version = "0.13.4", default-features = false, features = [
 ] } # B2. No TLS stack at all — Ollama is loopback-only HTTP
     # (http://127.0.0.1:11434), so there is nothing to negotiate a
     # certificate for. Do not add a tls feature "just in case".
+tiktoken-rs = "0.12.0" # B3 (retain cap accounting), later B4 (recall budget).
+                       # cl100k_base is the counter legacy uses, so ledger and
+                       # budget numbers stay comparable. ~21ms one-time init,
+                       # built once into a OnceLock — never per request.
+sha2 = "0.10" # B3. Document content hashes for exact-match retain dedup
+              # (legacy dedups on SHA-256 only, never cosine).

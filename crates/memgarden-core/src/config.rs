@@ -18,6 +18,9 @@ const ENV_MODEL_DIR: &str = "MEMGARDEN_MODEL_DIR";
 const ENV_EMBED_THREADS: &str = "MEMGARDEN_EMBED_THREADS";
 const ENV_OLLAMA_URL: &str = "MEMGARDEN_OLLAMA_URL";
 const ENV_OLLAMA_MODEL: &str = "MEMGARDEN_OLLAMA_MODEL";
+const ENV_RETAIN_MAX_INITIAL: &str = "MEMGARDEN_RETAIN_MAX_INITIAL_MESSAGES";
+const ENV_RETAIN_TOOL_CALLS: &str = "MEMGARDEN_RETAIN_TOOL_CALLS";
+const ENV_PROFILE: &str = "MEMGARDEN_PROFILE";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -27,7 +30,73 @@ pub struct Config {
     pub metrics_snapshot_interval_secs: u64,
     pub embedding: EmbeddingConfig,
     pub ollama: OllamaConfig,
+    pub retain: RetainConfig,
+    pub profile: ProfileConfig,
 }
+
+/// `[retain]` — transcript ingest (CE-5b, B3). Every cap here lives
+/// server-side in MemGarden even though the hindsight fork applies them in
+/// its Python hook: the `retain_cap_saving` ledger row is a store concern,
+/// and the PRD budgets the Phase C hook at <10ms total, so the hook posts a
+/// raw transcript and does nothing else (plan decision #4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetainConfig {
+    /// Backfill cap. Applies ONLY to a session's first (initial) retain and
+    /// keeps the LAST N messages; `0` disables it. legacy fork:
+    /// `scripts/lib/config.py:40` `retainMaxInitialMessages`,
+    /// `scripts/retain.py:141-147`. This exists because a 102MB legacy
+    /// transcript blew the server's retain wall-clock limit.
+    pub max_initial_messages: usize,
+    /// legacy: `config.py:1095` `retain_chunk_size`.
+    pub chunk_size: usize,
+    /// Per-string-field cap inside a `tool_use` input
+    /// (`scripts/lib/content.py:413`).
+    pub tool_input_field_max: usize,
+    /// Serialized-whole cap for a `tool_use` input; above it only the
+    /// priority keys survive (`scripts/lib/content.py:417`).
+    pub tool_input_total_max: usize,
+    /// `tool_result` content truncation (`scripts/lib/content.py:299-300`).
+    pub tool_result_max: usize,
+    /// Max `file:<path>` tags per retain (`scripts/retain.py:237-241`).
+    pub file_tag_cap: usize,
+    /// Bounded worker queue; a full queue answers 429 rather than growing
+    /// unboundedly in RAM.
+    pub queue_capacity: usize,
+    /// Per-job wall clock (Critic Revision R11) — parity with the live
+    /// hindsight daemon's `RETAIN_WALL_TIMEOUT=7200`. Exceeding it marks the
+    /// job `failed` with the partial progress recorded.
+    pub wall_timeout_secs: u64,
+    /// Whether tool calls are retained at all. legacy default is `false`;
+    /// the `coding` profile flips it to `true` (that is the whole point of
+    /// the two tool-input caps).
+    pub include_tool_calls: bool,
+}
+
+/// `[profile]` — named presets that fill in grouped defaults for a usage
+/// pattern, ported from the fork's `PROFILE_PRESETS`
+/// (`scripts/lib/config.py:74-99`). Precedence matches legacy
+/// (`:206-223`): built-in defaults -> TOML -> env -> **preset fills only the
+/// keys the user did not set explicitly**.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProfileConfig {
+    /// `""` = no preset. Only `"coding"` exists today.
+    pub name: String,
+    /// Default bank mission for banks created without one. Per-bank
+    /// overrides live in `banks.mission`; no new column (plan §PR B3).
+    pub bank_mission: String,
+    /// Default extraction mission. Per-bank override:
+    /// `banks.disposition` JSON `{"retain_mission": ...}`.
+    pub retain_mission: String,
+    /// `low` | `mid` | `high`. Consumed by CE-6 (B4); carried here now
+    /// because it is part of the ported preset.
+    pub recall_budget: String,
+}
+
+/// The `coding` preset, verbatim from `scripts/lib/config.py:80-98`. The two
+/// mission strings must not be reworded — they are the live fork's and AC-1
+/// compares extraction quality against it.
+const CODING_BANK_MISSION: &str = "You are a coding assistant with long-term memory of this project's engineering history: decisions, bug fixes, conventions, and workflows.";
+const CODING_RETAIN_MISSION: &str = "Extract durable engineering knowledge: technical decisions and their rationale, bug root causes and their fixes, architecture and API constraints, commands that worked for building/testing/running, code style and workflow preferences, and file- or module-specific gotchas. Ignore greetings, routine tool output, and transient operational chatter.";
 
 /// `[ollama]` — the local LLM used for fact extraction (CE-5, B2). Loopback
 /// HTTP only (`reqwest` has no TLS feature enabled — see the workspace
@@ -99,6 +168,23 @@ impl Config {
                 // hit concurrently.
                 max_concurrent: 1,
             },
+            retain: RetainConfig {
+                max_initial_messages: 300,
+                chunk_size: 3000,
+                tool_input_field_max: 300,
+                tool_input_total_max: 1500,
+                tool_result_max: 2000,
+                file_tag_cap: 20,
+                queue_capacity: 32,
+                wall_timeout_secs: 7200,
+                include_tool_calls: false,
+            },
+            profile: ProfileConfig {
+                name: String::new(),
+                bank_mission: String::new(),
+                retain_mission: String::new(),
+                recall_budget: "mid".to_string(),
+            },
         })
     }
 
@@ -133,6 +219,9 @@ impl Config {
             ENV_EMBED_THREADS,
             ENV_OLLAMA_URL,
             ENV_OLLAMA_MODEL,
+            ENV_RETAIN_MAX_INITIAL,
+            ENV_RETAIN_TOOL_CALLS,
+            ENV_PROFILE,
         ] {
             if let Ok(v) = std::env::var(key) {
                 env.insert(key.to_string(), v);
@@ -155,6 +244,9 @@ pub fn from_parts(
 ) -> Result<Config> {
     let mut cfg = defaults;
     let home = env.get(ENV_HOME).map(String::as_str);
+    // Keys the user set explicitly (TOML or env). A profile preset must not
+    // override these — legacy `scripts/lib/config.py:219-222`.
+    let mut explicit: Vec<&'static str> = Vec::new();
 
     if let Some(s) = toml_str {
         let parsed: TomlConfig =
@@ -217,6 +309,53 @@ pub fn from_parts(
                 cfg.ollama.max_concurrent = v;
             }
         }
+        if let Some(retain) = parsed.retain {
+            if let Some(v) = retain.max_initial_messages {
+                cfg.retain.max_initial_messages = v;
+            }
+            if let Some(v) = retain.chunk_size {
+                cfg.retain.chunk_size = v;
+            }
+            if let Some(v) = retain.tool_input_field_max {
+                cfg.retain.tool_input_field_max = v;
+            }
+            if let Some(v) = retain.tool_input_total_max {
+                cfg.retain.tool_input_total_max = v;
+            }
+            if let Some(v) = retain.tool_result_max {
+                cfg.retain.tool_result_max = v;
+            }
+            if let Some(v) = retain.file_tag_cap {
+                cfg.retain.file_tag_cap = v;
+            }
+            if let Some(v) = retain.queue_capacity {
+                cfg.retain.queue_capacity = v;
+            }
+            if let Some(v) = retain.wall_timeout_secs {
+                cfg.retain.wall_timeout_secs = v;
+            }
+            if let Some(v) = retain.include_tool_calls {
+                cfg.retain.include_tool_calls = v;
+                explicit.push("include_tool_calls");
+            }
+        }
+        if let Some(profile) = parsed.profile {
+            if let Some(v) = profile.name {
+                cfg.profile.name = v;
+            }
+            if let Some(v) = profile.bank_mission {
+                cfg.profile.bank_mission = v;
+                explicit.push("bank_mission");
+            }
+            if let Some(v) = profile.retain_mission {
+                cfg.profile.retain_mission = v;
+                explicit.push("retain_mission");
+            }
+            if let Some(v) = profile.recall_budget {
+                cfg.profile.recall_budget = v;
+                explicit.push("recall_budget");
+            }
+        }
     }
 
     if let Some(bind) = env.get(ENV_BIND) {
@@ -246,6 +385,68 @@ pub fn from_parts(
     }
     if let Some(model) = env.get(ENV_OLLAMA_MODEL) {
         cfg.ollama.model = model.clone();
+    }
+    if let Some(raw) = env.get(ENV_RETAIN_MAX_INITIAL) {
+        cfg.retain.max_initial_messages = raw
+            .parse()
+            .map_err(|_| Error::Config(format!("invalid {ENV_RETAIN_MAX_INITIAL}: {raw}")))?;
+    }
+    if let Some(raw) = env.get(ENV_RETAIN_TOOL_CALLS) {
+        // Same truthy set as the fork's `_cast_env` (`lib/config.py:136`).
+        cfg.retain.include_tool_calls = matches!(raw.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
+        explicit.push("include_tool_calls");
+    }
+    if let Some(name) = env.get(ENV_PROFILE) {
+        cfg.profile.name = name.clone();
+    }
+
+    // Profile preset, applied LAST and only to keys nobody set explicitly.
+    if !cfg.profile.name.is_empty() {
+        match cfg.profile.name.as_str() {
+            "coding" => {
+                if !explicit.contains(&"include_tool_calls") {
+                    cfg.retain.include_tool_calls = true;
+                }
+                if !explicit.contains(&"bank_mission") {
+                    cfg.profile.bank_mission = CODING_BANK_MISSION.to_string();
+                }
+                if !explicit.contains(&"retain_mission") {
+                    cfg.profile.retain_mission = CODING_RETAIN_MISSION.to_string();
+                }
+                if !explicit.contains(&"recall_budget") {
+                    cfg.profile.recall_budget = "low".to_string();
+                }
+            }
+            // Legacy only warns on stderr here (`lib/config.py:214-217`).
+            // MemGarden fails at startup instead, matching the [ollama]
+            // validation below: a typo'd profile silently running with the
+            // wrong missions is worse than a refused boot.
+            other => {
+                return Err(Error::Config(format!(
+                    "unknown profile.name '{other}' — valid: coding"
+                )));
+            }
+        }
+    }
+
+    if !matches!(cfg.profile.recall_budget.as_str(), "low" | "mid" | "high") {
+        return Err(Error::Config(format!(
+            "profile.recall_budget must be low|mid|high: {}",
+            cfg.profile.recall_budget
+        )));
+    }
+    if cfg.retain.chunk_size == 0 {
+        return Err(Error::Config("retain.chunk_size must be > 0".to_string()));
+    }
+    if cfg.retain.queue_capacity == 0 {
+        return Err(Error::Config(
+            "retain.queue_capacity must be > 0".to_string(),
+        ));
+    }
+    if cfg.retain.wall_timeout_secs == 0 {
+        return Err(Error::Config(
+            "retain.wall_timeout_secs must be > 0".to_string(),
+        ));
     }
 
     // Fail at startup, not per-request: a typo'd base_url would otherwise
@@ -292,6 +493,29 @@ struct TomlConfig {
     metrics: Option<TomlMetrics>,
     embedding: Option<TomlEmbedding>,
     ollama: Option<TomlOllama>,
+    retain: Option<TomlRetain>,
+    profile: Option<TomlProfile>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TomlRetain {
+    max_initial_messages: Option<usize>,
+    chunk_size: Option<usize>,
+    tool_input_field_max: Option<usize>,
+    tool_input_total_max: Option<usize>,
+    tool_result_max: Option<usize>,
+    file_tag_cap: Option<usize>,
+    queue_capacity: Option<usize>,
+    wall_timeout_secs: Option<u64>,
+    include_tool_calls: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TomlProfile {
+    name: Option<String>,
+    bank_mission: Option<String>,
+    retain_mission: Option<String>,
+    recall_budget: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -363,6 +587,23 @@ mod tests {
                 max_retries: 3,
                 keep_alive: "10m".to_string(),
                 max_concurrent: 1,
+            },
+            retain: RetainConfig {
+                max_initial_messages: 300,
+                chunk_size: 3000,
+                tool_input_field_max: 300,
+                tool_input_total_max: 1500,
+                tool_result_max: 2000,
+                file_tag_cap: 20,
+                queue_capacity: 32,
+                wall_timeout_secs: 7200,
+                include_tool_calls: false,
+            },
+            profile: ProfileConfig {
+                name: String::new(),
+                bank_mission: String::new(),
+                retain_mission: String::new(),
+                recall_budget: "mid".to_string(),
             },
         }
     }
@@ -507,5 +748,80 @@ mod tests {
         assert_eq!(cfg.ollama.model, "other-model"); // env wins over toml
         // Env doesn't touch max_retries; TOML value survives.
         assert_eq!(cfg.ollama.max_retries, 5);
+    }
+
+    #[test]
+    fn retain_defaults_match_the_fork() {
+        let cfg = from_parts(defaults(), None, &HashMap::new()).unwrap();
+        assert_eq!(cfg.retain.max_initial_messages, 300);
+        assert_eq!(cfg.retain.chunk_size, 3000);
+        assert_eq!(cfg.retain.tool_input_field_max, 300);
+        assert_eq!(cfg.retain.tool_input_total_max, 1500);
+        assert_eq!(cfg.retain.tool_result_max, 2000);
+        assert_eq!(cfg.retain.file_tag_cap, 20);
+        assert_eq!(cfg.retain.wall_timeout_secs, 7200);
+        assert!(!cfg.retain.include_tool_calls, "legacy default is false");
+    }
+
+    #[test]
+    fn retain_precedence_toml_then_env() {
+        let toml_str = r#"
+            [retain]
+            max_initial_messages = 50
+            chunk_size = 1000
+        "#;
+        let cfg = from_parts(defaults(), Some(toml_str), &HashMap::new()).unwrap();
+        assert_eq!(cfg.retain.max_initial_messages, 50);
+        assert_eq!(cfg.retain.chunk_size, 1000);
+
+        let mut env = HashMap::new();
+        env.insert(ENV_RETAIN_MAX_INITIAL.to_string(), "0".to_string());
+        let cfg = from_parts(defaults(), Some(toml_str), &env).unwrap();
+        assert_eq!(cfg.retain.max_initial_messages, 0, "env wins; 0 = disabled");
+        assert_eq!(cfg.retain.chunk_size, 1000);
+    }
+
+    #[test]
+    fn coding_profile_fills_only_unset_keys() {
+        let mut env = HashMap::new();
+        env.insert(ENV_PROFILE.to_string(), "coding".to_string());
+        let cfg = from_parts(defaults(), None, &env).unwrap();
+        assert!(cfg.retain.include_tool_calls);
+        assert_eq!(cfg.profile.recall_budget, "low");
+        assert!(cfg.profile.retain_mission.starts_with("Extract durable"));
+        assert!(cfg.profile.bank_mission.starts_with("You are a coding"));
+
+        // Explicit TOML values survive the preset (legacy config.py:219-222).
+        let toml_str = r#"
+            [retain]
+            include_tool_calls = false
+            [profile]
+            name = "coding"
+            recall_budget = "high"
+        "#;
+        let cfg = from_parts(defaults(), Some(toml_str), &HashMap::new()).unwrap();
+        assert!(!cfg.retain.include_tool_calls, "explicit TOML beats preset");
+        assert_eq!(cfg.profile.recall_budget, "high");
+        // Not set explicitly -> preset still fills it.
+        assert!(cfg.profile.retain_mission.starts_with("Extract durable"));
+    }
+
+    #[test]
+    fn unknown_profile_and_bad_retain_values_are_rejected() {
+        let mut env = HashMap::new();
+        env.insert(ENV_PROFILE.to_string(), "nope".to_string());
+        assert!(from_parts(defaults(), None, &env).is_err());
+
+        let mut zero_chunk = defaults();
+        zero_chunk.retain.chunk_size = 0;
+        assert!(from_parts(zero_chunk, None, &HashMap::new()).is_err());
+
+        let mut zero_queue = defaults();
+        zero_queue.retain.queue_capacity = 0;
+        assert!(from_parts(zero_queue, None, &HashMap::new()).is_err());
+
+        let mut bad_budget = defaults();
+        bad_budget.profile.recall_budget = "enormous".to_string();
+        assert!(from_parts(bad_budget, None, &HashMap::new()).is_err());
     }
 }

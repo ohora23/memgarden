@@ -10,12 +10,16 @@ use tokio::sync::Semaphore;
 
 use memgarden_core::config::OllamaConfig;
 
-/// Bounded wait for an interactive caller's turn at the (size-1, by default)
+/// Bounded wait for an INTERACTIVE caller's turn at the (size-1, by default)
 /// concurrency semaphore. Critic Revision R11: user-facing paths
 /// (`/dry-run-extract` here; `/reflect` later) must fail fast with a 503
-/// rather than queue indefinitely behind a slow LLM call. B3's background
-/// retain worker will need a different acquire path that releases the
-/// permit between chunks instead of timing out — not needed until B3.
+/// rather than queue indefinitely behind a slow LLM call.
+///
+/// Background callers use `chat_json_background` instead, which waits
+/// untimed — a retain job that gave up after 15s because an interactive
+/// request happened to be in flight would drop a whole chunk of a user's
+/// transcript for no reason. The job's own wall clock
+/// (`retain.wall_timeout_secs`) is what bounds that wait.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Retry backoff: starts at 1s, doubles each attempt, capped at 10s
@@ -80,10 +84,39 @@ impl OllamaClient {
         user: &str,
         schema: &Value,
     ) -> Result<T, OllamaError> {
-        let permit = tokio::time::timeout(ACQUIRE_TIMEOUT, self.sem.acquire())
+        self.chat_json_inner(system, user, schema, Some(ACQUIRE_TIMEOUT))
             .await
-            .map_err(|_| OllamaError::Busy)?
-            .map_err(|_| OllamaError::Busy)?; // closed semaphore: unreachable today, but no panics on a request path
+    }
+
+    /// Same as `chat_json` but waits **untimed** for the concurrency permit.
+    /// For the retain worker only: it is not answering an HTTP request, so
+    /// "Ollama is busy" is a reason to queue, not to fail. Callers must
+    /// impose their own outer bound — `retain::run_job`'s wall clock does.
+    pub async fn chat_json_background<T: DeserializeOwned>(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+    ) -> Result<T, OllamaError> {
+        self.chat_json_inner(system, user, schema, None).await
+    }
+
+    async fn chat_json_inner<T: DeserializeOwned>(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+        acquire_timeout: Option<Duration>,
+    ) -> Result<T, OllamaError> {
+        // A closed semaphore is unreachable today, but a request path must
+        // never panic.
+        let permit = match acquire_timeout {
+            Some(limit) => tokio::time::timeout(limit, self.sem.acquire())
+                .await
+                .map_err(|_| OllamaError::Busy)?
+                .map_err(|_| OllamaError::Busy)?,
+            None => self.sem.acquire().await.map_err(|_| OllamaError::Busy)?,
+        };
 
         // Security review M2: without a total deadline, misconfigured
         // request_timeout × max_retries lets one caller hold the permit for
@@ -323,6 +356,75 @@ mod tests {
             .chat_json("system", "user", &json!({"type": "object"}))
             .await;
         assert!(result.is_err(), "unreachable ollama must be a hard error, never a silent empty result");
+    }
+
+    /// Review HIGH 2, the actual contract: while one caller holds the single
+    /// permit for longer than `ACQUIRE_TIMEOUT`, an interactive `chat_json`
+    /// must give up with `Busy` but a background `chat_json_background` must
+    /// wait it out and succeed.
+    ///
+    /// Costs ~16s of wall clock by construction — the threshold under test is
+    /// 15s, so there is no way to prove it faster. It is the only slow test
+    /// in the suite and it runs concurrently with the rest.
+    #[tokio::test]
+    async fn background_acquire_waits_out_a_holder_that_defeats_the_interactive_timeout() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        // Stub that stalls only its FIRST request; later calls answer at once,
+        // so the whole test costs one hold, not two.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hold = ACQUIRE_TIMEOUT + Duration::from_secs(1);
+        let stub_calls = calls.clone();
+        let app = axum::Router::new().route(
+            "/api/chat",
+            axum::routing::post(move || {
+                let calls = stub_calls.clone();
+                async move {
+                    if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        tokio::time::sleep(hold).await;
+                    }
+                    axum::Json(json!({ "message": { "content": "{\"ok\":true}" } }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut cfg = test_cfg();
+        cfg.base_url = format!("http://{addr}");
+        cfg.request_timeout_secs = 120;
+        cfg.max_retries = 0;
+        let client = Arc::new(OllamaClient::new(cfg).unwrap());
+
+        let holder = {
+            let client = client.clone();
+            tokio::spawn(async move {
+                client
+                    .chat_json_background::<Value>("s", "u", &json!({}))
+                    .await
+            })
+        };
+        // Let the holder actually take the permit.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let interactive = client.chat_json::<Value>("s", "u", &json!({})).await;
+        assert!(
+            matches!(interactive, Err(OllamaError::Busy)),
+            "an interactive caller must give up at ACQUIRE_TIMEOUT, got {interactive:?}"
+        );
+
+        let background = client
+            .chat_json_background::<Value>("s", "u", &json!({}))
+            .await;
+        assert!(
+            background.is_ok(),
+            "a background caller must wait the holder out, got {background:?}"
+        );
+        assert!(holder.await.unwrap().is_ok());
     }
 
     #[tokio::test]

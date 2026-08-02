@@ -131,6 +131,13 @@ fn parse_one(fact: &serde_json::Map<String, Value>, i: usize) -> Option<ParsedFa
     if is_degenerate_text(&text) {
         return None;
     }
+    // Security review (CE-5a L2, carried): the LLM's output is steered by
+    // untrusted transcript text. A "fact" longer than this is not a fact —
+    // it is the model echoing its input back — and storing it would pollute
+    // both FTS and the embedding space. The prompt asks for 1-2 sentences.
+    if text.chars().count() > MAX_FACT_TEXT_CHARS {
+        return None;
+    }
 
     // legacy: fact_extraction.py:1478-1487 — "assistant" -> stored
     // "experience" is a silent rename; everything else is "world", with a
@@ -229,9 +236,18 @@ fn get_str(fact: &serde_json::Map<String, Value>, field: &str) -> Option<String>
         .map(str::to_string)
 }
 
+/// Upper bound on one fact's combined text, and on the entity list a fact
+/// may carry. Both are LLM output steered by untrusted input; neither has a
+/// natural bound, and both are stored verbatim.
+const MAX_FACT_TEXT_CHARS: usize = 2000;
+const MAX_ENTITIES: usize = 32;
+const MAX_ENTITY_CHARS: usize = 256;
+
 /// legacy: `_coerce_entity_strings`, `fact_extraction.py:118-144`. Accepts
 /// plain strings or the older `{"text": "..."}` object form; anything else
-/// (including a non-array `entities` field) is dropped.
+/// (including a non-array `entities` field) is dropped. Additionally bounded
+/// per the security review: at most `MAX_ENTITIES`, none longer than
+/// `MAX_ENTITY_CHARS`.
 fn coerce_entity_strings(entities: Option<&Value>) -> Vec<String> {
     let Some(Value::Array(items)) = entities else {
         return Vec::new();
@@ -243,11 +259,17 @@ fn coerce_entity_strings(entities: Option<&Value>) -> Vec<String> {
             Value::Object(o) => o.get("text").and_then(Value::as_str).map(str::to_string),
             _ => None,
         })
+        .filter(|e| e.chars().count() <= MAX_ENTITY_CHARS)
+        .take(MAX_ENTITIES)
         .collect()
 }
 
 /// legacy: `ProcessedFact._is_degenerate_text`, `types.py:189-223`.
-fn is_degenerate_text(text: &str) -> bool {
+///
+/// Also reused by B3's retain worker as the "is this chunk worth an LLM
+/// call at all" gate — a whitespace/punctuation-only chunk must never reach
+/// Ollama (CE-5a review carry-over).
+pub fn is_degenerate_text(text: &str) -> bool {
     let stripped = text.trim();
     if stripped.is_empty() {
         return true;
@@ -472,6 +494,27 @@ mod tests {
         let raw = wrapped(json!([{"what": "fact", "fact_kind": "bogus"}]));
         let facts = parse_facts(raw);
         assert_eq!(facts[0].fact_kind, "conversation");
+    }
+
+    #[test]
+    fn oversized_fact_text_is_rejected() {
+        let raw = wrapped(json!([
+            { "what": "x".repeat(2001) },
+            { "what": "y".repeat(2000) },
+        ]));
+        let facts = parse_facts(raw);
+        assert_eq!(facts.len(), 1, "only the 2000-char fact survives");
+        assert_eq!(facts[0].text.chars().count(), 2000);
+    }
+
+    #[test]
+    fn entities_are_bounded_in_count_and_length() {
+        let mut entities: Vec<Value> = (0..50).map(|i| json!(format!("e{i}"))).collect();
+        entities.push(json!("z".repeat(257)));
+        let raw = wrapped(json!([{ "what": "fact", "entities": entities }]));
+        let facts = parse_facts(raw);
+        assert_eq!(facts[0].entities.len(), 32);
+        assert!(facts[0].entities.iter().all(|e| e.chars().count() <= 256));
     }
 
     #[test]

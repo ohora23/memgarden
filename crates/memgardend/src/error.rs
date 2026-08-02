@@ -40,6 +40,17 @@ impl ApiError {
         }
     }
 
+    /// The bounded retain queue is full — 429, not 503: the daemon is
+    /// healthy, the caller is simply ahead of the background worker and
+    /// should back off. A full queue must never mean unbounded RAM growth.
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        ApiError {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            code: "queue_full",
+            message: message.into(),
+        }
+    }
+
     /// A dependency (e.g. the embedding model) isn't ready yet — 503, not
     /// 500: retrying shortly is the correct client behavior (decision #1).
     pub fn unavailable(message: impl Into<String>) -> Self {

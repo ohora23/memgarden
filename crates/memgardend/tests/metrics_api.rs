@@ -10,37 +10,27 @@ use tower::ServiceExt;
 
 fn test_app() -> (axum::Router, Arc<Db>) {
     let db = Arc::new(Db::open_memory().unwrap());
-    let cfg = memgarden_core::config::Config {
-        bind: "127.0.0.1:0".to_string(),
-        db_path: std::path::PathBuf::from(":memory:"),
-        log_level: "info".to_string(),
-        metrics_snapshot_interval_secs: 60,
-        embedding: memgarden_core::config::EmbeddingConfig {
-            enabled: false,
-            model_dir: std::path::PathBuf::from("/tmp/memgarden-test-models"),
-            intra_threads: 4,
-            batch_size: 8,
-            backlog_poll_secs: 5,
-            debug_endpoint: false,
-        },
-        ollama: memgarden_core::config::OllamaConfig {
-            base_url: "http://127.0.0.1:1".to_string(),
-            model: "test-model".to_string(),
-            temperature: 0.1,
-            num_predict: 64,
-            request_timeout_secs: 1,
-            max_retries: 0,
-            keep_alive: "10m".to_string(),
-            max_concurrent: 1,
-        },
-    };
+    let mut cfg = memgarden_core::config::Config::defaults().unwrap();
+    cfg.bind = "127.0.0.1:0".to_string();
+    cfg.db_path = std::path::PathBuf::from(":memory:");
+    cfg.embedding.enabled = false;
+    // Unroutable loopback port: any real Ollama call fails fast.
+    cfg.ollama.base_url = "http://127.0.0.1:1".to_string();
+    cfg.ollama.request_timeout_secs = 1;
+    cfg.ollama.max_retries = 0;
+
     let ollama = Arc::new(memgardend::ollama::OllamaClient::new(cfg.ollama.clone()).unwrap());
+    let (retain_tx, retain_rx) = tokio::sync::mpsc::channel(cfg.retain.queue_capacity);
+    // No worker is spawned in router-only tests; keeping the receiver alive
+    // is what makes the endpoint's `try_reserve` succeed.
+    std::mem::forget(retain_rx);
     let state = AppState {
         db: db.clone(),
         cfg: Arc::new(cfg),
         started_at_ms: memgarden_core::now_ms(),
         embedder: Arc::new(std::sync::RwLock::new(None)),
         ollama,
+        retain_tx,
     };
     (routes::router(state), db)
 }
