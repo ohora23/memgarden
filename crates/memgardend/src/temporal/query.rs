@@ -375,6 +375,18 @@ fn fallback_date(original: &str) -> Option<Date> {
 ///
 /// Scanning, not regex: no regex crate is in the tree and this is two numeric
 /// reads around a known character.
+///
+/// `// ponytail: the fallback path ignores the before/since markers that the
+/// period path honours. marker_before is consulted only inside the
+/// find_period branch, so 8월 2일 이전에 있었던 일 yields a single-day Aug 2
+/// window where 지난주 이전 would yield Unconstrainable. This is the one
+/// declined shape that fails UNSAFE — a dated node outside a wrong window
+/// takes temporal_proximity 0.0 (0.9x in combined) while a dateless node
+/// keeps NEUTRAL (1.0x), so a wrong window actively penalises correctly-dated
+/// candidates. Pre-existing: ISO dates behave identically on master. This
+/// change makes it reachable through the natural Korean form, which is why it
+/// is named here rather than left implicit. Upgrade path: hoist the
+/// marker_before check above the fallback so both paths share it.`
 fn korean_absolute_date(original: &str, today: Date) -> Option<Date> {
     original.match_indices('월').find_map(|(at, m)| {
         let (month, head) = trailing_number(&original[..at])?;
@@ -417,8 +429,21 @@ fn most_recent_occurrence(today: Date, month: i8, day: i8) -> Option<Date> {
 }
 
 /// `YYYY년` immediately before the month, if present.
+///
+/// **Exactly four digits.** `trailing_number` caps at four so a port number
+/// cannot be read as a year; this is the matching floor. Without it
+/// `99년 3월 15일` resolves to a window on **0099-03-15** — in Korean `99년`
+/// means 1999 and nobody means 99 AD. Falling through to
+/// `most_recent_occurrence` instead makes it imprecise (2026-03-15) rather
+/// than absurd, and imprecise is the safe failure here: a two-digit year is
+/// guesswork either way, but a year-0099 window is a confidently wrong one.
 fn year_prefix(head: &str) -> Option<i16> {
     let (year, _) = trailing_number(head.trim_end().strip_suffix('년')?)?;
+    // `1000..=9999` *is* the four-digit test, given `trailing_number` already
+    // capped the run at four. Stated as a range rather than a digit count
+    // because the digits are gone by here and re-deriving them from byte
+    // offsets across a 3-byte `년` is how you get an off-by-two.
+    (1000..=9999).contains(&year).then_some(())?;
     i16::try_from(year).ok()
 }
 
@@ -794,6 +819,34 @@ mod tests {
         ] {
             assert_eq!(extract_constraint(q, NOW), None, "{q}");
         }
+    }
+
+    /// A two-digit year is guesswork; a year-0099 window is a confidently
+    /// wrong one. `year_prefix` requires exactly four digits, so these fall
+    /// through to the bare-form inference instead.
+    #[test]
+    fn a_two_digit_year_is_inferred_not_read_as_year_ninety_nine() {
+        assert_eq!(days("99년 3월 15일"), day("2026-03-15"));
+        assert_eq!(days("24년 3월 15일"), day("2026-03-15"));
+        assert_eq!(days("0년 3월 15일"), day("2026-03-15"));
+        // Four digits still means what it says.
+        assert_eq!(days("2024년 3월 15일"), day("2024-03-15"));
+    }
+
+    /// The one declined shape that fails **unsafe**, pinned as it currently
+    /// behaves so the ponytail comment on `korean_absolute_date` cannot drift
+    /// away from the code. The period path returns `Unconstrainable` here;
+    /// the fallback path does not consult the markers at all.
+    #[test]
+    fn before_markers_do_not_reach_the_fallback_path() {
+        // The period path honours `이전`...
+        assert_eq!(
+            extract_constraint("지난주 이전 결정", NOW),
+            Some(Constraint::Unconstrainable)
+        );
+        // ...the fallback path does not, for a Korean date or an ISO one.
+        assert_eq!(days("8월 2일 이전에 있었던 일"), day("2026-08-02"));
+        assert_eq!(days("2026-07-15 이전에 있었던 일"), day("2026-07-15"));
     }
 
     /// Out of scope, deliberately, and pinned so a future reader sees it was a

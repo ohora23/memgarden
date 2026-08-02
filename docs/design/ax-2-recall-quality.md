@@ -26,7 +26,7 @@ Origin: plan `.omc/plans/phase-b-impl.md`, "AX-2 상세 — 회수 품질 하네
 | `gold/corpus.jsonl` | The snapshot itself — 2718 facts, committed. |
 | `gold/corpus.sha256` | `sha256sum -c`-compatible checksum. |
 | `gold/queries.jsonl` | 20 queries, 316 graded judgments, one rationale per label. |
-| `gold/results.jsonl` | Append-only results ledger; line 1 is the baseline. |
+| `gold/results.jsonl` | Append-only results ledger. **Line 5 is the current baseline** (re-baselined by `fix/ce-8-korean-absolute-dates`); line 1 was, and is kept. |
 | `gold/results.pool.json` | The top-20 the last run produced, with text — the labelling pool and its audit trail. Rewritten each run, unlike the ledger. |
 | `crates/memgardend/src/bin/recall_bench.rs` | `import` + `bench`. |
 
@@ -323,8 +323,9 @@ Consequences, both binding:
    Recorded here rather than silently folded into the aggregate.
 
 The four-stratum design still did its job: the stratification is what made this
-visible at all. An aggregate-only harness would have reported 0.287 overall and
-hidden the fact that one of its four axes is unmeasurable.
+visible at all. An aggregate-only harness would have reported **0.323** overall
+and hidden the fact that one of its four axes is unmeasurable. (It read 0.287
+against the pre-re-baseline 14-query figure.)
 
 ### Two temporal findings worth acting on — one fixed, one not a bug
 

@@ -8,6 +8,12 @@ Each entry names what is missing, why, and what would have to be true to close
 it. "No caller" is a real reason on this system: the four Claude Code hooks
 call `recall` and `retain` and nothing else.
 
+**Rows with a ~~struck~~ title are CLOSED and retained for audit — they are not
+open gaps.** The Phase F cutover gate reads the unstruck rows. A closed row
+stays because the reasoning that closed it (often a correction to this file's
+own earlier claim) is the part worth keeping; deleting it would erase the
+correction and invite the gap being "rediscovered" and re-opened wrongly.
+
 | Gap | Legacy | Why not ported | Re-entry criterion |
 |---|---|---|---|
 | **Reflect agentic tool loop** — 10 iterations, 5 tool schemas, forced tool sequence, `expand`, delta ops, directives | `engine/reflect/agent.py` (1,555 lines) + `reflect/prompts.py` (822) | No caller; qwen3-14b over Ollama has no reliable multi-turn tool-calling contract (legacy's own loop carries synthetic tool-error recovery paths to stay on the rails); it cannot fit one honest PR | A client that needs multi-hop retrieval **and** a model whose tool calling holds for 10 turns without recovery scaffolding |

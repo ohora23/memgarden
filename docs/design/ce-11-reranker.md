@@ -373,7 +373,14 @@ is larger than this note first recorded.
 **Latency settles it, and latency is unconditional.** `top_k = 20` doubles a
 cost that already triples p50 against a 35 ms budget and already drags the
 background ingest loop below 90 % of offered load (below). No stratum selection
-is needed to reach that conclusion.
+is needed to reach that conclusion. The re-baseline does not touch latency, so
+this holds unchanged.
+
+**But the choice survives partly because the reranker is off and `top_k` is a
+knob.** If the reranker ever becomes the default, **this choice needs
+re-litigating**: the ranking concession to `top_k = 20` has grown from +0.004
+to +0.065 aggregate nDCG@10, and a default-on reranker is a configuration
+where that concession is paid on every prompt rather than by whoever opts in.
 
 The ranking tie-break, given latency has already decided: MRR is the metric a
 top-of-block injection lives on. Recalled memories are prepended to a prompt in
@@ -494,6 +501,14 @@ legacy's side with sentence-transformers on CPU and the raw logits
   records). The deltas are computed against the same labels on both arms, so
   a labelling error largely cancels — but the absolute figures inherit AX-2's
   caveat and should not be quoted without it.
+
+  **That cancellation argument does not extend to q17 post-re-baseline.** It
+  assumes symmetric error against a shared label set; q17's pool *shifted*
+  when the temporal arm started firing, and 15 of its 20 pooled documents have
+  never been graded (5 inside the scored top 10). That is labelling absence in
+  a moved pool, not symmetric error, and its direction is unknowable until the
+  pool is graded. The temporal stratum's numbers here carry that on top of
+  being two queries wide.
 * **Two strata are one or two queries wide, and the temporal one is half
   valid.** q17 now exercises the temporal arm (the Korean-date gap is closed);
   q15 still does not, because its `지난주` window covers 2697/2718 facts — a

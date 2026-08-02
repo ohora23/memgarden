@@ -146,27 +146,60 @@ to nothing so the omission is visible:
   agent-transcript text this system stores. Build it if a bank ever
   demonstrates the form in a query, with a decision on the ordering recorded.
 
-Legacy resolves neither correctly either, so neither is a parity gap.
+Legacy resolves neither correctly either, so neither is a parity gap. Both fail
+**safe**: no constraint, `scores.temporal` stays `NEUTRAL`.
+
+**The one declined shape that fails *unsafe*, named because omitting it would
+invert this section's usefulness:**
+
+* **`이전` / `까지` on an absolute date** (`8월 2일 이전에 있었던 일`). The
+  fallback path never consults the before/since markers — `marker_before` is
+  called only inside the `find_period` branch — so this yields a single-day
+  **Aug 2** window where the period form (`지난주 이전`) correctly yields
+  `Unconstrainable`.
+
+  The cost is not hypothetical. A dated node outside the window takes
+  `temporal_proximity = 0.0` → **0.9×** in `combined`, while a dateless node
+  keeps `NEUTRAL` → 1.0×. A wrong window therefore *penalises correctly-dated
+  candidates by 10% relative to undated ones* and contributes nothing from the
+  arm — precisely the "a confidently wrong window is worse than none" failure
+  this whole function exists to prevent.
+
+  **Pre-existing and not a regression**: ISO dates behave identically on
+  `master` (`2026-07-15 이전에` has always produced a single-day window). What
+  this PR changes is that the natural Korean phrasing now reaches it, and
+  `이전`/`까지` on an absolute date is common. Declared rather than fixed here
+  to keep the change to one behaviour, pinned by
+  `before_markers_do_not_reach_the_fallback_path`, and marked with a
+  `ponytail:` comment on `korean_absolute_date` naming the upgrade path: hoist
+  the `marker_before` check above the fallback so both paths share it.
 
 Still absent for the same reason as before: English month names (`July 2026`),
-full-width digits, and NFKC normalization generally.
+full-width digits, and NFKC normalization generally. Two-digit years
+(`99년`) are deliberately *not* read as years — see `year_prefix`.
 
 ## Verification
 
 `cargo fmt --all -- --check` clean. `cargo clippy --workspace --all-targets
--- -D warnings` clean. `cargo test --workspace --no-fail-fast`: **429 passed,
-0 failed, 15 ignored** — up from 423 on `master`, which is exactly the six
+-- -D warnings` clean. `cargo test --workspace --no-fail-fast`: **431 passed,
+0 failed, 15 ignored** — up from 423 on `master`, which is exactly the eight
 tests below.
 
-Six new tests, all in `temporal::query::tests`:
+Eight new tests, all in `temporal::query::tests`:
 `korean_absolute_dates_are_single_day_windows` (both forms, whitespace
 tolerance either side of `월`, the full-millisecond window shape, and q17 at
 AX-2's `now`); `a_bare_month_day_resolves_to_the_most_recent_past_occurrence`
 (both sides of the year boundary, the inclusive-today boundary, and the leap
 day); `an_impossible_date_is_no_constraint_rather_than_a_clamped_one`;
+`a_two_digit_year_is_inferred_not_read_as_year_ninety_nine`;
+`before_markers_do_not_reach_the_fallback_path`;
 `bare_month_and_numeric_slash_forms_are_out_of_scope`;
 `relative_expressions_still_beat_an_absolute_date_in_the_same_query`;
 `we_do_not_take_the_day_or_the_year_from_the_reference_date`.
+
+The re-baselined figures below were re-verified after the `gold/queries.jsonl`
+note correction: the harness reproduces every number in this note
+digit-for-digit, including q17 and the 0.323 fourteen-query aggregate.
 
 ## The AX-2 re-baseline
 
@@ -208,13 +241,46 @@ places, which is the same isolation claim from the other direction.
 | conclusion | 1 | excluded — structurally unmeasurable (AX-2) | | | | | |
 
 **Temporal improved, and by a lot.** q17 alone: recall@10 0.250 → **1.000**
-(all four relevant nodes now inside the measurement window), MRR 0.100 →
-**1.000**, nDCG@10 0.149 → **0.628**.
+(all four *currently labelled* relevant nodes now inside the measurement
+window), MRR 0.100 → **1.000**, nDCG@10 0.149 → **0.628**.
 
-This was not the guaranteed outcome and the PR was written to report the other
-one honestly: a correct constraint *narrows* the candidate set, and narrowing
-can legitimately lower a score when the labels sit outside the window. Here the
-labels sit inside it, so the narrowing is pure gain.
+The mechanism: `Some(window)` **adds** a third retrieval arm, so the merged
+candidate set strictly grows — the temporal arm injects four relevant nodes
+into RRF that the lexical and semantic arms did not reach. It is candidate
+injection, not filtering; nothing is narrowed away.
+
+### q17's pool is now three-quarters ungraded, and both its headline numbers inherit that
+
+**This softness is specific to the one query this PR moves, and it is new.**
+The temporal arm firing turned q17's labelling pool over almost completely:
+
+| | before | after |
+|---|---|---|
+| top-20 entries carried over | — | 3 of 20 (**17 new**) |
+| top-20 entries with a grade | **20 of 20** | **5 of 20** |
+| scored top-10 entries with a grade | 10 of 10 | 5 of 10 |
+
+Two consequences, neither of which the generic
+`provisional-pending-user-review` flag conveys:
+
+1. **nDCG@10 0.628 is a lower bound, not a point estimate.** Five ungraded
+   documents sit inside the scored top 10; any of them turning out relevant
+   raises the figure.
+2. **`recall@10 = 1.000` is an artifact of `|R|` frozen at 4** by the *pre-fix*
+   pool. Grade one of the five new documents as relevant and `|R|` becomes 5,
+   and recall@10 falls below 1.000 **with no code change at all.** So
+   "0.250 → 1.000" is not the clean sweep it reads as, and should not be
+   quoted as one.
+
+`ce-11-reranker.md`'s "a labelling error largely cancels between arms" **does
+not cover this**: that argument is about symmetric error against a shared label
+set, and this is labelling *absence* in a pool that shifted under one arm. The
+direction of the resulting bias is not knowable without grading it.
+
+The stratum-level conclusion survives — a stratum that scored 0.0745 with the
+arm dead does not reach 0.3142 by mislabelling — but the per-query figures are
+provisional in a stronger sense than the rest of the table, and grading this
+pool is the top follow-up below.
 
 ### The identifier guardrail
 
@@ -224,7 +290,11 @@ lexical arm, and the measurement says so rather than assuming it.
 ### q15 is not a bug, and should not be "fixed"
 
 `지난주` at the pinned `now` resolves to 2026-07-27..08-02, which contains 2697
-of the corpus's 2718 facts. It still scores 0.000 on everything.
+of the corpus's 2718 facts. **On the shipped configuration (reranker off) it
+still scores 0.000 on everything**, and it does at `top_k = 20` too — but not
+at `top_k = 10`, where it is 0.1356 nDCG@10 / 0.1111 MRR. That non-zero value
+is load-bearing in `ce-11-reranker.md`'s `0.1220` temporal-stratum arithmetic,
+so the blanket phrasing would misread that table.
 
 **That is a property of a four-day corpus, not a defect in the window logic.**
 The window is correct; there is simply nothing outside it to exclude. The fix
@@ -259,9 +329,34 @@ carries the updated tables and the corrected caveat.
 
 ## Follow-ups
 
+* **Grade q17's new pool — highest priority, and a precondition for quoting
+  its per-query numbers.** 15 of its 20 pooled documents have never been
+  graded, 5 of them inside the scored top 10. Until they are, nDCG@10 0.628 is
+  a floor and `recall@10 = 1.000` is an artifact of a stale `|R|`. See the
+  re-baseline section.
+* **`temporal_proximity` scores an exact-day hit at 0.0 — a latent defect,
+  recorded not fixed.** The kernel is triangular around the window
+  **midpoint**, so for a single-day window the midpoint is noon and a fact
+  stamped `00:00` on exactly the requested day scores **0.0** — identical to an
+  out-of-window fact, and *below* the 0.5 a dateless fact receives. Memory
+  facts are overwhelmingly date-only, so this is the common case, and this PR
+  makes day-precise windows common.
+
+  **q17's win therefore comes entirely from the temporal arm's candidate
+  injection into RRF** (`recall/mod.rs:248-255`), not from the proximity score
+  — which is worth knowing before anyone attributes the gain to the boost.
+
+  **It is not a port infidelity.** Legacy computes `total_days = (end -
+  start).total_seconds() / 86400`, a float, so a single-day window is
+  `0.99999…` there too and legacy takes the same kernel branch rather than its
+  `else 1.0` shortcut. Ported faithfully; the quirk is legacy's. Fixing it
+  would be a CE-7-style deliberate divergence — a faithful port that produces
+  backwards ranking — and would need its own re-baseline.
 * **The temporal stratum is still two queries wide**, and the gold set should
   grow a Korean absolute-date query whose answer lies *outside* the window —
   the case that would catch an over-narrow constraint, which nothing currently
   does.
 * **A re-snapshotted corpus makes q15 measurable**, and only that.
-* **Bare `N월` and `8/2`**, on the criteria above.
+* **Bare `N월` and `8/2`**, on the criteria above. **`이전`/`까지` on an
+  absolute date** is the one that fails unsafe and should be ranked above
+  them.
