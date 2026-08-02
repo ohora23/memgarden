@@ -56,7 +56,7 @@ fn matching_size(a: &[char], b: &[char]) -> usize {
     let mut queue = vec![(0usize, a.len(), 0usize, b.len())];
     let mut total = 0usize;
     while let Some((alo, ahi, blo, bhi)) = queue.pop() {
-        let (i, j, k) = longest_match(a, &b2j, alo, ahi, blo, bhi);
+        let (i, j, k) = longest_match(a, b, &b2j, alo, ahi, blo, bhi);
         if k == 0 {
             continue;
         }
@@ -89,12 +89,20 @@ fn build_b2j(b: &[char]) -> std::collections::HashMap<char, Vec<usize>> {
     b2j
 }
 
-/// difflib's `find_longest_match` with no junk: returns `(i, j, size)`, the
-/// leftmost-longest common block in `a[alo..ahi]` / `b[blo..bhi]`. The junk
-/// extension loops of the original are no-ops without a junk predicate, so
-/// they are not ported.
+/// difflib's `find_longest_match`: returns `(i, j, size)`, the
+/// leftmost-longest common block in `a[alo..ahi]` / `b[blo..bhi]`.
+///
+/// The post-DP extension pair **is** ported, and has to be. CPython gates it
+/// on `isbjunk`, which reads `bjunk` — populated only from an explicit
+/// `isjunk` predicate. Autojunk drops elements into `bpopular`, a *different*
+/// set, so `isbjunk` stays false for them and the loops happily extend across
+/// exactly the elements the DP could not anchor on. Skipping them scored
+/// `ratio("a"*250, "a"*250)` as **0.0** where CPython says **1.0**. The
+/// second, junk-gated pair genuinely is a no-op with `isjunk=None` and is not
+/// ported.
 fn longest_match(
     a: &[char],
+    b: &[char],
     b2j: &std::collections::HashMap<char, Vec<usize>>,
     alo: usize,
     ahi: usize,
@@ -127,6 +135,18 @@ fn longest_match(
         }
         j2len = newj2len;
     }
+    // Extend over elements the DP index could not anchor on (see above).
+    while besti > alo && bestj > blo && a[besti - 1] == b[bestj - 1] {
+        besti -= 1;
+        bestj -= 1;
+        bestsize += 1;
+    }
+    while besti + bestsize < ahi
+        && bestj + bestsize < bhi
+        && a[besti + bestsize] == b[bestj + bestsize]
+    {
+        bestsize += 1;
+    }
     (besti, bestj, bestsize)
 }
 
@@ -153,6 +173,22 @@ pub fn resolution_score(
         score += (1.0 - days / TEMPORAL_WINDOW_DAYS).max(0.0) * 0.2;
     }
     score
+}
+
+/// Upper bound on `resolution_score` from the two names' lengths alone:
+/// `ratio <= 2 * min(la, lb) / (la + lb)`, and the co-occurrence and temporal
+/// terms cap at 0.3 and 0.2. Returns false when even a perfect score on
+/// everything else could not clear `RESOLUTION_THRESHOLD`.
+fn can_clear_threshold(len_a: usize, len_b: usize) -> bool {
+    let total = len_a + len_b;
+    if total == 0 {
+        return true;
+    }
+    let ratio_ceiling = 2.0 * len_a.min(len_b) as f64 / total as f64;
+    // Scored through `resolution_score` itself rather than inlining
+    // `* 0.5 + 0.5`: the two are not the same double (0.1+0.3+0.2 lands one
+    // ulp above 0.6) and the bound has to be exact, not approximately exact.
+    resolution_score(ratio_ceiling, 1, 1, Some(0.0)) > RESOLUTION_THRESHOLD
 }
 
 /// Resolves one fact's entity mentions to canonical names: each mention
@@ -193,7 +229,17 @@ pub fn resolve_fact(
 
             let mut best_score = 0.0f64;
             let mut best: Option<&str> = None;
+            let mention_len = mention.chars().count();
             for candidate in &ctx.candidates {
+                // Cheap length bound before the O(n*m) `ratio`. Ratcliff/
+                // Obershelp cannot exceed `2*min(len)/(len_a+len_b)`, and the
+                // other two terms cap at 0.3 + 0.2, so a candidate whose best
+                // conceivable total cannot clear the threshold is skipped
+                // without ever being compared. Pure speed: the skipped
+                // candidates provably could not have won.
+                if !can_clear_threshold(mention_len, candidate.canonical_name.chars().count()) {
+                    continue;
+                }
                 let overlap = ctx
                     .cooccurring
                     .get(&candidate.id)
@@ -243,7 +289,25 @@ mod tests {
             ("claude code", "claude-code", 0.909_090_909_090_909_1),
             ("memgarden", "hindsight", 0.111_111_111_111_111_1),
         ];
-        for (a, b, expected) in cases {
+        // The ten above are all short. These two cross the 200-element
+        // autojunk gate, where the DP index drops every repeated element and
+        // only the post-DP extension loops can recover the match — the exact
+        // case the first port got wrong (rust 0.0 vs python 1.0).
+        let repeated = "a".repeat(250);
+        let prose: String = PROSE.repeat(3).chars().take(252).collect();
+        let mutated: String = prose
+            .chars()
+            .take(251)
+            .chain(std::iter::once('X'))
+            .collect();
+        let long_cases: Vec<(&str, &str, f64)> = vec![
+            (repeated.as_str(), repeated.as_str(), 1.0),
+            (prose.as_str(), prose.as_str(), 1.0),
+            (prose.as_str(), mutated.as_str(), 0.996_031_746_031_746),
+        ];
+        assert_eq!(prose.chars().count(), 252, "must cross the 200-char gate");
+
+        for (a, b, expected) in cases.iter().chain(long_cases.iter()) {
             let got = ratio(a, b);
             assert!(
                 (got - expected).abs() < 1e-12,
@@ -254,6 +318,32 @@ mod tests {
                 "ratio must be symmetric for {a:?}/{b:?}"
             );
         }
+    }
+
+    const PROSE: &str = "the daemon binds 127.0.0.1:9100 and the recall pipeline fuses \
+                         bm25 with vector candidates using reciprocal rank fusion over a \
+                         sqlite backed store that keeps embeddings in a vec0 partition table ";
+
+    #[test]
+    fn length_prefilter_never_skips_a_candidate_that_could_have_won() {
+        // Exhaustive over the length pairs an entity name can take: the
+        // prefilter must reject only pairs whose best possible score is at or
+        // under the threshold.
+        for la in 1..=64usize {
+            for lb in 1..=64usize {
+                let ceiling = 2.0 * la.min(lb) as f64 / (la + lb) as f64;
+                let best_possible = resolution_score(ceiling, 1, 1, Some(0.0));
+                assert_eq!(
+                    can_clear_threshold(la, lb),
+                    best_possible > RESOLUTION_THRESHOLD,
+                    "la={la} lb={lb} ceiling={ceiling} best={best_possible}"
+                );
+            }
+        }
+        // A 3-char name against a 30-char one can never win; equal lengths
+        // always survive the filter.
+        assert!(!can_clear_threshold(3, 30));
+        assert!(can_clear_threshold(30, 30));
     }
 
     #[test]

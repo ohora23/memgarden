@@ -753,12 +753,12 @@ async fn hybrid_recall_bench() {
         }
     }
     memgarden_store::graph::insert_links(&db, &links, 0).unwrap();
-    let entity_batch: Vec<(i64, Vec<String>)> = ids
+    let entity_batch: Vec<memgarden_store::graph::EntityMentions> = ids
         .iter()
         .enumerate()
-        .map(|(i, id)| (*id, vec![format!("entity {}", i % 300)]))
+        .map(|(i, id)| (*id, vec![format!("entity {}", i % 300)], 0i64))
         .collect();
-    memgarden_store::graph::write_entities(&db, "b1", &entity_batch, 0, 0).unwrap();
+    memgarden_store::graph::write_entities(&db, "b1", &entity_batch, 0).unwrap();
     println!(
         "bench: seeded {} links + {} entity rows in {:.1}s",
         links.len(),

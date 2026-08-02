@@ -54,7 +54,11 @@ recall
 | Semantic links are created after embedding, not at retain | R2. B3 writes `embedding = NULL`, so a retain-time KNN would find nothing forever. `embed_task::on_batch_embedded` is the hook — the same streaming placement legacy uses (`orchestrator.py:418-420`). |
 | Two-pass RRF, graph seeded from pass 1 | R13. The graph arm needs candidates before it can expand, and first-occurrence attribution has to be decided once, over all four arms. Pass 1's output is used *only* to pick seeds. |
 | Expansion excludes the seeds | Legacy does (`link_expansion_retrieval.py:626,670`). Including them would let densely-linked seeds consume the 200-node cap and crowd out the genuinely new 1-hop nodes the arm exists to find. |
-| Graph score = entity + causal + link, summed | `link_expansion_retrieval.py:216-228`: `tanh(shared * 0.5)` for entity co-membership, `weight + 1.0` for causal (legacy's highest-quality signal), `weight` for semantic/temporal, each bucket keeping its max. A node reached by two signals outranks one reached by the strongest alone. |
+| Graph score = entity + causal + link, summed, **no causal boost** | `link_expansion_retrieval.py:216-241`: `tanh(shared * 0.5)` for entity co-membership and the bare `weight` for causal and semantic/temporal, each bucket keeping its max. The module docstring at `:16` claims a `+1.0` causal boost; the query it documents does not have one (`db/ops_postgresql.py:695` selects `ml.weight AS score`, `:239` takes it verbatim), so the docstring is stale. The first draft of this PR trusted it, which inverted the very principle the ranking exists for: retain writes `caused_by` at exactly 1.0, so `+1.0` puts every bare causal neighbour (2.0) above every convergent-evidence node (3 shared entities 0.91 + semantic 0.95 = 1.86). Test `causal_carries_no_score_boost` pins both halves. |
+| Entity fan-out capped at `mention_count <= 200` | The outer `LIMIT` lands *after* the `GROUP BY`, so it bounds output, not work: one hub entity makes the self-join `seeds × |entity|`. Measured 10.3 ms for one entity naming all 3000 nodes vs 0.10 ms uniform — alone over the 5 ms budget, and `normalize()` merging name variants is exactly what builds such buckets. `mention_count` (added by this migration, written in the same transaction as `node_entities`) is the cheap proxy; counting mentions rather than distinct nodes only ever makes the gate stricter. Legacy caps the same thing (`graph_per_entity_limit`), and for the same second reason: an entity on every node connects nothing to anything. |
+| Every unbounded read got a ceiling | `MAX_RESOLUTION_CANDIDATES` 5000 (newest `last_seen` first), `MAX_COOCCURRENCE_PARTNERS` 64 per entity (ranked by count, `idx_entity_cooc_count`), `MAX_TEMPORAL_WINDOW_NODES` 20 000, `/graph` link query at `nodes × 50`, node text truncated to a 160-char label. None of these are reachable in a healthy bank; all of them are reachable in an old or a hostile one, and the resolver is `O(mentions × candidates)`. |
+| Resolution runs a length prefilter first | `ratio <= 2 · min(len) / (len_a + len_b)`, and the other two terms cap at 0.5, so a candidate whose best conceivable total cannot clear 0.6 is skipped before the `O(n·m)` comparison. The bound is computed *through* `resolution_score` rather than inlined — `0.1 + 0.3 + 0.2` lands one ulp above 0.6 and an inlined `× 0.5 + 0.5` would have skipped a candidate that could win. An exhaustive test over length pairs 1..64 pins it. |
+| Client `event_date` clamped at the boundary | It flows into `(a - b).abs()` in resolution and temporal linking, where `i64::MIN` overflows. Clamped to year 1 .. year 9999 in ms — the range SQLite's own date functions accept. |
 | `CROSS JOIN` pins the expansion's join order | Left alone the planner drove from `memory_nodes` and scanned the whole bank partition: **15 ms** at 3k nodes vs **0.2 ms** with the seed list pinned outermost. `CROSS JOIN` is an ordering directive in SQLite, not a different join. |
 | `links` is rebuilt rather than altered | SQLite has no `ADD CONSTRAINT`. Safe here because nothing has an FK *pointing at* `links`, and CE-7 is its first writer, so the copy moves zero rows in any deployed database (a pre-existing out-of-range weight would be clamped, not dropped — there is a test). |
 | Temporal window loaded into Rust | One `event_date BETWEEN` query instead of legacy's LATERAL per-unit top-N. The window is 24 h — one session's facts — and the pairing is O(new × window) with `new` ≤ one chunk's facts. |
@@ -73,9 +77,17 @@ recall
   (`causal_links.py:11`).
 - **`'entity'` link rows are never written**, by anything. Entity grounding
   lives in `node_entities`, which is what the expansion traverses.
-- **No per-entity fan-out cap** on the co-membership join (legacy's LATERAL
-  `graph_per_entity_limit = 200`). The outer `LIMIT` bounds the result, not
-  the join; `ponytail:` comment names the upgrade.
+- **Causal edges are walked in both directions and seeds are excluded from
+  every signal.** Legacy walks causal forward-only and excludes seeds from
+  the semantic and entity CTEs but *not* the causal one
+  (`db/ops_postgresql.py:696-703`). Both differences are deliberate: a
+  `caused_by` edge is a claim about a relationship, and the fact that caused
+  yours is as relevant to a query as the one yours caused; and letting seeds
+  back in through one signal only would spend part of the 200-node cap
+  re-ranking nodes the retrieval arms already returned.
+- **The per-entity fan-out cap uses `mention_count`, not legacy's per-entity
+  `row_number()`.** Same ceiling (200), one join instead of a window
+  function, and it prunes before the aggregate rather than inside it.
 - **Names are compared over `char`s, not graphemes.** Python's
   `SequenceMatcher` compares code points and legacy's scores come from that,
   so matching it matters more than being linguistically right about
@@ -89,76 +101,131 @@ recall
   verbatim, not a porting slip: an *exact* name match never reaches the
   resolver at all, because it collides on `UNIQUE (bank_id, canonical_name)`.
   In practice retain always supplies a date, so the temporal term is live.
+- **Truncation is silent at every ceiling above.** A bank that exceeds
+  `MAX_TEMPORAL_WINDOW_NODES` inside one 24 h window loses the far end of it,
+  and nothing reports that. Bounded, not solved — the same trade the CE-6
+  note records for tag filtering.
 - **Resolution is per-chunk, not per-batch-then-flush.** Two facts in the
   same chunk resolve against the same snapshot of the bank, so a brand-new
   entity introduced by fact 1 cannot be the resolution target for fact 2 in
   that same chunk. It will be from the next chunk on.
-- **`difflib` autojunk is ported but effectively unreachable** — entity names
-  are capped at 256 chars upstream, and the heuristic needs 200+ with a
-  repeated character. Included because omitting it would be a silent
-  divergence on the longest names.
+- **`difflib` autojunk is ported, and it is reachable.** Entity names are
+  capped at 256 chars (`extract/parse.rs`), so the 200..=256 band is live —
+  an earlier draft of this note called it "effectively unreachable" and was
+  wrong. Worse, the port was initially only half done: autojunk drops
+  elements into CPython's `bpopular`, *not* `bjunk`, so `isbjunk` stays false
+  for them and the post-DP extension loops — which the first draft skipped as
+  "no-ops without a junk predicate" — do extend across exactly those
+  elements. `ratio("a"*250, "a"*250)` scored **0.0** against CPython's
+  **1.0**. Both extension loops that matter are now ported and the test
+  vectors include two that cross the gate.
+- **`EDGE_FETCH_CAP` prunes by weight before the additive rank.** Legacy
+  budgets after merging its three signals, so a node reachable by several
+  weak-but-convergent edges can be cut here where legacy would have kept it.
+  The cap is 4× the node cap, so it only bites on genuinely dense seeds; the
+  fix, if it ever matters, is to rank inside SQL rather than fetch-then-rank.
 
 ## Verification
 
-`cargo test --workspace`: **267 passed, 0 failed, 5 ignored** — up from 234
-at CE-6. The 5 ignored are the 3 pre-existing live/model tests, the CE-6
-recall bench, and the new `graph_arm_bench`.
+`cargo test --workspace`: **273 passed, 0 failed, 5 ignored** — up from 234 at
+CE-6. The 5 ignored are the 3 pre-existing live/model tests, the CE-6 recall
+bench, and the new `graph_arm_bench`.
 `cargo clippy --workspace --all-targets -- -D warnings` clean.
 
-New coverage: `ratio()` against ten CPython `SequenceMatcher.ratio()`
-reference values (Korean included) plus symmetry; normalization leaving
-Hangul untouched; each resolution term weighted independently and the
-threshold strict at exactly 0.6; R6's full-scan candidate recall; temporal
-weight at 0/12/24/48 h, same-`fact_type`-only, bidirectional-within-batch and
-the 20-per-node cap; the semantic threshold inclusive at 0.7, per-`fact_type`,
-top-20, self-link-free; self and out-of-range causal targets dropped; the
-graph rank's three signals adding and each bucket keeping its max, the entity
-`tanh` saturation curve, and the 200-node cap; migration 0003 on a fresh DB
-and upgrading a v2 DB with an out-of-range link weight in it; both new CHECKs
-rejecting bad rows; `write_entities` counts/first_seen/last_seen/pairs across
-two batches; Korean entity names round-tripping through the store and the
-co-occurrence join; `expand` walking both directions, one hop, excluding
-seeds, bank-scoped; `graph_view` with no dangling edges; the endpoint's type
-/ session / limit filters, 404 and three 400s; the graph arm surfacing a
-neighbour BM25 cannot reach (via a link and via a shared entity) and still
-obeying the type and tag filters; and a full retain → entities →
-co-occurrences → links round trip against a stub Ollama that asserts zero
-`'entity'` rows and zero self-links.
+New coverage: `ratio()` against thirteen CPython `SequenceMatcher.ratio()`
+reference values — ten short ones (Korean included) plus three that cross the
+200-element autojunk gate, which is where the half-ported version scored 0.0
+against CPython's 1.0 — and symmetry on all of them; the length prefilter
+proved exhaustively over length pairs 1..64 to reject only candidates that
+could not have won; normalization leaving Hangul untouched; each resolution
+term weighted independently and the threshold strict at exactly 0.6; R6's
+full-scan candidate recall, and the newest-first bound on it; the
+co-occurrence partner cap keeping the loaded view bounded while the table
+stays complete; temporal weight at 0/12/24/48 h, same-`fact_type`-only,
+bidirectional-within-batch and the 20-per-node cap; the semantic threshold
+inclusive at 0.7, per-`fact_type`, top-20, self-link-free; self and
+out-of-range causal targets dropped; the graph rank's three signals adding,
+each bucket keeping its max, no causal boost, and convergent evidence beating
+a bare causal edge; the entity `tanh` saturation curve and the 200-node cap;
+the hub-entity fan-out gate at, below and above `MAX_ENTITY_FANOUT`;
+migration 0003 on a fresh DB and upgrading a v2 DB with an out-of-range link
+weight in it; both new CHECKs rejecting bad rows; `write_entities` counts and
+**per-fact** first_seen/last_seen/pairs across two batches; Korean entity
+names round-tripping through the store and the co-occurrence join; `expand`
+walking both directions, one hop, excluding seeds, bank-scoped; `graph_view`
+with no dangling edges; the endpoint's type / session / limit filters, 404
+and three 400s; the graph arm surfacing a neighbour BM25 cannot reach (via a
+link and via a shared entity) and still obeying the type and tag filters; a
+full retain → entities → co-occurrences → links round trip against a stub
+Ollama asserting zero `'entity'` rows and zero self-links; and R2's mandated
+backlog-tick test.
+
+**`backlog_tick_creates_semantic_links`** deserves its own line. Plan line 628
+mandates "retain → backlog tick → semantic link exists" and the first draft
+shipped without it: `on_batch_embedded` was reachable only through
+`drain_once`, which needs a loaded 133MB model, so every test wrote embeddings
+with `set_embeddings_batch` directly and skipped the hook entirely. The two
+things that live in the hook rather than in `links::semantic_links` — the
+`1.0 - distance` cosine conversion and the `TOP_K * 5` over-fetch — had zero
+coverage. The test now drives the hook with hand-built vectors (no model) and
+both mutations were confirmed to fail it: reading the distance as a
+similarity, and dropping the over-fetch to a bare `TOP_K`.
+`fusion::arm_slots_are_pinned_for_ce7_and_ce8` closes the matching gap for
+R13's arm order, which nothing asserted — swapping `graph` and `temporal` in
+`SOURCE_NAMES` used to leave the suite green.
 
 ### Measured — graph arm latency
 
 `cargo test --release -p memgardend --test graph_api -- --ignored --nocapture graph_arm_bench`,
-3000 nodes / 59,790 links / 3000 entity rows, 20 seeds, 200 samples:
+3000 nodes / 75,525 links (temporal + semantic + causal, so all three score
+buckets are live) / 3000 entity rows, 20 seeds, 200 samples each:
 
 ```
-graph arm @ 3000 nodes / 59790 links: p50 256us  p95 260us  max 269us
+graph arm [uniform] @ 3000 nodes / 75525 links: p50 292us p95 299us max 306us
+graph arm [skewed ] @ 3000 nodes / 75525 links: p50 296us p95 300us max 307us
 ```
 
-**0.26 ms against the plan's ≤5 ms** — 19x headroom. Before the `CROSS JOIN`
-ordering fix the same bench measured **19.7 ms**; the plan's budget is what
-caught it.
+**0.29 ms against the plan's ≤5 ms.** Two distributions, because a uniform
+one (300 entities × 10 nodes) is precisely the shape that hides an uncapped
+fan-out: `skewed` adds a hub entity naming all 3000 nodes, which review
+measured at **10.3 ms** — 100× and alone over budget — before
+`MAX_ENTITY_FANOUT`. With the cap the two runs are within noise of each other.
+An earlier `CROSS JOIN` ordering fix took the same bench from **19.7 ms** to
+0.26 ms; the plan's budget caught both.
+
+This number is **arm-internal**: the two expansion queries plus the ranking.
+The real recall path additionally pays a `spawn_blocking` hop and a hydrate of
+the newly-reached nodes, which is the end-to-end delta below.
 
 ### Measured — AC-2 with the graph arm active
 
 The CE-6 bench (`hybrid_recall_bench`) now seeds 59,790 links and 3000 entity
 rows before the loop, so the arm does real work rather than returning empty.
-Same shape as CE-6: real `bge-small-en-v1.5`, 3000 nodes, 2000 requests, five
-rotating queries (one Korean).
+Real `bge-small-en-v1.5`, 3000 nodes, 2000 requests, five rotating queries
+(one Korean).
 
 ```
-             p50       p90       p95       p99       max     <35ms    <60ms
-idle       7025us    7476us    7658us    8556us   32275us   2000/2000  2000/2000
-loaded    19462us   44017us   49203us   58433us   66572us   1609/2000  1990/2000
+             p50       p90       p95       p99       max     <35ms      <60ms
+idle       7060us    7589us    7899us    8668us   31967us   2000/2000  2000/2000
+loaded    19124us   43364us   48654us   57272us   65460us   1605/2000  1997/2000
 ```
 
 `loaded` is R7's concurrent-ingest case (`MEMGARDEN_BENCH_LOAD=1`), which
-wrote and embedded **35,832** extra nodes during the 47 s run.
+wrote and embedded **35,840** extra nodes during the 46 s run.
 
-**AC-2 (p50 ≤ 35 ms, p95 ≤ 60 ms) still holds in both.** Against CE-6's
-numbers the graph arm costs **+1.0 ms p50 / +0.8 ms p95 idle** and
-**+2.0 ms p50 / +7.3 ms p95 loaded** — the loaded delta is the second
-`spawn_blocking` hop contending for the same write lock as the ingest, not
-the queries themselves (0.26 ms, above).
+**AC-2 (p50 ≤ 35 ms, p95 ≤ 60 ms) holds in both.** End-to-end cost of the
+graph arm against CE-6: **+1.1 ms p50 / +1.1 ms p95 idle** and **+1.6 ms p50 /
++6.8 ms p95 loaded**. The loaded delta is not the arm's queries (0.29 ms) —
+it is the second `spawn_blocking` hop competing for the 4-slot r2d2
+connection pool against an ingest that is already holding connections.
+
+**Trend worth recording.** Loaded headroom to the 60 ms gate fell from 18.1 ms
+at CE-6 to 11.3 ms here, and the tail already grazes it (1997/2000 under
+60 ms, max 65.5 ms). CE-8 adds a fourth arm; if it costs similarly, loaded p95
+lands near 55 ms. The obvious lever is merging the graph arm's two hops (expand
++ hydrate) into one `spawn_blocking`, which halves its pool pressure —
+recorded as a known lever, deliberately not taken now, because it is only
+worth doing once B6 shows whether it is needed.
 
 ### Manual verification
 
@@ -180,3 +247,7 @@ the backlog worker's next tick, not at retain time. The temporal weight of
 0.490 is correct rather than suspicious — the facts the LLM dated carry
 `event_date = occurred_start` (midnight UTC) while the undated ones fall back
 to `mentioned_at`, putting the pairs 12.25 h apart inside the 24 h window.
+
+Note the Zipfian entity shape even in a four-fact bank: two entities at 3
+mentions of 4 facts. That distribution is the argument for
+`MAX_ENTITY_FANOUT`, not a hypothetical.

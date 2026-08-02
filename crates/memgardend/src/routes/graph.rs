@@ -16,6 +16,20 @@ use crate::state::AppState;
 const MAX_LIMIT: usize = 2000;
 const DEFAULT_LIMIT: usize = 200;
 
+/// Node text is truncated to a label. A node's `text` can run to tens of
+/// kilobytes, so `limit` bounds the node *count* but not the response size —
+/// 2000 nodes could be 60MB+ before serialization. The viewer draws a label
+/// and fetches the full text on click; `uuid` and `id` are both in the
+/// payload for that.
+const MAX_LABEL_CHARS: usize = 160;
+
+fn label(text: String) -> String {
+    if text.chars().count() <= MAX_LABEL_CHARS {
+        return text;
+    }
+    text.chars().take(MAX_LABEL_CHARS - 1).chain(['…']).collect()
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GraphQuery {
     pub limit: Option<usize>,
@@ -64,7 +78,7 @@ pub async fn get_graph(
         ))
         .into());
     }
-    let fact_types: Vec<FactType> = match &q.types {
+    let mut fact_types: Vec<FactType> = match &q.types {
         Some(raw) => raw
             .split(',')
             .map(str::trim)
@@ -73,6 +87,10 @@ pub async fn get_graph(
             .collect::<Result<_, _>>()?,
         None => vec![],
     };
+    // The domain is three values; `?types=world,world,world` must not become
+    // three JSON array entries the SQL then scans for.
+    fact_types.sort_unstable_by_key(|t| t.as_str());
+    fact_types.dedup();
 
     let db = state.db.clone();
     let bank = bank_id.clone();
@@ -97,7 +115,7 @@ pub async fn get_graph(
                 id: n.id,
                 uuid: n.uuid,
                 fact_type: n.fact_type,
-                text: n.text,
+                text: label(n.text),
                 mentioned_at: n.mentioned_at,
                 entities: n.entities,
             })

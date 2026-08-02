@@ -25,12 +25,24 @@ pub struct EntityCandidate {
     pub last_seen: Option<i64>,
 }
 
-/// Everything the resolver needs about a bank, loaded once per retain chunk.
+/// Candidate ceiling per bank (Critic Revision R6 + security MED-5). The
+/// resolver is O(mentions x candidates), so the matrix has to be bounded by
+/// something other than how long the bank has been alive. Ordered by
+/// `last_seen DESC`, because the temporal term already says a stale entity is
+/// the least likely match.
 ///
-/// `// ponytail: full-scan candidates (Critic Revision R6) — a bank holds
-/// hundreds to a few thousand entities and this is one indexed scan per
-/// chunk, not per mention. Add a per-bank FTS table over entity names if a
-/// bank ever passes ~10k entities.`
+/// `// ponytail: newest-N full scan. A per-bank FTS table over entity names
+/// is the upgrade if a bank ever needs to resolve against more than this.`
+pub const MAX_RESOLUTION_CANDIDATES: usize = 5_000;
+
+/// Co-occurrence partners kept per entity (security MED-6). Loading the whole
+/// table is quadratic in bank age; the overlap term only ever asks "is this
+/// nearby name one of yours", and a partner past the 64th strongest is not
+/// the one carrying a resolution over the gate. `idx_entity_cooc_count`
+/// serves the ranking.
+pub const MAX_COOCCURRENCE_PARTNERS: usize = 64;
+
+/// Everything the resolver needs about a bank, loaded once per retain chunk.
 #[derive(Debug, Default)]
 pub struct ResolutionContext {
     pub candidates: Vec<EntityCandidate>,
@@ -42,10 +54,13 @@ pub struct ResolutionContext {
 pub fn load_resolution_context(db: &Db, bank_id: &str) -> Result<ResolutionContext> {
     let conn = db.read()?;
     let mut stmt = conn
-        .prepare("SELECT id, canonical_name, last_seen FROM entities WHERE bank_id = ?1")
+        .prepare(
+            "SELECT id, canonical_name, last_seen FROM entities WHERE bank_id = ?1
+             ORDER BY last_seen DESC LIMIT ?2",
+        )
         .map_err(store_err)?;
     let candidates = stmt
-        .query_map(params![bank_id], |r| {
+        .query_map(params![bank_id, MAX_RESOLUTION_CANDIDATES as i64], |r| {
             Ok(EntityCandidate {
                 id: r.get(0)?,
                 canonical_name: r.get(1)?,
@@ -56,31 +71,51 @@ pub fn load_resolution_context(db: &Db, bank_id: &str) -> Result<ResolutionConte
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(store_err)?;
 
-    // Both directions: the table stores each pair once, canonically ordered.
+    // Both directions: the table stores each pair once, canonically ordered,
+    // and each side keeps only its strongest partners.
     let mut stmt = conn
         .prepare(
-            "SELECT c.entity_id_1, e2.canonical_name, c.entity_id_2, e1.canonical_name
-             FROM entity_cooccurrences c
-             JOIN entities e1 ON e1.id = c.entity_id_1
-             JOIN entities e2 ON e2.id = c.entity_id_2
-             WHERE e1.bank_id = ?1",
+            "WITH ranked AS (
+               SELECT c.entity_id_1, c.entity_id_2, c.cooccurrence_count,
+                      row_number() OVER (PARTITION BY c.entity_id_1
+                                         ORDER BY c.cooccurrence_count DESC) AS rn1,
+                      row_number() OVER (PARTITION BY c.entity_id_2
+                                         ORDER BY c.cooccurrence_count DESC) AS rn2
+               FROM entity_cooccurrences c
+               JOIN entities e1 ON e1.id = c.entity_id_1
+               JOIN entities e2 ON e2.id = c.entity_id_2
+               WHERE e1.bank_id = ?1 AND e2.bank_id = ?1
+             )
+             SELECT r.entity_id_1, e2.canonical_name, r.entity_id_2, e1.canonical_name,
+                    r.rn1, r.rn2
+             FROM ranked r
+             JOIN entities e1 ON e1.id = r.entity_id_1
+             JOIN entities e2 ON e2.id = r.entity_id_2
+             WHERE r.rn1 <= ?2 OR r.rn2 <= ?2",
         )
         .map_err(store_err)?;
     let mut cooccurring: HashMap<i64, HashSet<String>> = HashMap::new();
     let rows = stmt
-        .query_map(params![bank_id], |r| {
+        .query_map(params![bank_id, MAX_COOCCURRENCE_PARTNERS as i64], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, i64>(2)?,
                 r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         })
         .map_err(store_err)?;
     for row in rows {
-        let (id1, name2, id2, name1) = row.map_err(store_err)?;
-        cooccurring.entry(id1).or_default().insert(name2);
-        cooccurring.entry(id2).or_default().insert(name1);
+        let (id1, name2, id2, name1, rn1, rn2) = row.map_err(store_err)?;
+        // A pair can qualify on one side only — take just that side's entry.
+        if rn1 <= MAX_COOCCURRENCE_PARTNERS as i64 {
+            cooccurring.entry(id1).or_default().insert(name2);
+        }
+        if rn2 <= MAX_COOCCURRENCE_PARTNERS as i64 {
+            cooccurring.entry(id2).or_default().insert(name1);
+        }
     }
 
     Ok(ResolutionContext {
@@ -93,8 +128,8 @@ pub fn load_resolution_context(db: &Db, bank_id: &str) -> Result<ResolutionConte
 /// batch's co-occurrence pairs — all in one `BEGIN IMMEDIATE`.
 ///
 /// `per_node` carries **already normalized and already resolved** canonical
-/// names (`memgardend::entities`). Returns `canonical_name -> entity id` for
-/// the whole batch.
+/// names (`memgardend::entities`) plus that fact's own date. Returns
+/// `canonical_name -> entity id` for the whole batch.
 ///
 /// `entity_type` is deliberately left NULL: legacy hardcodes `"CONCEPT"` for
 /// every LLM-extracted entity (`entity_processing.py:32`) and never reads it
@@ -102,35 +137,41 @@ pub fn load_resolution_context(db: &Db, bank_id: &str) -> Result<ResolutionConte
 pub fn write_entities(
     db: &Db,
     bank_id: &str,
-    per_node: &[(i64, Vec<String>)],
-    seen_at: i64,
+    per_node: &[EntityMentions],
     now: i64,
 ) -> Result<HashMap<String, i64>> {
     // Mentions are counted per occurrence (legacy appends one _EntityStat per
     // resolved mention, `entity_resolver.py:718`), so a name naming two facts
-    // in the same chunk bumps mention_count by two.
-    let mut mentions: HashMap<&str, i64> = HashMap::new();
-    for (_, names) in per_node {
+    // in the same chunk bumps mention_count by two. first_seen/last_seen come
+    // from the *fact's own* date (`entity_processing.py:28`), not a chunk-wide
+    // stamp — the 0.2 temporal term is often what carries a resolution over
+    // the 0.6 gate, so a whole chunk sharing one date would distort it.
+    let mut mentions: HashMap<&str, (i64, i64, i64)> = HashMap::new();
+    for (_, names, seen_at) in per_node {
         for name in names {
-            *mentions.entry(name.as_str()).or_insert(0) += 1;
+            let slot = mentions
+                .entry(name.as_str())
+                .or_insert((0, *seen_at, *seen_at));
+            slot.0 += 1;
+            slot.1 = slot.1.min(*seen_at);
+            slot.2 = slot.2.max(*seen_at);
         }
     }
     if mentions.is_empty() {
         return Ok(HashMap::new());
     }
-    // Deterministic upsert order (and therefore deterministic lock order),
-    // same reasoning as the link insert below.
-    let mut ordered: Vec<(&str, i64)> = mentions.into_iter().collect();
+    // Deterministic upsert order, same reasoning as the link insert below.
+    let mut ordered: Vec<(&str, (i64, i64, i64))> = mentions.into_iter().collect();
     ordered.sort_unstable();
 
     db.write(|tx| {
         let mut ids: HashMap<String, i64> = HashMap::new();
-        for (name, count) in &ordered {
+        for (name, (count, first_seen, last_seen)) in &ordered {
             let id: i64 = tx
                 .query_row(
                     "INSERT INTO entities
                        (bank_id, canonical_name, created_at, mention_count, first_seen, last_seen)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                      ON CONFLICT (bank_id, canonical_name) DO UPDATE SET
                        mention_count = entities.mention_count + excluded.mention_count,
                        first_seen    = min(coalesce(entities.first_seen, excluded.first_seen),
@@ -138,14 +179,14 @@ pub fn write_entities(
                        last_seen     = max(coalesce(entities.last_seen, excluded.last_seen),
                                            excluded.last_seen)
                      RETURNING id",
-                    params![bank_id, name, now, count, seen_at],
+                    params![bank_id, name, now, count, first_seen, last_seen],
                     |r| r.get(0),
                 )
                 .map_err(store_err)?;
             ids.insert((*name).to_string(), id);
         }
 
-        for (node_id, names) in per_node {
+        for (node_id, names, _) in per_node {
             for name in names {
                 let Some(entity_id) = ids.get(name) else {
                     continue;
@@ -162,20 +203,22 @@ pub fn write_entities(
         // `a < b` to match the PK and the CHECK
         // (`entity_resolver.py:80-93`), folded across the batch so one
         // statement per pair (`:220-231`).
-        let mut pairs: HashMap<(i64, i64), i64> = HashMap::new();
-        for (_, names) in per_node {
+        let mut pairs: HashMap<(i64, i64), (i64, i64)> = HashMap::new();
+        for (_, names, seen_at) in per_node {
             let mut node_ids: Vec<i64> = names.iter().filter_map(|n| ids.get(n).copied()).collect();
             node_ids.sort_unstable();
             node_ids.dedup();
             for (i, a) in node_ids.iter().enumerate() {
                 for b in &node_ids[i + 1..] {
-                    *pairs.entry((*a, *b)).or_insert(0) += 1;
+                    let slot = pairs.entry((*a, *b)).or_insert((0, *seen_at));
+                    slot.0 += 1;
+                    slot.1 = slot.1.max(*seen_at);
                 }
             }
         }
-        let mut pairs: Vec<((i64, i64), i64)> = pairs.into_iter().collect();
-        pairs.sort_unstable(); // consistent lock ordering (link_utils.py:92)
-        for ((a, b), count) in pairs {
+        let mut pairs: Vec<((i64, i64), (i64, i64))> = pairs.into_iter().collect();
+        pairs.sort_unstable(); // deterministic statement order
+        for ((a, b), (count, seen_at)) in pairs {
             tx.execute(
                 "INSERT INTO entity_cooccurrences
                    (entity_id_1, entity_id_2, cooccurrence_count, last_cooccurred)
@@ -194,6 +237,9 @@ pub fn write_entities(
     })
 }
 
+/// `(node_id, that node's resolved canonical names, that fact's date in ms)`.
+pub type EntityMentions = (i64, Vec<String>, i64);
+
 /// One edge to write. `entity_id` is always the `0` sentinel: retain never
 /// writes `'entity'` link rows (legacy grounds entity retrieval in
 /// `node_entities` instead — `link_utils` / brief §9), so no edge here is
@@ -207,8 +253,12 @@ pub struct NewLink {
 }
 
 /// Bulk-inserts links in one transaction, **sorted by
-/// `(from_node_id, to_node_id)`** for consistent lock ordering across
-/// concurrent writers (`link_utils.py:92`). Existing edges are left alone
+/// `(from_node_id, to_node_id)`** (`link_utils.py:92`, where it buys
+/// deadlock-free row-lock ordering). SQLite has no row locks — `BEGIN
+/// IMMEDIATE` is one global write lock — so here the sort buys determinism
+/// only: the same batch always produces the same statement order, which makes
+/// failures reproducible. Kept because it costs one `sort_by_key`. Existing
+/// edges are left alone
 /// (legacy's `ON CONFLICT DO NOTHING`, `link_utils.py:452-456`). Returns the
 /// number of rows actually inserted.
 pub fn insert_links(db: &Db, links: &[NewLink], now: i64) -> Result<usize> {
@@ -245,10 +295,19 @@ pub fn insert_links(db: &Db, links: &[NewLink], now: i64) -> Result<usize> {
 /// window (`link_utils.py:291`, 24 h).
 ///
 /// `// ponytail: loads the window into Rust instead of legacy's LATERAL
-/// per-unit top-N. A 24h window holds one session's facts (tens to low
-/// thousands of 24-byte rows) and the pairing is O(new × window) with new ≤
-/// the facts in one chunk. Push the cap into SQL if a bank ever retains
-/// enough in one day for this to show up.`
+/// per-unit top-N, bounded by MAX_TEMPORAL_WINDOW_NODES. "One session's
+/// facts" undersells it — the CE-6 R7 load bench wrote 35,832 nodes in 47
+/// seconds, all inside one 24h window, so a backfill or a bulk import can
+/// fill this. The pairing itself is O(new × window) with new ≤ one chunk's
+/// facts, which is why a flat row ceiling is enough; push the ranking into
+/// SQL if the truncation ever costs a link that mattered.`
+///
+/// Rows come back **newest first** so the truncation drops the far end of the
+/// window rather than an arbitrary slice: retain's own facts sit at the
+/// recent edge, and the nearest neighbours are the ones the per-node cap
+/// keeps anyway.
+pub const MAX_TEMPORAL_WINDOW_NODES: usize = 20_000;
+
 pub fn nodes_in_window(
     db: &Db,
     bank_id: &str,
@@ -258,14 +317,19 @@ pub fn nodes_in_window(
     let conn = db.read()?;
     let mut stmt = conn
         .prepare(
+            // idx_memory_nodes_bank_date is (bank_id, event_date DESC), so
+            // the ORDER BY is the index order — no sort.
             "SELECT id, fact_type, event_date FROM memory_nodes
-             WHERE bank_id = ?1 AND event_date IS NOT NULL AND event_date BETWEEN ?2 AND ?3",
+             WHERE bank_id = ?1 AND event_date IS NOT NULL AND event_date BETWEEN ?2 AND ?3
+             ORDER BY event_date DESC
+             LIMIT ?4",
         )
         .map_err(store_err)?;
     let rows = stmt
-        .query_map(params![bank_id, from_ms, to_ms], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
-        })
+        .query_map(
+            params![bank_id, from_ms, to_ms, MAX_TEMPORAL_WINDOW_NODES as i64],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+        )
         .map_err(store_err)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(store_err)
@@ -311,6 +375,12 @@ pub struct Neighbor {
 ///
 /// `(node_id, number of entities it shares with the seed set)`.
 pub type SharedEntities = Vec<(i64, i64)>;
+
+/// An entity mentioned more than this often stops being a graph edge
+/// (`graph_per_entity_limit`, `link_expansion_retrieval.py:8-11`). Both a
+/// cost ceiling and a quality one: "ollama", in a bank about MemGarden, is
+/// on every node and therefore connects nothing to anything.
+pub const MAX_ENTITY_FANOUT: i64 = 200;
 
 /// Returns `(link neighbours, (node_id, shared entity count))`. Ranking and
 /// the 200-node cap are the caller's (`memgardend::recall::graph`), which is
@@ -366,15 +436,22 @@ pub fn expand(
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(store_err)?;
 
-    // `// ponytail: no per-entity fan-out cap (legacy's LATERAL
-    // graph_per_entity_limit = 200). The outer LIMIT bounds the result, not
-    // the join; add the per-entity cap if one entity ever names a five-digit
-    // number of nodes.`
+    // Per-entity fan-out cap, legacy's `graph_per_entity_limit` (200,
+    // `link_expansion_retrieval.py:8-11`). The outer LIMIT lands *after* the
+    // GROUP BY, so without this a single hub entity makes the self-join
+    // seeds x |entity|: measured 10.3ms for one entity naming all 3000 nodes
+    // versus 0.10ms on the uniform distribution — alone over the 5ms budget.
+    // `mention_count` is the cheap proxy (this migration already adds it, and
+    // it is written by the same transaction that writes node_entities); it
+    // counts mentions rather than distinct nodes, which only ever makes the
+    // gate stricter. A hub that names more than 200 nodes carries no
+    // discriminating signal anyway — that is why legacy caps it too.
     let mut stmt = conn
         .prepare(
             "SELECT ne2.node_id, count(DISTINCT ne2.entity_id) AS shared
              FROM json_each(?1) s
              CROSS JOIN node_entities ne1 ON ne1.node_id = s.value
+             CROSS JOIN entities pe ON pe.id = ne1.entity_id AND pe.mention_count <= ?4
              CROSS JOIN node_entities ne2 ON ne2.entity_id = ne1.entity_id
              CROSS JOIN memory_nodes n ON n.id = ne2.node_id
              WHERE n.bank_id = ?2
@@ -385,9 +462,15 @@ pub fn expand(
         )
         .map_err(store_err)?;
     let shared = stmt
-        .query_map(params![seeds_json, bank_id, edge_limit as i64], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-        })
+        .query_map(
+            params![
+                seeds_json,
+                bank_id,
+                edge_limit as i64,
+                MAX_ENTITY_FANOUT
+            ],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )
         .map_err(store_err)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(store_err)?;
@@ -505,11 +588,15 @@ pub fn graph_view(
             "SELECT from_node_id, to_node_id, link_type, weight FROM links
              WHERE from_node_id IN (SELECT value FROM json_each(?1))
                AND to_node_id   IN (SELECT value FROM json_each(?1))
-             ORDER BY from_node_id, to_node_id, link_type",
+             ORDER BY from_node_id, to_node_id, link_type
+             LIMIT ?2",
         )
         .map_err(store_err)?;
+    // Node count alone does not bound the payload: n nodes can carry n^2
+    // edges. 50 per node is well past what a readable layout draws.
+    let edge_limit = (ids.len() * 50) as i64;
     let edges = stmt
-        .query_map(params![ids_json], |r| {
+        .query_map(params![ids_json, edge_limit], |r| {
             Ok(GraphEdge {
                 from_node_id: r.get(0)?,
                 to_node_id: r.get(1)?,

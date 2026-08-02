@@ -123,6 +123,12 @@ pub fn causal_links(facts: &[ParsedFact], ids: &[i64]) -> Vec<NewLink> {
 /// returns after its distance is converted. `types` maps a candidate id to
 /// its `fact_type`; a candidate missing from it (deleted between the KNN and
 /// this call) is skipped rather than linked blind.
+///
+/// `// ponytail: the fact_type filter runs after the KNN (vec0 partitions on
+/// bank_id only), so a caller over-fetching k = TOP_K * 5 can still come back
+/// with fewer than 20 links in a bank dominated by one other fact_type. That
+/// is a thinner graph, never a wrong one; widen the over-fetch if a bank ever
+/// skews that hard.`
 pub fn semantic_links(
     node_id: i64,
     fact_type: &str,

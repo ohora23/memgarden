@@ -152,6 +152,41 @@ mod tests {
         assert_eq!(merged[1].keyword, Some(0.9));
     }
 
+    /// Critic Revision R13 pins the four-arm order. Nothing else asserts
+    /// that `graph` is slot 2 and `temporal` slot 3 — swap them today and the
+    /// suite stays green, which stops being harmless the moment CE-8 fills
+    /// slot 3 and every graph hit starts being attributed to the temporal
+    /// arm's position.
+    #[test]
+    fn arm_slots_are_pinned_for_ce7_and_ce8() {
+        assert_eq!(SOURCE_NAMES, ["semantic", "bm25", "graph", "temporal"]);
+
+        // The pipeline's real shape: a graph-only hit in slot 2, with the
+        // temporal slot still empty.
+        let merged = reciprocal_rank_fusion(
+            &[hits(&[1]), hits(&[1]), hits(&[5]), vec![]],
+            RRF_K,
+        );
+        let five = merged.iter().find(|m| m.id == 5).unwrap();
+        assert_eq!(five.rrf_score, 1.0 / 61.0, "a graph hit still scores");
+        assert_eq!(
+            (five.semantic, five.keyword),
+            (None, None),
+            "slot 2 must not be attributed to a named raw-score field"
+        );
+        // Doc 1 was found by the two retrieval arms and outranks it.
+        let one = merged.iter().find(|m| m.id == 1).unwrap();
+        assert_eq!(one.semantic, Some(1.0));
+        assert_eq!(one.keyword, Some(1.0));
+        assert_eq!(merged[0].id, 1);
+
+        // Putting the same hit in slot 3 instead must change nothing about
+        // attribution — both are unnamed — but the arm it came from is the
+        // caller's contract, so the *positions* are what this asserts.
+        assert_eq!(SOURCE_NAMES[2], "graph");
+        assert_eq!(SOURCE_NAMES[3], "temporal");
+    }
+
     #[test]
     fn empty_arms_fuse_to_nothing() {
         assert!(reciprocal_rank_fusion(&[vec![], vec![]], RRF_K).is_empty());

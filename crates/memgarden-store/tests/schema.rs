@@ -769,11 +769,12 @@ fn write_entities_upserts_counts_attaches_and_pairs() {
     let ids = seed_nodes(&db, 2);
 
     let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // Per-fact dates (review MEDIUM 3): fact 0 is a day older than fact 1.
     let batch = vec![
-        (ids[0], names(&["ollama", "qwen3"])),
-        (ids[1], names(&["ollama"])),
+        (ids[0], names(&["ollama", "qwen3"]), 1_000i64),
+        (ids[1], names(&["ollama"]), 2_000i64),
     ];
-    let map = graph::write_entities(&db, "b1", &batch, 1_000, 500).unwrap();
+    let map = graph::write_entities(&db, "b1", &batch, 500).unwrap();
     assert_eq!(map.len(), 2);
 
     let conn = db.read().unwrap();
@@ -785,7 +786,11 @@ fn write_entities_upserts_counts_attaches_and_pairs() {
         )
         .unwrap();
     assert_eq!(count, 2, "two mentions in one batch count twice");
-    assert_eq!((first, last), (1_000, 1_000));
+    assert_eq!(
+        (first, last),
+        (1_000, 2_000),
+        "first_seen/last_seen come from each fact's own date, not one chunk stamp"
+    );
     // entity_type is deliberately never persisted (legacy hardcodes CONCEPT).
     let typed: i64 = conn
         .query_row("SELECT count(entity_type) FROM entities", [], |r| r.get(0))
@@ -810,7 +815,11 @@ fn write_entities_upserts_counts_attaches_and_pairs() {
     drop(conn);
 
     // Second batch: counts accumulate rather than conflicting.
-    graph::write_entities(&db, "b1", &batch, 2_000, 600).unwrap();
+    let later: Vec<_> = batch
+        .iter()
+        .map(|(id, names, seen)| (*id, names.clone(), seen + 5_000))
+        .collect();
+    graph::write_entities(&db, "b1", &later, 600).unwrap();
     let conn = db.read().unwrap();
     let (count, first, last): (i64, i64, i64) = conn
         .query_row(
@@ -820,7 +829,7 @@ fn write_entities_upserts_counts_attaches_and_pairs() {
         )
         .unwrap();
     assert_eq!(count, 4);
-    assert_eq!((first, last), (1_000, 2_000), "first_seen sticks, last_seen advances");
+    assert_eq!((first, last), (1_000, 7_000), "first_seen sticks, last_seen advances");
     let cooc: i64 = conn
         .query_row("SELECT cooccurrence_count FROM entity_cooccurrences", [], |r| r.get(0))
         .unwrap();
@@ -836,8 +845,9 @@ fn korean_entity_names_round_trip() {
     let batch = vec![(
         ids[0],
         vec!["메모리 시스템".to_string(), "제트슨 자비에".to_string()],
+        1_000i64,
     )];
-    graph::write_entities(&db, "b1", &batch, 1_000, 500).unwrap();
+    graph::write_entities(&db, "b1", &batch, 500).unwrap();
 
     let ctx = graph::load_resolution_context(&db, "b1").unwrap();
     let mut got: Vec<&str> = ctx
@@ -874,8 +884,10 @@ fn expand_walks_one_hop_in_both_directions_and_excludes_seeds() {
     graph::write_entities(
         &db,
         "b1",
-        &[(seed, vec!["ollama".to_string()]), (far, vec!["ollama".to_string()])],
-        0,
+        &[
+            (seed, vec!["ollama".to_string()], 0),
+            (far, vec!["ollama".to_string()], 0),
+        ],
         0,
     )
     .unwrap();
@@ -908,7 +920,7 @@ fn graph_view_returns_nodes_entities_and_only_internal_edges() {
         0,
     )
     .unwrap();
-    graph::write_entities(&db, "b1", &[(ids[0], vec!["ollama".to_string()])], 0, 0).unwrap();
+    graph::write_entities(&db, "b1", &[(ids[0], vec!["ollama".to_string()], 0)], 0).unwrap();
 
     let (nodes_out, edges) = graph::graph_view(&db, "b1", 100, &[], None).unwrap();
     assert_eq!(nodes_out.len(), 3);
@@ -922,4 +934,127 @@ fn graph_view_returns_nodes_entities_and_only_internal_edges() {
     assert_eq!(nodes_out.len(), 1);
     assert_eq!(nodes_out[0].id, ids[2]);
     assert!(edges.is_empty(), "no dangling edges");
+}
+
+/// Review HIGH-2: without a per-entity cap, one hub entity makes the
+/// co-membership self-join `seeds x |entity|` — the outer LIMIT lands after
+/// the GROUP BY, so it bounds the output, not the work. `normalize()` merges
+/// name variants into exactly such hot buckets.
+#[test]
+fn expand_ignores_a_hub_entity_past_the_fanout_cap() {
+    let db = Db::open_memory().unwrap();
+    let ids = seed_nodes(&db, 4);
+    let (seed, rare_partner) = (ids[0], ids[1]);
+
+    // "hub" is on every node; "rare" is on two. Both reach `rare_partner`,
+    // only "rare" should count.
+    let batch: Vec<memgarden_store::graph::EntityMentions> = ids
+        .iter()
+        .map(|id| {
+            let mut names = vec!["hub".to_string()];
+            if *id == seed || *id == rare_partner {
+                names.push("rare".to_string());
+            }
+            (*id, names, 0i64)
+        })
+        .collect();
+    graph::write_entities(&db, "b1", &batch, 0).unwrap();
+
+    // Under the cap: the hub still expands, so every other node is reached.
+    let (_, shared) = graph::expand(&db, "b1", &[seed], 100).unwrap();
+    assert_eq!(shared.len(), 3, "a small entity is a real edge");
+
+    // Push "hub" past MAX_ENTITY_FANOUT and it stops being an edge; "rare"
+    // is untouched, so exactly its one partner survives.
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE entities SET mention_count = ?1 WHERE canonical_name = 'hub'",
+            rusqlite::params![memgarden_store::graph::MAX_ENTITY_FANOUT + 1],
+        )
+        .map_err(store_err)?;
+        Ok(())
+    })
+    .unwrap();
+    let (_, shared) = graph::expand(&db, "b1", &[seed], 100).unwrap();
+    assert_eq!(
+        shared,
+        vec![(rare_partner, 1)],
+        "a hub entity past the cap connects nothing"
+    );
+
+    // Exactly at the cap it still counts — the gate is `<=`.
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE entities SET mention_count = ?1 WHERE canonical_name = 'hub'",
+            rusqlite::params![memgarden_store::graph::MAX_ENTITY_FANOUT],
+        )
+        .map_err(store_err)?;
+        Ok(())
+    })
+    .unwrap();
+    let (_, shared) = graph::expand(&db, "b1", &[seed], 100).unwrap();
+    assert_eq!(shared.len(), 3);
+}
+
+/// Security MED-6: the co-occurrence load keeps only each entity's strongest
+/// partners, so a bank whose entity pairs grow quadratically does not make
+/// every retain chunk load the whole table.
+#[test]
+fn resolution_context_bounds_cooccurrence_partners() {
+    let db = Db::open_memory().unwrap();
+    let ids = seed_nodes(&db, 1);
+    let cap = memgarden_store::graph::MAX_COOCCURRENCE_PARTNERS;
+
+    // One fact naming the hub plus `cap + 20` partners: every pair is
+    // recorded, but the loaded view keeps `cap` of them per entity.
+    let mut names = vec!["hub".to_string()];
+    names.extend((0..cap + 20).map(|i| format!("partner {i:03}")));
+    graph::write_entities(&db, "b1", &[(ids[0], names, 0)], 0).unwrap();
+
+    let ctx = graph::load_resolution_context(&db, "b1").unwrap();
+    let hub = ctx
+        .candidates
+        .iter()
+        .find(|c| c.canonical_name == "hub")
+        .unwrap();
+    assert_eq!(
+        ctx.cooccurring[&hub.id].len(),
+        cap,
+        "the hub's partner set is capped"
+    );
+    // Nothing is lost from the table itself — only from the loaded view.
+    let stored: i64 = db
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM entity_cooccurrences", [], |r| r.get(0))
+        .unwrap();
+    let n = cap + 21;
+    assert_eq!(stored as usize, n * (n - 1) / 2);
+}
+
+/// Security MED-5: candidates are bounded and ordered newest-first, so an old
+/// bank cannot make resolution unboundedly expensive.
+#[test]
+fn resolution_context_keeps_the_most_recently_seen_candidates() {
+    let db = Db::open_memory().unwrap();
+    banks::create(&db, "b1", None, None).unwrap();
+    db.write(|tx| {
+        for i in 0..40i64 {
+            tx.execute(
+                "INSERT INTO entities (bank_id, canonical_name, created_at, last_seen)
+                 VALUES ('b1', ?1, 0, ?2)",
+                rusqlite::params![format!("entity {i:03}"), i],
+            )
+            .map_err(store_err)?;
+        }
+        Ok(())
+    })
+    .unwrap();
+
+    let ctx = graph::load_resolution_context(&db, "b1").unwrap();
+    assert_eq!(ctx.candidates.len(), 40, "under the cap, everything loads");
+    assert_eq!(
+        ctx.candidates[0].canonical_name, "entity 039",
+        "ordered last_seen DESC, so the cap drops the stalest"
+    );
 }

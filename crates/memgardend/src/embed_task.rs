@@ -158,7 +158,13 @@ async fn drain_once(db: &Arc<Db>, state: &AppState) {
 /// neighbours at cosine `>= 0.7`, cap at 20 (`orchestrator.py:1232`).
 /// Best-effort: the embeddings are already committed and a missing link is a
 /// weaker graph, not a lost fact.
-async fn on_batch_embedded(db: &Arc<Db>, embedded: Vec<(i64, String, Vec<f32>)>) {
+///
+/// `pub` for testing: the only production caller is `drain_once` above, which
+/// cannot run without a loaded 133MB model, and the two things that live
+/// *here* rather than in `links::semantic_links` — the `1.0 - distance`
+/// cosine conversion and the `TOP_K * 5` over-fetch — need coverage that does
+/// not depend on it (architect F1). See `tests/graph_api.rs`.
+pub async fn on_batch_embedded(db: &Arc<Db>, embedded: Vec<(i64, String, Vec<f32>)>) {
     if embedded.is_empty() {
         return;
     }

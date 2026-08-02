@@ -256,8 +256,7 @@ fn seed_graph(db: &Db) -> Vec<i64> {
     graph::write_entities(
         db,
         "b1",
-        &[(ids[0], vec!["메모리 시스템".to_string()])],
-        0,
+        &[(ids[0], vec!["메모리 시스템".to_string()], 0)],
         0,
     )
     .unwrap();
@@ -412,10 +411,9 @@ async fn graph_arm_reaches_a_neighbour_through_a_shared_entity() {
         &db,
         "b1",
         &[
-            (seed_id, vec!["ollama".to_string()]),
-            (other_id, vec!["ollama".to_string()]),
+            (seed_id, vec!["ollama".to_string()], 0),
+            (other_id, vec!["ollama".to_string()], 0),
         ],
-        0,
         0,
     )
     .unwrap();
@@ -487,7 +485,18 @@ async fn graph_arm_respects_type_and_tag_filters() {
     assert!(body["results"].as_array().unwrap().is_empty());
 }
 
-/// **Measured line**: graph-arm latency at 3k nodes (plan target ≤5ms).
+/// **Measured line**: `graph::arm()` latency at 3k nodes (plan target ≤5ms).
+///
+/// This is the *arm-internal* number — the two expansion queries plus the
+/// ranking. The real recall path additionally pays a `spawn_blocking` hop and
+/// a hydrate of the newly-reached nodes; that end-to-end cost is the delta in
+/// `hybrid_recall_bench`, quoted alongside in the design note.
+///
+/// Runs twice, because a uniform entity distribution is exactly the shape
+/// that hides an uncapped fan-out (review MED-3):
+///   * `uniform` — 300 entities over 3000 nodes, 10 nodes each
+///   * `skewed`  — the same, plus one hub entity naming every node, which is
+///     what `normalize()` merging name variants actually produces
 ///
 ///   cargo test --release -p memgardend --test graph_api -- --ignored --nocapture graph_arm_bench
 #[tokio::test(flavor = "multi_thread")]
@@ -509,46 +518,178 @@ async fn graph_arm_bench() {
         })
         .collect();
 
-    // A realistic link density: every node links to its 20 successors (the
-    // temporal cap), plus every 10th node shares an entity with its bucket.
+    // A realistic link density and mix: every node links to its 20 temporal
+    // successors (the per-node cap), its nearest 5 semantically, and every
+    // 4th node carries a causal edge — so all three score buckets are live,
+    // which is what makes this a check on the ranking and not just the SQL.
     let mut links = Vec::new();
     for (i, &from) in ids.iter().enumerate() {
-        for &to in ids.iter().skip(i + 1).take(20) {
+        for (j, &to) in ids.iter().skip(i + 1).take(20).enumerate() {
             links.push(NewLink {
                 from_node_id: from,
                 to_node_id: to,
                 link_type: "temporal",
                 weight: 0.5,
             });
+            if j < 5 {
+                links.push(NewLink {
+                    from_node_id: from,
+                    to_node_id: to,
+                    link_type: "semantic",
+                    weight: 0.75 + (j as f64) * 0.04,
+                });
+            }
+        }
+        if i % 4 == 0 && i + 1 < ids.len() {
+            links.push(NewLink {
+                from_node_id: from,
+                to_node_id: ids[i + 1],
+                link_type: "caused_by",
+                weight: 1.0,
+            });
         }
     }
     graph::insert_links(&db, &links, 0).unwrap();
-    let entity_batch: Vec<(i64, Vec<String>)> = ids
+    let entity_batch: Vec<memgarden_store::graph::EntityMentions> = ids
         .iter()
         .enumerate()
-        .map(|(i, id)| (*id, vec![format!("entity {}", i % 300)]))
+        .map(|(i, id)| (*id, vec![format!("entity {}", i % 300)], 0i64))
         .collect();
-    graph::write_entities(&db, "b1", &entity_batch, 0, 0).unwrap();
+    graph::write_entities(&db, "b1", &entity_batch, 0).unwrap();
 
     let seeds: Vec<i64> = ids.iter().take(20).copied().collect();
-    // Warm the page cache so the number is the query, not the first read.
-    for _ in 0..5 {
-        memgardend::recall::graph::arm(&db, "b1", &seeds).unwrap();
-    }
+    let run = |label: &str| {
+        for _ in 0..5 {
+            memgardend::recall::graph::arm(&db, "b1", &seeds).unwrap();
+        }
+        let mut samples: Vec<u128> = Vec::new();
+        for _ in 0..200 {
+            let t = Instant::now();
+            let hits = memgardend::recall::graph::arm(&db, "b1", &seeds).unwrap();
+            samples.push(t.elapsed().as_micros());
+            assert_eq!(hits.len(), memgardend::recall::graph::GRAPH_EXPANSION_CAP);
+        }
+        samples.sort_unstable();
+        println!(
+            "graph arm [{label}] @ {N} nodes / {} links: p50 {}us p95 {}us max {}us",
+            links.len(),
+            samples[samples.len() / 2],
+            samples[samples.len() * 95 / 100],
+            samples[samples.len() - 1]
+        );
+    };
+    run("uniform");
 
-    let mut samples: Vec<u128> = Vec::new();
-    for _ in 0..200 {
-        let t = Instant::now();
-        let hits = memgardend::recall::graph::arm(&db, "b1", &seeds).unwrap();
-        samples.push(t.elapsed().as_micros());
-        assert_eq!(hits.len(), memgardend::recall::graph::GRAPH_EXPANSION_CAP);
+    // Skewed: one hub entity on every node. Uncapped this is the 100x case
+    // (measured 10.3ms) — with MAX_ENTITY_FANOUT it must stay flat.
+    let hub: Vec<memgarden_store::graph::EntityMentions> = ids
+        .iter()
+        .map(|id| (*id, vec!["hub".to_string()], 0i64))
+        .collect();
+    graph::write_entities(&db, "b1", &hub, 0).unwrap();
+    let hub_mentions: i64 = db
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT mention_count FROM entities WHERE canonical_name = 'hub'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(hub_mentions > memgarden_store::graph::MAX_ENTITY_FANOUT);
+    run("skewed (hub entity on all 3000 nodes)");
+}
+
+// ---------------------------------------------------------------------------
+// R2 / architect F1: the semantic-link pass itself
+// ---------------------------------------------------------------------------
+
+/// Plan line 628 mandates "retain → backlog tick → semantic link exists".
+/// `on_batch_embedded` is the backlog tick's second half and had no coverage:
+/// every other test writes embeddings with `set_embeddings_batch` directly,
+/// which bypasses it. `links::semantic_links`' unit tests cannot reach the two
+/// things that live in the hook — the `1.0 - distance` cosine conversion and
+/// the `TOP_K * 5` over-fetch.
+///
+/// Runs without the real model: the hook takes the vectors it was handed, so
+/// hand-built ones exercise the same path a loaded embedder would.
+#[tokio::test]
+async fn backlog_tick_creates_semantic_links() {
+    let db = Arc::new(Db::open_memory().unwrap());
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let dim = memgarden_core::EMBEDDING_DIM;
+    let unit = |f: &dyn Fn(usize) -> f32| -> Vec<f32> {
+        let v: Vec<f32> = (0..dim).map(f).collect();
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.into_iter().map(|x| x / norm).collect()
+    };
+    // Two nearly-parallel vectors: cosine ~0.995, i.e. vec0 distance ~0.005.
+    // If the hook ever reads the distance as a similarity, both fall under
+    // the 0.7 threshold and no link is written — which is the assert below.
+    let a = unit(&|i| if i == 0 { 1.0 } else { 0.0 });
+    let b = unit(&|i| if i == 0 { 1.0 } else if i == 1 { 0.1 } else { 0.0 });
+
+    let mk = |ft: FactType, text: &str| {
+        let mut n = NewNode::new("b1", ft, text);
+        n.mentioned_at = Some(1_782_898_200_000);
+        nodes::insert(&db, n).unwrap()
+    };
+    let w1 = mk(FactType::World, "world fact one");
+    let w2 = mk(FactType::World, "world fact two");
+
+    // 40 observations sitting *closer* to w1 than w2 does. They must not
+    // become links (wrong fact_type), and they must not crowd w2 out of the
+    // KNN window either — which is what the TOP_K * 5 over-fetch is for. Drop
+    // the over-fetch to a bare TOP_K and w2 falls outside the k=20 window and
+    // this test fails.
+    let mut batch: Vec<(i64, String, Vec<f32>)> = Vec::new();
+    for i in 0..40 {
+        let id = mk(FactType::Observation, &format!("observation {i}"));
+        let v = unit(&|j| if j == 0 { 1.0 } else if j == 1 { 0.001 } else { 0.0 });
+        batch.push((id, "b1".to_string(), v));
     }
-    samples.sort_unstable();
-    println!(
-        "graph arm @ {N} nodes / {} links: p50 {}us p95 {}us max {}us",
-        links.len(),
-        samples[samples.len() / 2],
-        samples[samples.len() * 95 / 100],
-        samples[samples.len() - 1]
+    batch.push((w1, "b1".to_string(), a));
+    batch.push((w2, "b1".to_string(), b));
+
+    // The first half of a real tick: commit the embeddings...
+    nodes::set_embeddings_batch(&db, &batch).unwrap();
+    // ...then the hook, exactly as `drain_once` calls it.
+    memgardend::embed_task::on_batch_embedded(&db, batch).await;
+
+    let semantic = count(&db, "SELECT count(*) FROM links WHERE link_type = 'semantic'");
+    assert!(semantic > 0, "the backlog tick must create semantic links");
+    let across_types: i64 = db
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM links l
+             JOIN memory_nodes f ON f.id = l.from_node_id
+             JOIN memory_nodes t ON t.id = l.to_node_id
+             WHERE l.link_type = 'semantic' AND f.fact_type != t.fact_type",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(across_types, 0, "semantic links are per fact_type");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM links WHERE link_type='semantic'
+               AND ((from_node_id=1 AND to_node_id=2) OR (from_node_id=2 AND to_node_id=1))"
+        ),
+        2,
+        "the two world facts must find each other despite 40 closer observations"
     );
+    // Weights are similarities, not distances: ~0.995, nowhere near 0.005.
+    let w: f64 = db
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT min(weight) FROM links WHERE link_type = 'semantic'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(w > 0.7, "weight {w} must be a cosine similarity, not a distance");
 }

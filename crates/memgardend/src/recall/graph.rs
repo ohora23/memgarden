@@ -31,14 +31,12 @@ pub const GRAPH_EXPANSION_CAP: usize = 200;
 /// per-entity cap if a single entity ever names five digits of nodes.`
 const EDGE_FETCH_CAP: usize = GRAPH_EXPANSION_CAP * 4;
 
-/// The four causal link types. `caused_by` is the only one retain writes;
-/// the other three exist for transfer-imported banks
-/// (`causal_links.py:12`) and are boosted the same way.
+/// The four causal link types. `caused_by` is the only one retain writes; the
+/// other three exist for transfer-imported banks (`causal_links.py:12`).
+/// They form their own score bucket, exactly as legacy's `causal_expanded`
+/// CTE is its own bucket.
 fn is_causal(link_type: &str) -> bool {
-    matches!(
-        link_type,
-        "caused_by" | "causes" | "enables" | "prevents"
-    )
+    matches!(link_type, "caused_by" | "causes" | "enables" | "prevents")
 }
 
 /// Runs the arm: expand `seeds` inside `bank_id`, rank, cap. Returns hits
@@ -52,18 +50,26 @@ pub fn arm(db: &Db, bank_id: &str, seeds: &[i64]) -> memgarden_core::error::Resu
     Ok(rank(&links, &shared))
 }
 
-/// `link_expansion_retrieval.py:216-228`: the three signals are scored
-/// separately and **added**, so a node reached by more than one of them
-/// outranks a node reached by just the strongest.
+/// The three signals are scored separately and **added**
+/// (`link_expansion_retrieval.py:216-241`), so a node reached by more than
+/// one of them outranks a node reached by just the strongest:
 ///
 /// * entity co-membership → `tanh(shared_count * 0.5)` (1 shared entity 0.46,
 ///   2 → 0.76, 3 → 0.91 — saturates on its own)
-/// * causal link → `weight + 1.0` (legacy boosts it as the highest-quality
-///   signal)
+/// * causal link → `weight`
 /// * semantic/temporal link → `weight`
 ///
 /// Each link bucket keeps its `max`, matching legacy's `MAX(weight)` /
 /// `DISTINCT ON` shapes.
+///
+/// **No `+1.0` causal boost.** `link_expansion_retrieval.py:16` claims one in
+/// its module docstring, but the docstring is stale: the query it describes
+/// selects `ml.weight AS score` with no arithmetic
+/// (`db/ops_postgresql.py:695`) and the merge takes it verbatim (`:239`).
+/// Boosting would also invert the additive principle this ranking exists for
+/// — retain writes `caused_by` at exactly 1.0, so a `+1.0` puts every bare
+/// causal neighbour (2.0) above every convergent-evidence node (3 shared
+/// entities 0.91 + semantic 0.95 = 1.86).
 pub fn rank(links: &[Neighbor], shared: &[(i64, i64)]) -> Vec<ArmHit> {
     use std::collections::HashMap;
 
@@ -80,9 +86,8 @@ pub fn rank(links: &[Neighbor], shared: &[(i64, i64)]) -> Vec<ArmHit> {
         } else {
             &mut plain
         };
-        let boost = if is_causal(&n.link_type) { 1.0 } else { 0.0 };
         let slot = bucket.entry(n.node_id).or_insert(f64::MIN);
-        *slot = slot.max(n.weight + boost);
+        *slot = slot.max(n.weight);
     }
 
     let mut ids: Vec<i64> = entity
@@ -127,20 +132,30 @@ mod tests {
         }
     }
 
+    /// Architect F3: a causal edge is scored at its bare weight, like every
+    /// other edge. The `+1.0` in legacy's stale module docstring is not in
+    /// the query it documents (`db/ops_postgresql.py:695`), and adding it
+    /// would put every causal neighbour above every convergent-evidence node.
     #[test]
-    fn causal_outranks_semantic_of_the_same_weight() {
-        let hits = rank(
-            &[link(1, "semantic", 0.9), link(2, "caused_by", 0.9)],
-            &[],
-        );
-        assert_eq!(hits[0].id, 2);
-        assert_eq!(hits[0].score, 1.9);
+    fn causal_carries_no_score_boost() {
+        let hits = rank(&[link(1, "semantic", 0.9), link(2, "caused_by", 0.9)], &[]);
+        assert_eq!(hits[0].score, 0.9);
         assert_eq!(hits[1].score, 0.9);
+
+        // The property the boost would have broken: convergent evidence
+        // (3 shared entities + a strong semantic link) beats a bare causal
+        // edge at retain's canonical weight of 1.0.
+        let convergent = rank(&[link(1, "semantic", 0.95)], &[(1, 3)])[0].score;
+        let bare_causal = rank(&[link(2, "caused_by", 1.0)], &[])[0].score;
+        assert!(
+            convergent > bare_causal,
+            "convergent {convergent} must beat bare causal {bare_causal}"
+        );
     }
 
     #[test]
     fn signals_add_up_and_each_bucket_keeps_its_max() {
-        // Node 1: two semantic links (max 0.8), one causal (1.5), and two
+        // Node 1: two semantic links (max 0.8), one causal (0.5), and two
         // shared entities (tanh(1.0) = 0.7616).
         let hits = rank(
             &[
@@ -152,7 +167,7 @@ mod tests {
             &[(1, 2)],
         );
         assert_eq!(hits.len(), 1);
-        let expected = 1.0f64.tanh() + 1.5 + 0.8;
+        let expected = 1.0f64.tanh() + 0.5 + 0.8;
         assert!((hits[0].score - expected).abs() < 1e-12, "{}", hits[0].score);
     }
 

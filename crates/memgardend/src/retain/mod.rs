@@ -555,16 +555,23 @@ async fn write_graph(
     tokio::task::spawn_blocking(move || {
         if !mentions.is_empty() {
             let ctx = store_graph::load_resolution_context(&db, &bank_id)?;
-            let resolved: Vec<(i64, Vec<String>)> = mentions
+            // Each fact carries its *own* date into first_seen/last_seen and
+            // last_cooccurred (`entity_processing.py:28`); `now` is only the
+            // fallback for a fact with no date at all. A chunk-wide stamp
+            // would flatten the 0.2 temporal term, which is frequently what
+            // carries a resolution over the 0.6 gate (review MEDIUM 3).
+            let resolved: Vec<store_graph::EntityMentions> = mentions
                 .iter()
-                .map(|(id, raw, date)| (*id, entities::resolve_fact(raw, *date, &ctx)))
-                .filter(|(_, names)| !names.is_empty())
+                .map(|(id, raw, date)| {
+                    (
+                        *id,
+                        entities::resolve_fact(raw, *date, &ctx),
+                        date.unwrap_or(now),
+                    )
+                })
+                .filter(|(_, names, _)| !names.is_empty())
                 .collect();
-            // `seen_at` is the chunk's own clock (`now`) only when a fact has
-            // no date of its own; legacy stamps first_seen/last_seen from the
-            // fact's event date (`entity_processing.py:28`).
-            let seen_at = mentions.iter().filter_map(|(_, _, d)| *d).max().unwrap_or(now);
-            store_graph::write_entities(&db, &bank_id, &resolved, seen_at, now)?;
+            store_graph::write_entities(&db, &bank_id, &resolved, now)?;
         }
 
         let mut batch = causal;
