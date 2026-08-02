@@ -70,11 +70,23 @@ pub struct RerankerConfig {
     pub batch_size: usize,
 }
 
+/// The pinned default. `rerank.rs` verifies a revision and five SHA-256
+/// digests **only** for this exact string, and warns loudly for anything else
+/// — `[reranker] model` is the daemon's one operator-settable "which remote
+/// artifact do we execute" knob, so the comparison lives next to the value.
+pub const DEFAULT_RERANK_MODEL: &str = "Xenova/ms-marco-MiniLM-L-6-v2";
+
 /// `top_k` above this logs a startup warning naming the measured cost. Not a
 /// hard error: an operator running a deliberate AC-1 quality experiment has a
 /// legitimate reason to raise it, and refusing to boot over a latency
 /// preference would be the wrong call. The warning exists so a future config
 /// edit cannot blow the SLO *silently*.
+///
+/// **This threshold is about latency only, and 20 is not a "safe" depth.**
+/// CE-11 measured `top_k = 20` and rejected it: it wins nDCG@10, recall@10 and
+/// the identifier stratum, but loses MRR decisively (0.739 -> 0.606 over 13
+/// queries) at twice the cost. A depth between 11 and 20 is un-measured and
+/// gets no warning — see `docs/design/ce-11-reranker.md` before raising this.
 pub const RERANK_TOP_K_WARN_ABOVE: usize = 20;
 
 /// Hard ceiling on `reranker.top_k`, matching `recall.limit`'s: reranking
@@ -317,7 +329,7 @@ impl Config {
             },
             reranker: RerankerConfig {
                 enabled: false,
-                model: "Xenova/ms-marco-MiniLM-L-6-v2".to_string(),
+                model: DEFAULT_RERANK_MODEL.to_string(),
                 top_k: 10,
                 threads: 4,
                 batch_size: 16,
@@ -958,7 +970,7 @@ mod tests {
             },
             reranker: RerankerConfig {
                 enabled: false,
-                model: "Xenova/ms-marco-MiniLM-L-6-v2".to_string(),
+                model: DEFAULT_RERANK_MODEL.to_string(),
                 top_k: 10,
                 threads: 4,
                 batch_size: 16,

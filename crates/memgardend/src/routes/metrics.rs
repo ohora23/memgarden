@@ -16,16 +16,33 @@ pub struct MetricsResponse {
     #[serde(flatten)]
     pub snapshot: memgarden_core::metrics::MetricsSnapshot,
     pub uptime_ms: i64,
+    /// CE-11. `true` only when `[reranker] enabled` **and** the model is
+    /// actually in the slot.
+    ///
+    /// This exists because `rerank::load_at_startup` swallows a load failure
+    /// into a log line and leaves recall silently on the RRF passthrough —
+    /// deliberately, since an absent ranking refinement is not a degraded
+    /// memory system and `/healthz` DEGRADED should stay meaningful. But
+    /// "configured on, silently running off" is exactly the state an operator
+    /// must be able to see, and CE-11's own bench harness had to hand-roll a
+    /// load precisely because nothing reported it. One boolean closes it.
+    pub reranker_loaded: bool,
 }
 
 /// Not behind the timing middleware (see routes::router) — measuring this
 /// route would be self-measurement noise in its own numbers.
-pub async fn get_metrics() -> Json<MetricsResponse> {
+pub async fn get_metrics(State(state): State<AppState>) -> Json<MetricsResponse> {
     let snapshot = METRICS.snapshot();
     let uptime_ms = memgarden_core::now_ms() - snapshot.started_at_ms;
+    let reranker_loaded = state
+        .reranker
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some();
     Json(MetricsResponse {
         snapshot,
         uptime_ms,
+        reranker_loaded,
     })
 }
 

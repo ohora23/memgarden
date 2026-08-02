@@ -132,8 +132,27 @@ rule order behaviour, in **both** directions:
   ports. `from` is likewise not a since-marker — "notes from yesterday" means
   yesterday, and legacy has no `from` rule.
 * **Month-name + year ("July 2026") is not ported.** Legacy carries a
-  six-language month table for it; the ISO fallback covers the explicit-date
-  case these banks actually produce.
+  six-language month table for it. This note originally justified that with
+  "the ISO fallback covers the explicit-date case these banks actually
+  produce" — **that justification was falsified in PR B10 (CE-11)** and is
+  struck rather than quietly edited, because it was load-bearing for the
+  decision.
+
+  AX-2's gold query q17 asks `8월 2일` and gets **no temporal constraint at
+  all**: `fallback_date` accepts only ISO-extended tokens (`len >= 10` and
+  containing `-`), so the arm never fires and `scores.temporal` stays
+  `NEUTRAL`. Legacy resolves it — its `query_analyzer.py:182-246` runs
+  `dateparser.search.search_dates` with language detection, and
+  `temporal_periods.py:156-159` declines exact dates precisely *because*
+  dateparser handles them. Verified directly against legacy's own dateparser:
+  `search_dates('8월 2일')` → `datetime(2026, 8, 2)`, with and without
+  `languages=['ko']`.
+
+  So this is a **parity gap, not a coverage gap**, and Korean absolute dates
+  are the most natural way to write one in this project's own query language.
+  Tracked in `docs/parity-gaps.md`. Deliberately **not** fixed in B10: it moves
+  the temporal stratum, which would invalidate the reranker deltas that PR
+  recorded. The follow-up must re-baseline AX-2 in the same change.
 * **The arm's entry predicate is narrower than legacy's.** Legacy uses a
   four-branch OR (`retrieval.py:624-633`): interval overlap, `mentioned_at` in
   window, `occurred_start` in window, `occurred_end` in window. The plan

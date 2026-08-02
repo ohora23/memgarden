@@ -132,12 +132,22 @@ model = "Xenova/ms-marco-MiniLM-L-6-v2"
 # DROPPED, exactly as legacy drops everything past rerank_limit, so this also
 # caps what recall returns whenever it is below [recall] limit.
 #
-# Measured on this machine's CPU: ~1.5-2.6ms per candidate.
-#   top_k = 10  ->  ~15-26ms      top_k = 20  ->  ~30-52ms
-#   top_k = 40  ->  ~60-104ms     top_k = 600 (legacy's thinking_budget*2)
-#                                 is not a supportable number here.
-# AC-2 allows 35ms p50 for the ENTIRE recall, so 10 is the supported opt-in
-# depth. Above 20 the daemon logs a warning at startup naming this cost.
+# Measured in-situ (interleaved-paired, 5 pairs) at top_k = 10: the whole
+# recall gains +13.7ms p50 / +31.8ms p95, i.e. ~1.4ms/candidate at p50 and
+# ~3.2ms/candidate at p95. AC-2 allows 35ms p50 / 60ms p95 for the ENTIRE
+# recall; at top_k = 10 both still pass, with the margin cut from 28/51ms to
+# 15/19ms. Legacy's thinking_budget*2 = 600 would be 10-30 SECONDS.
+#
+# 10 is the supported depth, and the choice against 20 is a LATENCY one, not
+# a ranking one. Measured over 13 gold queries, top_k = 20 actually wins
+# nDCG@10 (0.382 vs 0.379), recall@10 (0.397 vs 0.347) and the identifier
+# stratum (0.595 vs 0.495); top_k = 10 wins MRR decisively (0.739 vs 0.606),
+# which is the metric that matters for a rank-ordered injection. 20 costs
+# double and drags background ingest below 90% of offered load.
+# See docs/design/ce-11-reranker.md before changing this.
+#
+# Above 20 the daemon logs a startup warning — that threshold is about
+# latency only; it does not mean 11..20 has been measured.
 top_k = 10
 
 # ONNX Runtime intra-op threads, same trade-off as [embedding] intra_threads.

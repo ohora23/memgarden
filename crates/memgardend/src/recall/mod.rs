@@ -360,24 +360,42 @@ pub async fn recall(
             .clone();
         match reranker {
             Some(reranker) => {
-                merged.truncate(state.cfg.reranker.top_k);
-                let pairs: Vec<(i64, String)> = merged
+                let candidates: Vec<rerank::Candidate<'_>> = merged
                     .iter()
                     .filter_map(|m| by_id.get(&m.id))
-                    .map(|row| {
-                        (
-                            row.id,
-                            rerank::decorate(&row.text, row.context.as_deref(), row.occurred_start),
-                        )
+                    .map(|row| rerank::Candidate {
+                        id: row.id,
+                        text: &row.text,
+                        context: row.context.as_deref(),
+                        occurred_start: row.occurred_start,
                     })
                     .collect();
-                let (ids, docs): (Vec<i64>, Vec<String>) = pairs.into_iter().unzip();
+                let (ids, docs) = rerank::rerank_inputs(&candidates, state.cfg.reranker.top_k);
+                drop(candidates); // borrows `by_id`, which the scoring loop reads
                 let q = query.clone();
-                let scores = tokio::task::spawn_blocking(move || reranker.scores(&q, &docs))
+                let scored = tokio::task::spawn_blocking(move || reranker.scores(&q, &docs))
                     .await
-                    .map_err(join_err)?
-                    .map_err(|e| ApiError::internal(format!("rerank failed: {e}")))?;
-                Some(ids.into_iter().zip(scores).collect())
+                    .map_err(join_err)?;
+                match scored {
+                    Ok(scores) => {
+                        // Truncated only on success, deliberately: it makes the
+                        // failure arm below a *pure* passthrough, byte-identical
+                        // to `enabled = false`, instead of a third behaviour
+                        // (top_k results in RRF order) that nothing tests and
+                        // no reader expects.
+                        merged.truncate(state.cfg.reranker.top_k);
+                        Some(ids.into_iter().zip(scores).collect())
+                    }
+                    // Degrade, do not 500. `Reranker::load`'s contract already
+                    // promises the passthrough when the model is absent; a
+                    // model that is present but erroring — a bad re-export, an
+                    // ONNX runtime fault — is the same situation arriving
+                    // later, and the same answer is the right one.
+                    Err(e) => {
+                        tracing::warn!(error = %e, "rerank failed; falling back to RRF passthrough");
+                        None
+                    }
+                }
             }
             // Still loading, or it failed to load. Degrade to the passthrough
             // rather than 503: a ranking refinement being absent is not an

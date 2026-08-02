@@ -500,11 +500,13 @@ fn mean(rows: &[QueryMetrics]) -> QueryMetrics {
 /// below is pinned to what the baseline used, because a delta computed under
 /// a different configuration is not a delta.
 ///
-/// Note what `Some(k)` structurally cannot move: the reranker reorders the
-/// top `k` of the RRF list and drops the tail, so at `k = 10` the *set*
-/// measured by recall@10 is exactly the baseline's and that column is
-/// arithmetically pinned at zero delta. recall@1, recall@5, MRR and nDCG@10
-/// are the columns with anything to say.
+/// `Some(k)` is close to inert on recall@10 but **not** pinned at zero: the
+/// reranker truncates on *RRF* order, while the baseline's top 10 is ordered
+/// by `passthrough_base x boosts`, so the +/-21% boost envelope can swap items
+/// across the rank-10 boundary in either direction. Measured at `k = 10`:
+/// overall recall@10 moved 0.3345 -> 0.3363, and the memcompare stratum
+/// *dropped* 0.3476 -> 0.3276. Small, signed, real. MRR and nDCG@10 are still
+/// the columns with something to say.
 async fn bench(
     db_path: &Path,
     gold_path: &Path,

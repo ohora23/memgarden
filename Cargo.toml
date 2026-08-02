@@ -39,8 +39,9 @@ hf-hub = { version = "=0.5.0", default-features = false } # B10 (CE-11).
     # built-in `RerankerModel` entry, uses it. `Xenova/ms-marco-MiniLM-L-6-v2`
     # has no such entry, so the user-defined path is the only one available
     # and it takes bytes, not a repo name. Declared with no features of its
-    # own: cargo unifies with fastembed's `ureq` + `rustls-tls`, so this line
-    # adds zero crates and leaves Cargo.lock byte-identical (verified).
+    # own: cargo unifies with fastembed's `ureq` + `rustls-tls`, so this adds
+    # zero crates and zero version changes — Cargo.lock gains exactly one line,
+    # the new edge in memgardend's dependency list (verified).
 jiff = "0.2.35" # B1 (embed augmentation "%B %Y"), later CE-8.
 reqwest = { version = "0.13.4", default-features = false, features = [
     "json",

@@ -179,6 +179,14 @@ does and does not capture.
 
 ## Baseline
 
+**Note on the recorded commit.** `gold/results.jsonl` line 1 stamps
+`commit: f1b7d143`, but its numbers already include the two gold-label
+corrections that landed in `2247246` — the harness reads `git rev-parse HEAD`
+at run time and the run predated the label fix's commit. The *numbers* are
+correct and reproduce exactly (CE-11 re-ran them digit-for-digit at
+`52a8288`, appended as line 2); only the stamp is stale. Records written from
+CE-11 onward are stamped correctly.
+
 **Commit `d616556066542daa0bdb132efe1ab93feb705b3e`**, corpus
 `baee3f40…4bda868` (2718 nodes), `now = 1785715200000`,
 `|R|` = labelled relevant nodes, `ceil` = `min(10,|R|)/|R|`.

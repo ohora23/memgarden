@@ -14,12 +14,26 @@ rerank depth, drop the tail).
 
 | Path | What |
 |---|---|
-| `crates/memgardend/src/rerank.rs` | `Reranker { inner: Mutex<TextRerank> }`, `sigmoid`, `decorate`, `top_k_warning`, `load_at_startup`. |
+| `crates/memgardend/src/rerank.rs` | `Reranker { inner: Mutex<TextRerank> }`, `sigmoid`, `decorate`, `rerank_inputs`, `top_k_warning`, `load_at_startup`, the pinned revision + digests. |
 | `crates/memgarden-core/src/config.rs` | `[reranker]` — `enabled`, `model`, `top_k`, `threads`, `batch_size`, with validation. |
 | `crates/memgardend/src/recall/mod.rs` | The one branch: with the cross-encoder on, its sigmoid-normalised logit replaces `scoring::passthrough_base`. |
+| `crates/memgardend/src/routes/metrics.rs` | `reranker_loaded` — "configured on, silently running off" is otherwise invisible. |
 | `crates/memgardend/src/bin/recall_bench.rs` | `rerank=<top_k>` — the only measurement knob the harness exposes. |
 | `crates/memgardend/tests/recall_api.rs` | `MEMGARDEN_BENCH_RERANK=<top_k>` on the latency bench; the parity test; the live end-to-end test. |
 | `gold/results.jsonl` | Three appended runs: the reproduced baseline, `top_k = 10`, `top_k = 20`. |
+
+## How to read this note
+
+The measurement in this PR did **not** cleanly agree with the recommendation,
+and an earlier draft resolved that by choosing a presentation — comparing
+tables built on different query sets, and convicting `top_k = 20` on a stratum
+declared inadmissible two sections earlier. Three reviewers caught it
+independently. The recommendation was right the whole time; the reasoning was
+not, and the difference matters because this note outlives the diff.
+
+So, explicitly: **every quality table below is 13 queries with the conclusion
+stratum excluded, both arms.** Where the evidence is split it is shown split.
+What choosing `top_k = 10` gives up is stated as a cost, not presented around.
 
 ## Off by default, and off IS parity
 
@@ -87,6 +101,49 @@ The files land in `[embedding] model_dir`, deliberately shared rather than
 given a knob of its own: it is the daemon's one model cache, and hf-hub already
 namespaces each repo under `models--<org>--<name>/` inside it.
 
+### The *artifact* supply chain, which is a separate problem from the crate one
+
+The section above is about the dependency graph. It says nothing about the
+90 MB of executable ONNX the daemon downloads and runs, and an earlier draft
+left that silent — which against this repo's own claims reads as an oversight
+rather than a decision.
+
+Two things here are genuinely different from the embedding model, and they are
+why silence was not good enough:
+
+1. **A third-party org, not a fastembed-curated built-in.** `EmbeddingModel` is
+   an enum; the repo, revision policy and file list are fastembed's. Here they
+   are ours.
+2. **`[reranker] model` is the daemon's first operator-settable "which remote
+   artifact do we execute" knob.** `EmbeddingConfig` has no `model` field at
+   all. A typo in this one selects executable content.
+
+Default `ApiBuilder::new().model(...)` resolves the moving `main` ref and keys
+the cache on `blob_path(&metadata.etag)` — an etag is a cache key, not
+verification. TLS *is* verified, and `HF_ENDPOINT` is **not** honoured (we call
+`new()`, not `from_env()`), so the trust anchor would have been "HuggingFace
+plus the `Xenova` account", permanently and invisibly: the cache is written
+once and every later boot is offline.
+
+**So it is pinned.** `PINNED_REVISION` is the exact commit this PR measured
+(`a09144355adeed5f58c8ed011d209bf8ee5a1fec`) and `PINNED_DIGESTS` carries a
+SHA-256 for all five files, checked on every load — so the check also catches
+local cache corruption, not just a bad download. `sha2` was already a direct
+dependency of `memgardend`, so this costs zero new crates.
+
+The operator-settable knob is handled honestly rather than by pretending it
+does not exist, in two branches:
+
+* `model == DEFAULT_RERANK_MODEL` → pinned revision, all five digests verified,
+  load refused on mismatch.
+* anything else → the `main` ref, **no** revision pin and **no** digest, plus a
+  startup `WARN` naming exactly that. Refusing outright would make the knob
+  useless for the AC-1 experiments it exists for; refusing *silently* is what
+  this avoids.
+
+Verifying all five files rather than only `onnx/model.onnx` costs one loop and
+removes the need to reason about which of them counts as "executable".
+
 ### Score normalization
 
 Local cross-encoders emit unbounded logits, so `sigmoid` maps them to `[0, 1]`
@@ -144,79 +201,145 @@ The disabled arm reproduces AX-2's recorded baseline **digit-for-digit on every
 query and every stratum**, which is the parity claim measured at corpus scale
 rather than on a fixture.
 
+**Every table below is 13 queries with the conclusion stratum excluded**, both
+arms, no exceptions. That basis is stated once here because switching it
+between tables is exactly how a reader gets misled — and an earlier draft of
+this note did switch it, which is how `top_k = 20` came to be described as
+"flat on nDCG" when on a consistent basis it is slightly ahead.
+
 ### Per stratum, nDCG@10 (the metric duplication does not deflate)
 
-| stratum | queries | baseline | `top_k = 10` | Δ |
+| stratum | queries | baseline | `top_k = 10` | Δ vs baseline |
 |---|---|---|---|---|
-| identifier / proper noun | 4 | 0.416 | **0.495** | **+0.079** |
-| memcompare | 5 | 0.203 | 0.240 | +0.037 |
-| graph | 2 | 0.549 | 0.546 | −0.003 |
-| temporal | 2 | 0.074 | 0.325 | +0.251 |
-| conclusion | 1 | — | — | **excluded, see below** |
+| identifier / proper noun | 4 | 0.4163 | **0.4952** | **+0.079** |
+| memcompare | 5 | 0.2032 | 0.2399 | +0.037 |
+| graph | 2 | 0.5489 | 0.5462 | −0.003 |
+| temporal | 2 | 0.0745 | 0.3254 | +0.251 — **but see the warning below: neither query exercises the temporal arm** |
+| conclusion | 1 | — | — | **excluded — structurally unmeasurable, see below** |
 
 MRR, same arms:
 
 | stratum | baseline | `top_k = 10` | Δ |
 |---|---|---|---|
-| identifier | 0.688 | **0.875** | +0.187 |
-| memcompare | 0.383 | 0.600 | +0.217 |
-| graph | 0.750 | 1.000 | +0.250 |
-| temporal | 0.050 | 0.556 | +0.506 |
+| identifier | 0.6875 | **0.8750** | +0.188 |
+| memcompare | 0.3833 | 0.6000 | +0.217 |
+| graph | 0.7500 | 1.0000 | +0.250 |
+| temporal | 0.0500 | 0.5556 | +0.506 — **neither query exercises the temporal arm** |
 
 ### Aggregate, conclusion stratum excluded (13 scored queries)
 
 | metric | baseline | `top_k = 10` | Δ |
 |---|---|---|---|
-| recall@1 | 0.022 | 0.066 | +0.044 |
-| recall@5 | 0.197 | 0.247 | +0.050 |
-| recall@10 | 0.345 | 0.347 | +0.002 |
-| MRR | 0.482 | **0.739** | **+0.257** |
-| nDCG@10 | 0.302 | **0.379** | **+0.077** |
+| recall@1 | 0.0222 | 0.0657 | +0.044 |
+| recall@5 | 0.1969 | 0.2466 | +0.050 |
+| recall@10 | 0.3449 | 0.3468 | +0.002 |
+| MRR | 0.4821 | **0.7393** | **+0.257** |
+| nDCG@10 | 0.3021 | **0.3787** | **+0.077** |
 
 For reference, the 14-query figure the harness prints (which folds the
-conclusion stratum in) is `0.021/0.183/0.335/0.458/0.289` → `0.061/0.229/0.336/0.697/0.360`.
+conclusion stratum back in) is `0.021/0.183/0.335/0.458/0.289` →
+`0.061/0.229/0.336/0.697/0.360`. It is printed by the tool, not used for any
+judgement here.
 
 **The conclusion stratum is excluded, not averaged in.** AX-2 established that
 it is structurally unmeasurable against this corpus: three of its four queries
 have no answer in the corpus at all, and q11 has 23 labels of which zero are
 grade 2, because curated conclusions live in native `MEMORY.md` which this
-export does not cover. Its number happens to be identical in both arms (0.113),
-so nothing is being hidden — but moving one query with no core answer in reach
-is noise with a decimal point on it, and it does not belong in a delta.
+export does not cover. Its `top_k = 10` value is identical to baseline (0.1131)
+— but moving one query with no core answer in reach is noise with a decimal
+point on it, so it is out of every table above **and out of the `top_k = 20`
+comparison below**, where it would otherwise have decided the outcome.
 
-### The identifier guardrail: passed, and it is the strongest column
+### The temporal stratum's +0.251 does not mean the temporal arm improved
 
-The instruction was explicit that a reranker which raises the aggregate while
-regressing the proper-noun stratum is a failure, not a trade. It does not
-regress: identifier nDCG@10 goes **0.416 → 0.495** and MRR **0.688 → 0.875**,
-the second-largest gain of any stratum. The evidence that the floorless hybrid
-was right — jcode's argument that a hard cosine floor zeroes recall on
-identifier-heavy agent memory — is *strengthened*, not traded away. The lexical
-arm still surfaces the proper-noun matches; the cross-encoder then puts the
-right one first.
+Reported here rather than in a tail bullet, because the stratum table alone
+tells a reader the opposite. **Neither temporal query exercises the temporal
+arm at all:**
 
-`recall@10` is essentially flat (+0.002) and that is expected, not a
-disappointment: at `top_k = 10` the reranker reorders the RRF top-10 and drops
-the rest, so the *set* inside the measurement window is nearly the baseline's.
-(It moves at all only because the baseline's top-10 is ordered by
-`passthrough_base × boosts`, not by raw RRF, so the ±21 % boost envelope can
-swap an item across the rank-10 boundary.) **Read MRR and nDCG@10.** Those are
-where a pure reordering can show up, and they move a lot.
+* **q15 (`지난주`)** resolves, with `now` pinned to Monday 2026-08-03, to a
+  window containing 2697 of the corpus's 2718 facts. The arm fires and
+  contributes a near-uniform fourth ranked list — effectively a no-op.
+* **q17 (`8월 2일`)** extracts **no constraint at all**, so `window` is `None`,
+  the arm never runs, and `scores.temporal` is `NEUTRAL` for every candidate.
 
-### `top_k = 20`, a secondary data point
+So "+0.251 temporal" is two lexical/semantic queries wearing a temporal label,
+and the cross-encoder improving them says nothing about CE-8. Both facts are
+AX-2's findings; what is new is that q17's cause turns out to be a **parity
+gap, not a coverage gap** — see the next section and `docs/parity-gaps.md`.
 
-| | recall@1 | recall@5 | recall@10 | MRR | nDCG@10 |
-|---|---|---|---|---|---|
-| baseline (14q) | 0.021 | 0.183 | 0.335 | 0.458 | 0.289 |
-| `top_k = 10` (14q) | 0.061 | 0.229 | 0.336 | **0.697** | **0.360** |
-| `top_k = 20` (14q) | 0.035 | 0.219 | 0.368 | 0.563 | 0.355 |
+### The identifier guardrail: passed against baseline, traded against `top_k = 20`
 
-Deeper is not better. `top_k = 20` buys real recall@10 (+0.033 over `top_k =
-10`, since twice as many candidates are reachable) but loses MRR (0.697 →
-0.563) and is flat on nDCG, because the extra candidates give the cross-encoder
-twenty near-duplicates to be confidently wrong about — the temporal stratum
-collapses from 0.325 to 0.154 and q11 goes to zero. At double the latency, that
-is a bad trade. **`top_k = 10` stays the supported depth.**
+The brief was explicit that a reranker which raises the aggregate while
+regressing the proper-noun stratum is a failure, not a trade. Against the
+baseline it does not regress: identifier nDCG@10 **0.4163 → 0.4952** and MRR
+**0.6875 → 0.8750**. The evidence that the floorless hybrid was right —
+jcode's argument that a hard cosine floor zeroes recall on identifier-heavy
+agent memory — is *strengthened*. The lexical arm still surfaces the
+proper-noun matches; the cross-encoder puts the right one first.
+
+**And this is the column `top_k = 10` gives up to `top_k = 20`**, which is
+stated here rather than left for the reader to derive from two tables that
+never meet:
+
+| identifier stratum (4 queries) | baseline | `top_k = 10` | `top_k = 20` |
+|---|---|---|---|
+| nDCG@10 | 0.4163 | 0.4952 | **0.5954** |
+| recall@10 | 0.4183 | 0.4183 | **0.5318** |
+| MRR | 0.6875 | 0.8750 | 0.8750 (tied) |
+
+`top_k = 20` is **+0.100 nDCG@10 ahead of `top_k = 10` on the guardrail** —
+larger than the +0.079 that `top_k = 10` gains over baseline. Choosing 10 is
+knowingly declining that, for the reasons in the next section.
+
+`recall@10` is nearly flat (+0.002) at `top_k = 10`, as expected: the reranker
+reorders the RRF top-10 and drops the tail, so the *set* inside the measurement
+window is close to the baseline's. It is not pinned at zero — the baseline's
+top-10 is ordered by `passthrough_base × boosts`, so the ±21 % envelope can
+swap items across the rank-10 boundary in either direction, and the memcompare
+stratum actually **drops** 0.3476 → 0.3276. **Read MRR and nDCG@10.**
+
+### `top_k = 20`: the ranking evidence is split, and latency settles it
+
+Same 13-query basis as everything above.
+
+| metric (13q) | baseline | `top_k = 10` | `top_k = 20` | ranking winner |
+|---|---|---|---|---|
+| recall@1 | 0.0222 | **0.0657** | 0.0379 | 10 |
+| recall@5 | 0.1969 | **0.2466** | 0.2363 | 10 |
+| recall@10 | 0.3449 | 0.3468 | **0.3968** | 20 |
+| MRR | 0.4821 | **0.7393** | 0.6059 | 10, decisively |
+| nDCG@10 | 0.3021 | 0.3787 | **0.3824** | 20, narrowly |
+| identifier nDCG@10 | 0.4163 | 0.4952 | **0.5954** | 20 |
+| graph nDCG@10 | 0.5489 | **0.5462** | 0.4966 | 10 |
+| memcompare nDCG@10 | 0.2032 | 0.2399 | **0.2578** | 20 |
+
+**`top_k = 20` wins nDCG@10, recall@10, the identifier guardrail and
+memcompare. `top_k = 10` wins MRR by 0.133, recall@1, recall@5 and graph.**
+On ranking alone this is not a clean call, and any sentence claiming it is
+depends on which metric is quoted first.
+
+**Latency settles it, and latency is unconditional.** `top_k = 20` doubles a
+cost that already triples p50 against a 35 ms budget and already drags the
+background ingest loop below 90 % of offered load (below). No stratum selection
+is needed to reach that conclusion.
+
+The ranking tie-break, given latency has already decided: MRR is the metric a
+top-of-block injection lives on. Recalled memories are prepended to a prompt in
+rank order and the client model reads down; the *first* relevant item arriving
+at rank 1 rather than rank 3 is worth more than one extra relevant item
+appearing at rank 9. 0.739 vs 0.606 is a large gap on exactly that.
+
+**What is being given up, stated plainly:** +0.100 identifier nDCG@10, +0.050
+recall@10, +0.004 aggregate nDCG@10. The guardrail column is the real cost, and
+it is a cost, not a non-event. If a future caller's budget absorbs the latency,
+`top_k = 20` is the better *ranking* configuration and this note should not be
+read as saying otherwise.
+
+Two `top_k = 20` observations that are **not** admissible evidence and were
+cited as such in an earlier draft: the temporal stratum's collapse (0.325 →
+0.154) rests on the two queries that do not exercise the temporal arm, and
+"q11 goes to zero" is the conclusion stratum, excluded six paragraphs above.
+Neither is used here.
 
 ## Measured — latency
 
@@ -272,10 +395,34 @@ and the recall path pays the ONNX mutex and the scheduler hop on top.
 | # | Divergence | Legacy | Here | Why |
 |---|---|---|---|---|
 | 1 | **Reranker default off** | on, `cross-encoder/ms-marco-MiniLM-L-6-v2` loaded at startup | `enabled = false` | The *live* legacy daemon also runs it off (`HINDSIGHT_API_RERANKER_PROVIDER=rrf`), adopted as part of its 830 ms → 20 ms fix. Off is parity with the deployed reference; the shipped-default in the upstream source is not what anything actually runs. AC-2's 35 ms p50 is the second reason. |
-| 2 | **`top_k = 10`** | `rerank_limit = thinking_budget * 2` = 600 at mid budget (`memory_engine.py:5266`) | 10 | 600 candidates × 1.5–2.6 ms is ~15–25 *seconds*. Not a supportable number on this hardware at any SLO. Measured above: 20 is already worse on MRR and nDCG than 10, so this is not merely a latency compromise — 10 is also the better ranking. |
+| 2 | **`top_k = 10`** | `rerank_limit = thinking_budget * 2` = 600 at mid budget (`memory_engine.py:5266`) | 10 | 600 candidates × 1.0–3.2 ms is ~10–30 *seconds*: not supportable at any SLO, so legacy's depth is out regardless. The 10-vs-20 choice is a **latency** decision, not a ranking one — measured above, 20 wins nDCG@10, recall@10 and the identifier guardrail while 10 wins MRR decisively. |
 | 3 | Calibrated-score passthrough branch not ported | `reranking.py:304-307` passes `[0, 1]` scores through un-sigmoided | always sigmoid | That branch exists for hosted rerankers (Cohere, Jina, llama.cpp) which MemGarden has no client for. Dead code here, and a dead branch in a scoring path is worse than an absent one. |
 | 4 | `max_length` fixed at 512 | configurable | fixed | 512 is the model's own position-embedding limit; above it the model produces garbage rather than an error. A knob whose only legal value is its default is a trap. |
-| 5 | Load failure is non-fatal and invisible to `/healthz` | n/a (legacy fails startup) | logs, leaves the slot empty, recall stays on the passthrough | The passthrough is the configuration every other Phase B number was measured against, and an optional ranking refinement being absent is not a degraded memory system. Reporting it as DEGRADED would train the operator to ignore DEGRADED. |
+| 5 | Load failure is non-fatal and invisible to `/healthz` | n/a (legacy fails startup) | logs, leaves the slot empty, recall stays on the passthrough | The passthrough is the configuration every other Phase B number was measured against, and an optional ranking refinement being absent is not a degraded memory system. Reporting it as DEGRADED would train the operator to ignore DEGRADED. **`/metrics.json` carries `reranker_loaded`** so "configured on, silently running off" is still observable. |
+| 6 | **`top_k` silently overrides `[recall] limit`** | legacy's `rerank_limit` (600) is far *above* `limit`, so it never binds | `top_k = 10` is *below* the default `limit = 20`, so an enabled reranker returns at most 10 results where the caller asked for 20 | Ported faithfully — legacy drops everything past the rerank depth (`memory_engine.py:5266`) and this does the same. But at legacy's depth the truncation is invisible and at ours it is the binding constraint, which makes it a **user-visible behaviour change** that a caller reading `[recall] limit` would not predict. Called out here rather than left as an emergent property of two configs. |
+| 7 | **The model is an ONNX re-export, not legacy's checkpoint** | `cross-encoder/ms-marco-MiniLM-L-6-v2` (PyTorch, sentence-transformers) | `Xenova/ms-marco-MiniLM-L-6-v2` (community ONNX export of it) | Different artifact, different org, so "the exact model legacy loads" is an equivalence claim about a re-export. **Now measured rather than asserted** — see below. |
+| 8 | Result count changes transiently while the model loads | n/a (legacy blocks startup on the model) | requests served between bind and load return the passthrough's up-to-`limit` results; requests after it return up-to-`top_k` | Follows from divergences 5 and 6 together. Bounded (one load, a few seconds) and it fails toward *more* results, but a caller diffing two responses across that boundary sees a count change with no config change. |
+| 9 | AC-2 is not enforced on reranked bench runs | n/a | `hybrid_recall_bench` asserts the p50/p95 gates only when `MEMGARDEN_BENCH_RERANK` is unset | A reranked run is an experiment on a non-default config; turning "the cross-encoder costs more than its budget" into a red test destroys the measurement instead of recording it. The consequence is real and stated: **no automated gate protects the reranked path's latency.** Whoever enables it in production owns re-establishing one. |
+
+### Divergence 7, measured
+
+`Xenova/ms-marco-MiniLM-L-6-v2` is a community re-export, so the port-fidelity
+claim needed a number rather than a sentence. Legacy's own stack was run on the
+same three query-document pairs (`sentence_transformers.CrossEncoder(...,
+device='cpu')`, `activation_fn=Identity`, then the same sigmoid):
+
+| pair | legacy (PyTorch fp32) | MemGarden (fastembed/ONNX) | abs Δ |
+|---|---|---|---|
+| off-topic (banana) | 1.1982546262499065e-5 | 1.1982534835194829e-5 | 1.1e-11 |
+| **on-topic** (wall clock) | 0.9998976474542983 | 0.9998976476495002 | 2.0e-10 |
+| off-topic (FTS5) | 1.095726005926585e-5 | 1.0957291407939685e-5 | 3.1e-11 |
+
+Agreement to ~7 significant figures — fp32 noise between two runtimes, the same
+standard `embed.rs` holds the embedding model to. `rerank::tests::live_rerank`
+now asserts against these recorded legacy values at 1e-6, sized to catch a
+*different model* or a broken re-export rather than runtime drift. Reproduce
+legacy's side with sentence-transformers on CPU and the raw logits
+`[-11.332047462463379, 9.18698501586914, -11.421497344970703]`.
 
 ## Known limits and follow-ups
 
@@ -288,42 +435,79 @@ and the recall path pays the ONNX mutex and the scheduler hop on top.
   records). The deltas are computed against the same labels on both arms, so
   a labelling error largely cancels — but the absolute figures inherit AX-2's
   caveat and should not be quoted without it.
-* **Two strata are one or two queries wide.** The temporal stratum's +0.251 is
-  two queries, one of which (q17) went from 0.149 to 0.515 on its own. It is
-  the largest-looking gain in the table and the least robust. The identifier
-  stratum (4 queries) and memcompare (5) are the ones to trust.
-* **No metric for rerank cost.** `/metrics.json` reports whole-recall latency;
-  the cross-encoder's share is only visible by differencing two runs. If the
-  reranker is ever enabled in production, a `rerank_latency` histogram should
-  land with it.
+* **Two strata are one or two queries wide, and the temporal one is worse than
+  thin — it is invalid.** Neither of its two queries exercises the temporal arm
+  (q15's window covers 2697/2718 facts; q17 extracts no constraint because of
+  the Korean-date parity gap). Its +0.251 measures the cross-encoder on two
+  lexical queries and says nothing about CE-8. The identifier stratum (4
+  queries) and memcompare (5) are the ones to trust.
+* **`rerank_latency` is a hard precondition on `enabled = true`, not a
+  follow-up.** `/metrics.json` reports whole-recall latency only, so the
+  cross-encoder's share is visible only by differencing two offline runs —
+  which is exactly the position this project's standing rule about the embedder
+  mutex exists to forbid. `enabled = false` makes it non-urgent; it does not
+  make it optional. Whoever flips the default owes, in the same change: a
+  `rerank_latency` histogram, **and** the same instrumentation on the embedder's
+  mutex hold so the two ONNX sessions can be compared rather than guessed at.
 * **One session, one mutex.** A concurrent recall waits out the ~15–26 ms of a
-  `top_k = 10` batch. A second session would fix that and would also be a
-  second copy of the model in RAM; RAM-first, so not now.
-* **`recall@10` cannot be moved by this PR** and should not be used as its
-  success criterion by a future reader skimming the table.
+  `top_k = 10` batch (`ponytail:` marker at `Reranker::scores`). A second
+  session would fix that and would also be a second copy of the model in RAM;
+  RAM-first, so not now, and gated on the histogram above.
+* **`recall@10` barely moves at `top_k = 10`** (+0.002, and *negative* on the
+  memcompare stratum) and should not be used as this PR's success criterion by
+  a reader skimming the table. It is not, however, pinned at zero — see above.
+* **The AX-2 baseline itself is `provisional-pending-user-review`**, and every
+  post-CE-11 recall delta — this note's and any future one measured against
+  these records — inherits that caveat until the corpus owner signs the labels
+  off. With the harness now exercised by a real consumer, AX-3 and AX-4 are
+  unblocked.
 
 ## Recommendation
 
-**Keep the default off, and record that the opt-in now has evidence behind it.**
+**Keep the default off, at `top_k = 10`, and record what that costs.**
 
-The measurement says the cross-encoder earns its cost on quality — +0.077
-nDCG@10 and +0.257 MRR over 13 queries, with the identifier guardrail moving
-*up* rather than being traded away. That is a substantial reordering win and
-it is not one the boosts or the fusion could have produced.
+**Latency decides it, and latency is unconditional.** It needs no choice of
+metric, no stratum selection and no aggregation basis:
 
-It does not earn it on latency for the default caller. Idle, it fits — p50
-20.4 ms and p95 40.7 ms are both inside AC-2 — but it triples the p50 and
-quadruples the p95 of a hook that fires on *every prompt*, and it consumes
-enough CPU that the machine can no longer sustain the background ingest rate
-the passthrough sustains (89.9 % of offered load, reproducibly). The AC-2
-margin that absorbs a slow disk, a concurrent retain or a busier bank is where
-that 32 ms comes from. And the reference system AC-1 compares against does not
-pay this cost either, so enabling it by default would make every A/B measure
-two changes at once.
+* +13.73 ms p50 / +31.83 ms p95 on a hook that fires on *every prompt* — 3× the
+  p50 and 4.6× the p95 of the passthrough.
+* Idle, both arms pass AC-2 (on: p50 20.4 ms, p95 40.7 ms). What is consumed is
+  the margin — 28/51 ms of slack becomes 15/19 ms — and that margin is what
+  absorbs a slow disk, a concurrent retain, or a bank ten times this size.
+* Under load the arms are not even comparable: the cross-encoder starves the
+  ingest loop to 89.9 % of offered, reproducibly. A recall path that slows
+  ingest is spending someone else's budget.
+* The reference system AC-1 compares against runs the passthrough, so enabling
+  this by default would make every A/B measure two changes at once.
 
-So: off in `config.example.toml` and in `Config::defaults`, documented as a
-supported opt-in with both tables in the config comments, and `top_k = 10`
-fixed as the depth — because 20 is worse on ranking *and* twice the cost. A
-caller that is latency-tolerant (a batch consolidation recall, a future
-`/reflect`) is the natural first place to turn it on, and that is a
-per-call-site decision Phase C can make with these numbers in hand.
+**Quality says the cross-encoder is genuinely worth having**, which is why it
+ships as a supported opt-in rather than as a rejected experiment: +0.257 MRR
+and +0.077 nDCG@10 over 13 queries, with the identifier guardrail up from 0.416
+to 0.495. That is a large reordering win and not one the boosts or the fusion
+could have produced.
+
+**And here is what choosing `top_k = 10` gives up, stated rather than
+presented around.** On a consistent 13-query basis the ranking evidence is
+*split*: `top_k = 20` wins nDCG@10 (0.3824 vs 0.3787), recall@10 (0.397 vs
+0.347), memcompare, and the identifier guardrail by **+0.100 nDCG@10** —
+more than the +0.079 that `top_k = 10` gains over baseline on that same
+column. `top_k = 10` wins MRR by 0.133, recall@1, recall@5 and graph. An
+earlier draft of this note called 20 "flat on nDCG" and "worse on ranking";
+both were artifacts of comparing a 13-query table against a 14-query one and
+of citing q11 — the conclusion stratum, excluded as inadmissible six
+paragraphs earlier — as evidence. On a consistent basis neither claim holds.
+
+10 is still right, because latency already settled it and MRR is the better
+tie-break for this consumer: recalled memories are prepended in rank order and
+the client model reads down, so the first relevant item at rank 1 instead of
+rank 3 is worth more than an extra relevant item at rank 9. But the guardrail
+column is a real cost, knowingly paid. **If a future caller's budget absorbs
++14 ms p50 / +32 ms p95, `top_k = 20` is the better ranking configuration and
+this note should not be read as saying otherwise.**
+
+So: off in `config.example.toml` and in `Config::defaults`, `top_k = 10` as the
+supported depth with the latency table in the config comments, `rerank_latency`
+instrumentation as a hard precondition on ever flipping the default, and a
+latency-tolerant caller (batch consolidation recall, a future `/reflect`) as
+the natural first place to turn it on — a per-call-site decision Phase C can
+now make from numbers instead of taste.
