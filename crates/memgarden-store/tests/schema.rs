@@ -1274,15 +1274,25 @@ fn fresh_database_has_the_0005_embedding_model_column() {
 }
 
 /// SQL cannot reference a Rust const, so 0005's backfill hard-codes the id.
-/// This is the pin that makes changing `EMBEDDING_MODEL_ID` without changing
-/// the migration a test failure rather than a silently unbackfilled upgrade.
+/// Pinned against a test-local copy, NOT against the live const: 0005
+/// backfills the producer that was active when 0005 was written, and that is
+/// historical. Editing the literal to follow a bumped `EMBEDDING_MODEL_ID`
+/// would tag a v4 database's old-model vectors with the new id — the silent
+/// mislabeling AX-1 exists to prevent, arriving through its own guard.
+const ID_AT_0005: &str = "fastembed:BAAI/bge-small-en-v1.5";
+
 #[test]
 fn backfill_literal_matches_the_active_model_id() {
     let sql = include_str!("../migrations/0005_embedding_model.sql");
     assert!(
-        sql.contains(&format!("'{EMBEDDING_MODEL_ID}'")),
-        "0005's backfill literal has drifted from EMBEDDING_MODEL_ID"
+        sql.contains(&format!("SET embedding_model = '{ID_AT_0005}'")),
+        "0005 backfills the producer active when it was written — freeze this \
+         literal. If EMBEDDING_MODEL_ID changed, add a new migration for the \
+         transition and pin that one."
     );
+    // Today they are the same string; the day they diverge, the line above
+    // must not move and this one must.
+    assert_eq!(ID_AT_0005, EMBEDDING_MODEL_ID);
 }
 
 /// The v4-upgrade mirror of the v1/v2/v3 tests. A populated v4 database must

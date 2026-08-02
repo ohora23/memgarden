@@ -300,7 +300,9 @@ pub fn hydrate(db: &Db, bank_id: &str, ids: &[i64]) -> Result<Vec<CandidateRow>>
 /// holding foreign-producer vectors yields fewer than `k` dense candidates
 /// rather than reaching deeper for `k` matching ones.
 /// `// ponytail: post-filter, so a bank that is mostly foreign vectors gets a
-/// thin dense arm. Acceptable while the only producer is ours (every row is
+/// thin — worst case empty — dense arm: if the top-k by raw distance are all
+/// foreign, comparable-space matches just below the cut are missed.
+/// Acceptable while the only producer is ours (every row is
 /// tagged by 0005's backfill). Upgrade path if MG-1 lands a mixed bank:
 /// sqlite-vec's rowid-IN prefilter, or `embedding_model` as a second vec0
 /// partition key, either of which returns a full k.`

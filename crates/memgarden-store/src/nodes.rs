@@ -186,8 +186,11 @@ pub(crate) fn update_text_tx(
 /// `vec_nodes` row (vec0 has no native upsert, so this deletes then inserts).
 ///
 /// Stamps `embedding_model` with [`EMBEDDING_MODEL_ID`] in the same statement
-/// as the vector (AX-1) — the two must never be able to disagree, so they are
-/// written together or not at all.
+/// as the vector (AX-1). The tag describes the most recent vector *this
+/// codebase produced* for the row — the one still in `vec_nodes` — not the
+/// row's current text. It deliberately outlives a text edit (see
+/// `update_text_tx`, which nulls the BLOB and keeps both the tag and the
+/// stale vec row) and is overwritten on the next re-embed.
 pub fn set_embedding(db: &Db, node_id: i64, bank_id: &str, embedding: &[f32]) -> Result<()> {
     let blob = vecblob::encode(embedding)?;
     let now = now_ms();
