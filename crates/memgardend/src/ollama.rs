@@ -487,8 +487,20 @@ mod tests {
                     .await
             })
         };
-        // Let the holder actually take the permit.
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Wait for the holder to actually take the permit, by polling the
+        // signal that *proves* it: the stub only increments `calls` once the
+        // holder's request has arrived, which it cannot do before acquiring.
+        //
+        // This was a fixed 300 ms sleep, which is a wall-clock guess at how
+        // long a spawn + connect takes. On a loaded machine (the CE-10 review
+        // saw it while `cargo clippy` was compiling `ort`/`fastembed`) that
+        // connect can miss the deadline: the interactive caller below then
+        // finds a *free* permit, succeeds, and the assertion inverts. A once-
+        // seen, never-reproduced failure is the worst kind to own — this
+        // removes the margin rather than widening it.
+        while calls.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
 
         let interactive = client.chat_json::<Value>("s", "u", &json!({})).await;
         assert!(
