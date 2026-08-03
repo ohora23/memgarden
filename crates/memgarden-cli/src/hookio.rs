@@ -2,9 +2,30 @@
 //!
 //! One struct for all four events. Claude Code sends a superset per event and
 //! adds fields between versions, so every field is `#[serde(default)]` and
-//! unknown fields are ignored: a Claude Code upgrade that adds a key must
+//! unknown fields are ignored: a Claude Code upgrade that **adds** a key must
 //! never turn into a parse failure, and a parse failure must never turn into
 //! anything but exit 0.
+//!
+//! # `#[serde(default)]` does not cover `null`, and this is the payload where
+//! # that matters most
+//!
+//! **The rule for this crate: a field whose JSON is produced by Claude Code or
+//! by `memgardend` is `Option<T>`, not `#[serde(default)] T`.** `default`
+//! covers an *absent* key; an explicit `null` against a non-`Option` is a type
+//! error that fails the **whole** struct.
+//!
+//! C4b hit exactly this in `cmd::retain`: the daemon sends `"job_id": null` on
+//! every `duplicate` and every `skipped`, a `#[serde(default)] String` refused
+//! to parse them, and the two answers the accept table exists for read as
+//! transport failures instead — the cursor wedged on the response designed to
+//! unwedge it.
+//!
+//! Here the blast radius is larger and the schema is one Anthropic controls: a
+//! future build emitting `"cwd": null` on one event would fail this parse, and
+//! **every hook would silently no-op** for anyone on that version. The twelve
+//! non-`Option` fields below are a known exposure rather than an oversight;
+//! converting them (and adding a null-payload test) is a follow-up, not a C4b
+//! change, because it touches every subcommand's field access.
 //!
 //! Field list from `https://code.claude.com/docs/en/hooks.md`, fetched
 //! 2026-08-03.

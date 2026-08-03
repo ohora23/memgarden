@@ -80,6 +80,18 @@ pub fn dispatch(args: &[String]) {
         // read — and only in `full` mode. See `cmd::recall`.
         (Some("hook"), Some("recall")) => cmd::recall::run(),
 
+        // `Stop`. Never writes to stdout, and the one subcommand that can lose
+        // memory if its cursor is wrong. See `cmd::retain`.
+        //
+        // `args` is passed whole because the detached `session-end` child
+        // reaches the same entry point as `hook retain --force --session <sid>
+        // --end-reason <reason>`: one state machine, three callers.
+        (Some("hook"), Some("retain")) => cmd::retain::run(args),
+
+        // `SessionEnd`. Spawns the detached child above and exits; it never
+        // posts anything itself. See `cmd::session_end`.
+        (Some("hook"), Some("session-end")) => cmd::session_end::run(),
+
         // Internal: the detached child `session-start` spawns. Reachable by
         // name so it can be run by hand with `--dry-run`, which is the only
         // way to observe a process whose three streams are `/dev/null`.

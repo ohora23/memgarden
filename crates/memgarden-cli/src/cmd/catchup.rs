@@ -12,19 +12,23 @@
 //! run by hand, it prints what the child would have selected and touches
 //! nothing.
 //!
-//! # What C2b's child does, and what it does not
+//! # What the child does
 //!
-//! It **selects** — and it collects the state directory. It does **not** post.
+//! It collects the state directory, **selects**, and — since C4b — posts each
+//! selected session's delta through `retain::advance`.
 //!
-//! Posting a delta needs C4a's transcript reader and C4b's `pending`
-//! reconciliation, and the second of those is not optional sequencing: a POST
-//! without it commits the cursor on a bare 202, which the plan's own
-//! sequencing note calls out as turning silent loss "from a rare event into
-//! the normal case". So the plan's C2b line ("posts each delta with
-//! `is_initial = false`") cannot be satisfied by C2b, and satisfying it early
-//! would ship the exact defect C4b exists to prevent. The selection — which is
-//! what every test the plan lists for this file is about — lands here; the one
-//! call it gains in C4b is marked below.
+//! The posting half was deliberately not in C2b. It needs C4a's transcript
+//! reader and C4b's `pending` reconciliation, and the second of those is not
+//! optional sequencing: a POST without it commits the cursor on a bare 202,
+//! which the plan's own sequencing note calls out as turning silent loss "from
+//! a rare event into the normal case".
+//!
+//! **`is_initial` is `offset == 0`, not the hardcoded `false` the plan's C2b
+//! line specifies.** Catch-up at offset 0 *is* a session's first retain — a
+//! whole transcript, the largest payload in the system — so `false` there
+//! takes the daemon's **uncapped** branch on exactly the shape
+//! `retain.max_initial_messages` exists to bound. `retain::advance` derives it
+//! from the cursor, once, for all three callers.
 
 use std::path::Path;
 
@@ -102,18 +106,40 @@ pub fn run(args: &[String]) {
         }
     }
 
-    // C4b: per candidate, **re-load under `state::with_lock` and re-check
-    // `offset < file_size` before posting**, and validate `transcript_path` at
-    // the point of the read (see the module comment). Post with
-    // `is_initial = false`. Nothing is posted in C2b — see the module comment
-    // for why that is sequencing rather than an omission.
+    // The marker C2b left, honoured: **per candidate, re-load under
+    // `state::with_lock` and re-check `offset < file_size` before posting**,
+    // and validate `transcript_path` at the point of the read.
     //
     // The re-load is not defensive padding. `Candidate` is a **selection
     // snapshot**: `state` came from `load_all` outside any lock and
     // `file_size` is a `stat` from the same moment. Posting from it means
     // posting a cursor that a live session's own retain hook may already have
-    // moved — see §Known limits, "a session live in another window".
-    let _ = picked;
+    // moved — a session live in *another Claude Code window* passes every
+    // filter in `select`, so the exclusion above removes one instance of the
+    // race and not the class. `retain::advance` does both halves inside the
+    // lock: it re-`stat`s the transcript and returns on `size <= offset`.
+    //
+    // `--dry-run` is the only window into a process whose three streams are
+    // `/dev/null`, so it must stay observation-only.
+    if dry_run {
+        return;
+    }
+    for candidate in &picked {
+        let session_id = candidate.state.session_id.as_str();
+        let _ = state::with_lock(dir, session_id, || {
+            let Some(mut st) = state::load(dir, session_id) else {
+                return;
+            };
+            // `force`: the turn gate counts *this* session's `Stop`s, and
+            // catch-up is not one of them — the session it is working on may
+            // not have had a `Stop` in days. The breaker and the poison
+            // throttle still apply; `advance` checks both.
+            super::retain::advance(&cfg, &mut st, true, now_ms());
+            if let Err(e) = state::store(dir, &st) {
+                super::debug(&cfg.hooks, &format!("catchup: state write failed: {e}"));
+            }
+        });
+    }
 }
 
 /// The sessions catch-up would work, most recently active first, at most
@@ -150,7 +176,7 @@ pub fn select(
         // earlier draft — would re-attempt a session the daemon has durably
         // rejected on **every** launch, which is how a slow-retry state
         // becomes a hot loop.
-        .filter(|s| !poisoned_within_throttle(s, cfg.poison_retry_secs, now_ms))
+        .filter(|s| !super::poisoned_within_throttle(s, cfg.poison_retry_secs, now_ms))
         .filter_map(|state| {
             // A transcript that is gone is not recoverable by retrying and is
             // not the daemon's fault (§Failure posture). An empty
@@ -177,24 +203,6 @@ pub fn select(
     found.sort_by_key(|c| std::cmp::Reverse(c.modified_ms));
     found.truncate(cfg.catchup_max_sessions);
     found
-}
-
-/// Whether `poisoned_at` is set and its retry window has not elapsed.
-fn poisoned_within_throttle(state: &SessionState, retry_secs: u64, now_ms: i64) -> bool {
-    let Some(poisoned_at) = state.poisoned_at else {
-        return false;
-    };
-    // Saturating throughout: `poison_retry_secs` is a `u64` from config and
-    // an operator who writes `u64::MAX` should get "never retry", not an
-    // overflow panic in a process nobody is watching.
-    let window_ms = i64::try_from(retry_secs.saturating_mul(1000)).unwrap_or(i64::MAX);
-    // `poisoned_at <= now_ms` is the half review added, and it needs no
-    // attacker to matter: an NTP step, a VM resume or a dual-boot RTC leaves a
-    // stamp in the future, and a bare `now_ms < poisoned_at + window` reads
-    // that as "still throttled" — **forever**, in a process that writes to
-    // `/dev/null` and so cannot tell anyone. A stamp we could not have written
-    // is not a throttle.
-    poisoned_at <= now_ms && now_ms < poisoned_at.saturating_add(window_ms)
 }
 
 fn days_ms(days: u64) -> i64 {

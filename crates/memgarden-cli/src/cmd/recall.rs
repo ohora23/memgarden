@@ -28,7 +28,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-use memgarden_core::config::{Config, HooksConfig};
+use memgarden_core::config::Config;
 use memgarden_core::now_ms;
 use serde::Deserialize;
 
@@ -187,7 +187,7 @@ pub fn run() {
     // property: the fourth prompt after three failures must not connect at all.
     if st
         .as_ref()
-        .is_some_and(|s| breaker_open(s, &cfg.hooks, now))
+        .is_some_and(|s| super::breaker_open(s, &cfg.hooks, now))
     {
         super::debug(&cfg.hooks, "recall: breaker open, skipping");
         return;
@@ -229,25 +229,6 @@ fn truncate_chars(s: &str, max: usize) -> &str {
         Some((i, _)) => &s[..i],
         None => s,
     }
-}
-
-/// Whether the circuit breaker is open *and* the stamp that says so is one we
-/// could plausibly have written.
-///
-/// **Both sides of the window are guarded.** `breaker_open_until_ms` is read
-/// from a file, and a value far enough in the future turns "skip for 60 s" into
-/// "never recall again" — silently, on the one hook whose failure mode is
-/// invisible by design. No attacker is required: an NTP step, a VM resume or a
-/// dual-boot RTC produces one, and C2b hit the identical shape on
-/// `poisoned_at`. Anything more than one cooldown ahead cannot have come from
-/// the arm below, so it is treated as closed.
-fn breaker_open(state: &SessionState, cfg: &HooksConfig, now_ms: i64) -> bool {
-    let until = state.breaker_open_until_ms;
-    now_ms < until && until <= now_ms.saturating_add(cooldown_ms(cfg))
-}
-
-fn cooldown_ms(cfg: &HooksConfig) -> i64 {
-    i64::try_from(cfg.breaker_cooldown_secs.saturating_mul(1000)).unwrap_or(i64::MAX)
 }
 
 /// `POST /v1/banks/{bank}/recall`.
@@ -323,7 +304,7 @@ fn fetch(cfg: &Config, bank_id: &str, query: &str) -> Outcome {
 /// `session-start`: this runs on every prompt, and a temp-create + write +
 /// `rename` per prompt would be pure cost for a write that changes nothing.
 ///
-/// It is **not** "no state I/O": `with_lock` runs unconditionally, so the lock
+/// It is **not** "no state I/O": `with_try_lock` runs unconditionally, so the lock
 /// file is still opened and flocked, and the state file is still read inside
 /// it. The `rename` is the part the C2b argument was about and the part that
 /// is avoided. Moving the lock inside the `st != baseline` branch would save
@@ -344,7 +325,20 @@ fn record(
     outcome: &Outcome,
     now_ms: i64,
 ) -> Option<SessionState> {
-    state::with_lock(dir, session_id, || {
+    // **`with_try_lock`, not `with_lock`.** C4b's `retain` holds this same
+    // lock across its reconcile `GET` and its retain `POST` — up to ~10.8 s of
+    // configured budget — and this function runs on **every**
+    // `UserPromptSubmit`. Blocking here puts a retain's network time straight
+    // onto the interactive path. Worse, C3's breaker is checked *inside* the
+    // lock, so none of the machinery that makes a hung daemon cheap can help a
+    // caller stuck on acquisition, and `hook_bench` measures one hook at a
+    // time so it cannot see the stall at all.
+    //
+    // Losing the race costs this recall's counter update. `with_lock` already
+    // runs `f` unlocked when the lock errors, so this is the same accepted
+    // degradation rather than a new one — and the re-read below is what makes
+    // it safe either way.
+    state::with_try_lock(dir, session_id, || {
         // Re-read inside the lock: `run` loaded a snapshot before a round trip
         // that can take `recall_timeout_ms`, and an `async: true` Stop's retain
         // may have moved the cursor in between.
@@ -361,7 +355,8 @@ fn record(
             Outcome::Transport => {
                 st.transport_failures = st.transport_failures.saturating_add(1);
                 if st.transport_failures >= cfg.hooks.breaker_failures {
-                    st.breaker_open_until_ms = now_ms.saturating_add(cooldown_ms(&cfg.hooks));
+                    st.breaker_open_until_ms =
+                        now_ms.saturating_add(super::breaker_cooldown_ms(&cfg.hooks));
                 }
             }
             // A rejection moves nothing — recall has no cursor to poison — and
@@ -619,10 +614,6 @@ fn open_appending(path: &Path) -> std::io::Result<File> {
 mod tests {
     use super::*;
 
-    fn cfg() -> HooksConfig {
-        Config::defaults().unwrap().hooks
-    }
-
     fn input(prompt: &str, user_prompt: &str) -> hookio::HookInput {
         hookio::HookInput {
             prompt: prompt.to_string(),
@@ -683,34 +674,6 @@ mod tests {
         // And the default budget cannot produce a query over the daemon's
         // 8 KB `MAX_QUERY_BYTES`, which is what the config bound guarantees.
         assert!(cut.len() <= 8 * 1024);
-    }
-
-    #[test]
-    fn the_breaker_is_open_only_inside_a_window_it_could_have_written() {
-        let mut st = SessionState::new("s1", "b1");
-        let cfg = cfg();
-        let now = 1_000_000i64;
-        let cooldown = cooldown_ms(&cfg);
-
-        // Closed by default, and closed at both ends of the window.
-        assert!(!breaker_open(&st, &cfg, now));
-        st.breaker_open_until_ms = now;
-        assert!(!breaker_open(&st, &cfg, now), "an expired stamp is closed");
-        st.breaker_open_until_ms = now + 1;
-        assert!(breaker_open(&st, &cfg, now));
-        st.breaker_open_until_ms = now + cooldown;
-        assert!(breaker_open(&st, &cfg, now), "the far edge is still open");
-
-        // **A stamp we could not have written is not a throttle.** One
-        // millisecond past a full cooldown, an NTP step, and the value a
-        // corrupted file is most likely to hold.
-        for absurd in [now + cooldown + 1, now + cooldown * 1000, i64::MAX] {
-            st.breaker_open_until_ms = absurd;
-            assert!(
-                !breaker_open(&st, &cfg, now),
-                "{absurd} wedged recall off forever"
-            );
-        }
     }
 
     #[test]
