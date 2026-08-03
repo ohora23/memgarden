@@ -16,7 +16,12 @@ delta reader, and it is the only hook that can lose memory.
 3. **Throttles**: the circuit breaker, then the poison window. Before any
    socket.
 4. **Reconcile `pending`**, if there is one: `GET /v1/retain/{job_id}`.
-5. **The turn gate.** 9 of every 10 `Stop`s end here.
+   Because this is *before* the gate and `pending` is set exactly for the
+   window between an accept and the next invocation, **the first gated `Stop`
+   after every accepted retain pays one loopback GET** — so the zero-network
+   gated turn is 8 of every 10, not 9. Immaterial to the budget (~0.2 ms) and
+   material to the table below, which is Phase F's evidence.
+5. **The turn gate.** 9 of every 10 `Stop`s end here; 8 of them open no socket.
 6. **`stat` the transcript**, which is also the guard that it *is* a
    transcript. `size < offset` resets to 0; `size <= offset` returns.
 7. **`read_delta`** (C4a). An empty delta advances the cursor anyway and
@@ -77,6 +82,46 @@ count merged `MAX` server-side, so a rollback-and-resend re-counts the
 boundaries in the re-sent delta and the column is a lower bound by
 construction. A third field in `Pending` would buy exactness in a number
 nothing reads for control (§Binding decisions #6).
+
+## The lock is held across the network, and `recall` must not wait for it
+
+C4b is the first thing in this crate that holds `<sid>.lock` across a socket:
+the reconcile `GET` (400 ms), the retain `POST` (5,000 ms), and on a 404 a
+bank-create plus a second `POST` — **up to ~10.8 s** of configured budget.
+`recall::record` derives the **same** lock path and runs on every
+`UserPromptSubmit`.
+
+Three things make that worse than a slow path:
+
+* **The breaker is checked *inside* the lock.** Everything C3 built to make a
+  hung daemon cheap is bypassed by a caller stuck on acquisition.
+* **`hook_bench` structurally cannot see it.** It measures one hook in
+  isolation, so the gated-turn 0.373 ms is real *and* blind to this.
+* It grows precisely in the Ollama-contention scenario §Open questions 6
+  predicts — and C4b is the gate on starting that shadow run.
+
+So `recall::record` uses **`state::with_try_lock`**: one `try_lock`, and if
+another MemGarden process holds it, `f` runs unlocked.
+
+| recall, behind a retain holding the lock for 2 s | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| `with_lock` (blocking) | 1.752 s | 1.753 s | 1.752 s |
+| **`with_try_lock`** | **0.002 s** | **0.001 s** | **0.002 s** |
+
+**Skipping the wait is not a new degradation.** `with_lock` already runs `f`
+unlocked when `lock()` errors, and `record` already re-reads state inside the
+lock precisely because the value may have moved. The cost of losing the race is
+one recall's counter update — the same thing the existing fallback risks —
+against an unbounded interactive stall on the event where a stall is most
+expensive.
+
+**Retain keeps the blocking lock.** Dropping it around the POST would
+reintroduce the double-post race the lock exists for.
+
+```
+// ponytail: no retry. One `try_lock`, then proceed. A short bounded spin if
+// a counter update ever turns out to matter more than a prompt.
+```
 
 ## One in-flight job per session, and why that is a correctness bound
 
@@ -289,7 +334,24 @@ The retain POST carries `cwd` so the daemon can relativize its `file:` tags; a
 child posting `null` produces absolute tags for the same files the live hook
 tagged relatively — one session, two spellings of one path.
 
-### 11. The manual verification's "converging cursors" criterion is not always reachable
+### 11. Retain must consult the mirror on a state-file miss, mid-session
+
+§Failure posture says a missing state file is "offset 0, `is_initial = true`,
+let the backfill cap bound it", and adds that the wiped-state-dir case is
+covered because `session-start` prefers the mirror. That is true only of a wipe
+**between** sessions. `session-start` does not fire mid-session and `retain` is
+the hook that does — so a mid-session wipe re-ingested the whole transcript
+under **chunk 0's bare `document_id`**, and `routes/retain.rs` rebuilds
+`documents.metadata` from scratch, overwriting the real chunk 0's
+`message_count` and `files_modified`.
+
+The daemon's own `RetainRequest::chunk` doc names this exact scenario as the
+reason C1 added the column. Without this call, **C1 built a column for a
+recovery nothing performed.** `cmd::recover` now does the
+`GET …/sessions/{sid}`, sharing C2b's `Mirror` struct — the one that cannot
+deserialize `byte_offset` at all.
+
+### 12. The manual verification's "converging cursors" criterion is not always reachable
 
 Plan §C4b asks the manual verification to show `byte_offset` and
 `confirmed_offset` **converging**. They converge only when every chunk of every
@@ -297,7 +359,7 @@ job extracts cleanly. A single failed chunk leaves a gap that nothing closes —
 see §Known limits, which is where the evidence for this lives. The criterion
 should read "converging, or a gap attributable to a named `chunks_failed`".
 
-### 12. `hook_bench`'s stub had to learn routes
+### 13. `hook_bench`'s stub had to learn routes
 
 Up to C3 every arm hit `POST …/recall`, so one reply was one reply. `hook
 retain` routes on `status` and `job_id`, and a recall body served to a retain
@@ -368,17 +430,21 @@ overlooked. Treating `chunks_failed > 0` as `failed` would:
   truncated at the same token on all four attempts. Losing one chunk beats
   losing every subsequent delta.
 
-What changed is that the hook now **says so**: a `done` with `chunks_failed > 0`
-writes one stderr line under `[hooks] debug` naming the byte range that will
-stay unconfirmed. The number the runbook tells the user to watch
-(`byte_offset - confirmed_offset`, §Open questions 6) now has an explanation
-next to it instead of being unattributed drift.
+What changed is that the hook **counts** it. `SessionState::unconfirmed_bytes`
+accumulates `offset_to - offset_from` in that arm, and C5's `hooks status` —
+which already reads state files, so no endpoint and no schema — surfaces it.
+A stderr line under `[hooks] debug` names the byte range as well.
 
-**Re-entry criterion.** A shadow run where the gap grows monotonically — i.e.
-partial chunk failures are common rather than occasional — makes "one lost
-chunk" the wrong trade. The fix then is not in this hook: it is a per-chunk
-byte range in `retain_jobs`, so a re-send can carry the failed chunk alone.
-That is a C1-shaped change, not a C4b one.
+The counter, not just the line, is the load-bearing half: **`[hooks] debug`
+defaults to `false`**, so a log-only mitigation records nothing in the default
+install — and the re-entry criterion below is then unmeasurable, because the
+daemon-side `inflight_bytes` is only a lower bound (next section).
+
+**Re-entry criterion.** A shadow run where `unconfirmed_bytes` grows
+monotonically — i.e. partial chunk failures are common rather than occasional —
+makes "one lost chunk" the wrong trade. The fix then is not in this hook: it is
+a per-chunk byte range in `retain_jobs`, so a re-send can carry the failed
+chunk alone. That is a C1-shaped change, not a C4b one.
 
 ### A later clean job confirms straight over an earlier job's gap
 
@@ -388,17 +454,43 @@ failed a chunk. The worker's clean-run block writes
 merges it with `MAX`. So a clean job covering 1008399..2163159 sets the durable
 cursor to 2,163,159 **even if an earlier job left 0..1008399 unsettled**.
 
-This is the defect C1's review already fixed once, on the other path:
-`confirm_if_settled` exists precisely because "a duplicate at offset 1500 says
-nothing about bytes 900..1500 that some other job was supposed to carry". The
-identical argument applies to the clean-run confirm and no guard was added
-there.
+This is the same *shape* as the defect C1's review already fixed on the other
+path — `confirm_if_settled` exists precisely because "a duplicate at offset
+1500 says nothing about bytes 900..1500 that some other job was supposed to
+carry" — but **it is not the same fix, and reusing that channel here would
+break every session.**
 
-Consequence: `inflight_bytes` is a **lower bound** on unsettled bytes, not a
-measurement of them, which weakens the exact number §Open questions 6 tells the
-runbook to watch. It is a C1 change (`retain/mod.rs`'s `clean` block wants the
-same `confirm_if_settled` treatment), out of scope here, and flagged rather
-than fixed in a PR that does not touch the store.
+`confirm_if_settled`'s guard is `confirmed_offset >= byte_offset` on the
+pre-update row, and the *request* path has already written
+`byte_offset = this job's end` before the worker runs. So an ordinary clean job
+reads `0 >= 5000` → false and **never confirms**: `confirmed_offset` freezes at
+0 forever. The in-tree test `sessions.rs:606-617` pins exactly this — it needs
+the unconditional channel to reach `confirmed_offset = 5000` on a row whose
+`byte_offset` is 6000.
+
+**The correct shape needs the job's *start*, which no persisted row currently
+has:**
+
+1. `offset_from` on `RetainRequest` — the hook already holds it as `from`;
+2. persisted on the `retain_jobs` row, so the worker can read it back;
+3. a **third** `SessionUpdate` channel guarded on
+   `confirmed_offset >= ?offset_from`;
+4. one line in this hook to send it.
+
+That is a migration + route + store + hook change, **not a store-only edit**.
+Said explicitly because a future PR will follow this paragraph literally.
+
+Consequence meanwhile: `inflight_bytes` is a **lower bound** on unsettled
+bytes, not a measurement — which is why `unconfirmed_bytes` above exists
+hook-side.
+
+**How the two daemon defects relate.** They are one defect in two places.
+`chunks_failed` opens the gap; the unconditional confirm erases the evidence of
+it. Under this hook's protocol — one in-flight job per session — a `done` job
+with `chunks_failed > 0` is the **only** producer of a gap at all, so this
+section fires only downstream of the previous one. Both stay out of C4b. The
+daemon PR lands after C5, during the shadow run, and **must precede any Phase F
+claim built on `inflight_bytes`.**
 
 ### The rollback window is one job wide
 
@@ -424,10 +516,6 @@ mid-content, and the delta from there is garbage the reader skips as corrupt
 lines. Verified append-only on Claude Code 2.1.220; the guard costs one
 comparison and is the tripwire if that changes.
 
-### `compactions` is a lower bound
-
-See above: a rollback re-counts. Diagnostic only.
-
 ### The forced child inherits `[hooks] enabled` from a second config read
 
 `session-end` reads the config to decide whether to spawn, and the child reads
@@ -436,16 +524,46 @@ Harmless — both answers are correct for the moment they were read — but it i
 why `the_config_switch_makes_no_request_and_writes_no_state` waits before
 asserting.
 
+### `hookio::HookInput` has twelve non-`Option` `#[serde(default)]` fields
+
+Named rather than fixed. `#[serde(default)]` covers an **absent** key; an
+explicit `null` against a non-`Option` is a type error that fails the whole
+struct — which is precisely the defect found in `RetainReply` below, on a
+schema **Anthropic** controls rather than one we do. A future Claude Code build
+emitting `"cwd": null` on one event would fail this parse and **every hook
+would silently no-op** for anyone on that version.
+
+`hookio`'s module doc now states the rule ("a field whose JSON is produced by
+Claude Code or by `memgardend` is `Option<T>`, not `#[serde(default)] T`") and
+`Mirror`'s points at it. Converting the twelve fields touches every
+subcommand's field access, so it is a follow-up rather than a C4b change; the
+durable part — the rule, written where the next person edits these structs —
+is here.
+
 ### Smaller ones
 
 - The reconcile `GET` uses the **interactive** budget (400 ms), not the retain
   budget (5 s). A single-row read on a gated turn must not cost a `Stop` five
   seconds; the breaker covers the repeat.
+- `now_ms` is threaded from `run` into `reconcile` rather than re-read. One
+  invocation must not evaluate its breaker window against one clock and stamp
+  it with another; under lock contention the two readings can be seconds apart.
 - `advance` is `pub` so `catchup` can call it. There is no narrower visibility
   that spans two sibling modules without a third.
 - A poisoned session's `session-end` retain is skipped inside the hour, which
   is the only place `force` losing to a throttle can cost a whole session's
   tail. `hooks status --clear-poison` (C5) is the exit.
+
+## AC mapping
+
+**AC-2** and **AC-7**: discharged; the tables below are the evidence.
+
+**AC-3 ("nothing is dropped between hook and store"): _not_ discharged.** The
+rollback evidence proves the *recovery path* works, but the same run lost two
+chunks' facts permanently and left `confirmed_offset` at 0 across all three
+rounds. The plan lists AC-3 against C4b; on this evidence it is gated on the
+per-chunk byte-range change in §Known limits, not on this PR. Recorded here
+because Phase F reads this line.
 
 ## Measurement
 
@@ -496,9 +614,24 @@ binary (`cf7245d`), both arms `hook noop`, three runs of N=200.
 | 2 | 0.265 | 0.258 | **+0.007** |
 | 3 | 0.258 | 0.252 | **+0.007** |
 
-**+82,840 bytes of binary for +0.006 ms**, which is inside the noise. The
-reason is C3's lesson restated: the binary grew, the **relocation count did
-not** — 221 before and 221 after.
+Three of three positive and tightly clustered, so this reads as a **real
+≈6 µs — 0.4 % of arm B, 0.06 % of the 1.5 ms budget** — rather than as noise.
++82,840 bytes of binary for 6 µs. The reason is C3's lesson restated: the
+binary grew, the **relocation count did not** — 221 before and 221 after.
+
+### The lock contention number, which `hook_bench` cannot produce
+
+`hook_bench` runs one hook at a time, so this is measured by racing two real
+processes: a retain against a stub whose retain `POST` sleeps 2 s, and a
+`hook recall` on the same session starting 250 ms later.
+
+| recall wall clock, behind a retain holding the lock | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| `with_lock` (the build before this fix) | 1.752 s | 1.753 s | 1.752 s |
+| **`with_try_lock`** | **0.002 s** | **0.001 s** | **0.002 s** |
+
+Both binaries built from the same tree with one line differing, so this is a
+paired build comparison in the same sense as the arm B control.
 
 ### `scripts/hook-budget.sh`
 
@@ -621,7 +754,7 @@ prose and which is easy to read as a bug in this hook when it is not one.
 
 ## Mutation evidence
 
-35 mutations, two rounds. Each reverted after its run.
+47 mutations, three rounds. Each reverted after its run.
 
 | # | mutation | caught by |
 |---|---|---|
@@ -666,7 +799,53 @@ caught in round 2:
 | 34 | the retain POST uses the interactive budget | `the_retain_post_waits_longer_than_the_interactive_budget` |
 | 35 | `cwd` sent as `""` rather than `null` | `an_absent_cwd_is_null_on_the_wire` |
 
-**Survivors, reported rather than papered over: none after round 2.**
+### Round 3 — the review's new arms
+
+Twelve more mutations against the code this review added. **8 caught, 4
+survived, all four then closed:**
+
+| # | mutation | now caught by |
+|---|---|---|
+| 36 | the `chunks_failed` arm is deleted | `a_done_job_with_a_failed_chunk_settles_but_records_the_gap` |
+| 37 | a partial failure rolls back instead of settling | same, + `..._does_not_roll_back` |
+| 38 | the gap is logged but never counted | same |
+| 39 | every `done` job counts a gap | same |
+| 41 | `try_lock` silently blocks | `state::tests::a_try_lock_does_not_wait_for_a_held_lock_but_a_plain_one_does` |
+| 43 | compactions accumulate before the send decision | `retain::tests::an_accept_advances_the_chunk_and_clears_every_failure_state` |
+| 45 | the mirror is never consulted on a state miss | `a_mid_session_state_wipe_resumes_from_the_mirror_rather_than_re_ingesting` |
+| 46 | recovery seeds from the optimistic cursor | `session_start::tests::the_mirror_struct_cannot_carry_the_optimistic_cursor` |
+| **40** | **`recall` waits on the lock again** | `recall_does_not_wait_for_a_holder_of_the_session_lock` |
+| 42 | a rollback does not restore `compactions` | `a_rollback_restores_the_compaction_count_with_the_cursor` |
+| 44 | an empty delta drops its compactions | `an_empty_delta_still_carries_its_compaction_boundaries` |
+| 47 | a caught-up cursor does not restart the cadence | `a_caught_up_cursor_restarts_the_cadence` |
+
+**#40 is the one worth reading.** Swapping `with_try_lock` back to `with_lock`
+survived the entire suite, because every other test runs **one hook at a
+time** — which is the same blindness that makes `hook_bench` unable to see the
+stall it measures around. The test holds the lock from the test process and
+asserts a bound on `hook recall`'s wall clock.
+
+**Survivors after three rounds: none.**
+
+### A corrected attribution from round 2
+
+Review sampled the round-2 claims rather than accepting them, and #28's was
+wrong. `force_in_a_value_slot_does_not_force_the_retain` does kill the scanning
+mutant — but **not** via `accepts() == 0`, which was the stated mechanism.
+Traced by deleting each assertion under the mutant:
+
+| assertion removed | mutant |
+|---|---|
+| `accepts() == 0` | still caught |
+| `offset == 0` | still caught |
+| **`turns == 1`** | **survives** |
+
+Under a scan, `force` becomes true, `--session`'s fixed slot then holds
+`--force`, no session id is found, and the hook returns **before reading
+stdin**. So the first two assertions pass for the wrong reason — they are also
+satisfied by a hook that did nothing at all — and only the turn counter
+distinguishes "read the payload and gated it" from "bailed out". The test now
+says so.
 
 Two of the five deserve their reason recorded, because they are the ones that
 say something about the code rather than about the tests:

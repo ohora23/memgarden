@@ -1710,3 +1710,147 @@ fn a_mid_session_state_wipe_resumes_from_the_mirror_rather_than_re_ingesting() {
     assert_eq!(body["messages"].as_array().unwrap().len(), 3);
     assert_eq!(f.state("s1")["offset"], size);
 }
+
+// ------------------------------------------- found by mutation, round 3
+
+/// **The HIGH, pinned at the process level.** `state.rs` proves the primitive
+/// is non-blocking; this proves `recall` is the caller that uses it.
+///
+/// A mutation swapping `with_try_lock` back to `with_lock` in `recall::record`
+/// survived every other test in the suite, because every other test runs one
+/// hook at a time — which is also exactly why `hook_bench` could never have
+/// seen the stall.
+///
+/// The lock is held by this test process rather than by a real retain, so the
+/// timing is deterministic: no stub delay to tune, no race to lose.
+#[test]
+fn recall_does_not_wait_for_a_holder_of_the_session_lock() {
+    let f = fixture("mode = \"full\"");
+    let s = stub(|_, _| {
+        json_reply(
+            "200 OK",
+            &serde_json::json!({"injected_text": "a fact", "counts": {"returned": 1, "tokens": 5}})
+                .to_string(),
+        )
+    });
+    f.write_state(&state_file("s1", serde_json::json!({})));
+
+    let hold = std::time::Duration::from_millis(800);
+    let state_dir = f.state_dir.clone();
+    std::thread::scope(|scope| {
+        let holder = scope.spawn(move || {
+            memgarden_cli::state::with_lock(&state_dir, "s1", || std::thread::sleep(hold)).unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let started = std::time::Instant::now();
+        let out = f.run(
+            &["hook", "recall"],
+            br#"{"session_id":"s1","cwd":"/repo","prompt":"what did we decide about the cursor"}"#,
+            &s.url,
+        );
+        let elapsed = started.elapsed();
+        assert_exit_zero(&out, "recall under a held lock");
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "recall waited {elapsed:?} on a lock a retain was holding"
+        );
+        // It still did its job: the injection is on stdout.
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("additionalContext"),
+            "recall skipped the lock and also skipped the work"
+        );
+        holder.join().unwrap();
+    });
+}
+
+/// A rollback restores `compactions` with the cursor, so the re-send's
+/// re-count lands on the same total instead of doubling it.
+#[test]
+fn a_rollback_restores_the_compaction_count_with_the_cursor() {
+    let f = fixture("");
+    let s = stub(|_, request| match route(request) {
+        "job" => job("failed"),
+        _ => accepted("j2"),
+    });
+    // One boundary in the delta that is about to be rolled back.
+    let mut file = std::fs::File::create(&f.transcript).unwrap();
+    writeln!(
+        file,
+        "{}",
+        serde_json::json!({"type": "system", "subtype": "compact_boundary"})
+    )
+    .unwrap();
+    drop(file);
+    let size = f.append_turns(2);
+
+    f.write_state(&state_file(
+        "s1",
+        serde_json::json!({
+            "offset": size, "chunk": 1, "turns_since_retain": 10,
+            // The accept that recorded this had `compactions` at 3 before the
+            // delta's 1 was added, so the state says 4 and the rollback owes
+            // us 3.
+            "compactions": 4,
+            "pending": {"job_id": "j1", "offset_from": 0, "offset_to": size,
+                        "chunk_before": 0, "compactions_before": 3},
+        }),
+    ));
+
+    f.stop("s1", &s.url);
+    // The re-send re-counts the boundary and lands back on 4 — not 5.
+    assert_eq!(s.retains()[0]["compactions"], 4);
+    assert_eq!(f.state("s1")["compactions"], 4);
+}
+
+/// The empty-delta branch advances the cursor over the lines it consumed, so
+/// it has to carry their boundaries too — otherwise a compaction inside an
+/// all-skipped delta is consumed and forgotten.
+#[test]
+fn an_empty_delta_still_carries_its_compaction_boundaries() {
+    let f = fixture("");
+    let s = stub(|_, _| accepted("j1"));
+    let mut file = std::fs::File::create(&f.transcript).unwrap();
+    for _ in 0..2 {
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({"type": "system", "subtype": "compact_boundary"})
+        )
+        .unwrap();
+    }
+    drop(file);
+    let size = std::fs::metadata(&f.transcript).unwrap().len();
+    f.write_state(&state_file(
+        "s1",
+        serde_json::json!({"turns_since_retain": 10, "compactions": 1}),
+    ));
+
+    f.stop("s1", &s.url);
+    assert_eq!(s.accepts(), 0, "nothing to post");
+    let st = f.state("s1");
+    assert_eq!(st["offset"], size);
+    assert_eq!(st["compactions"], 3, "the consumed boundaries were dropped");
+}
+
+/// A transcript that has stopped growing restarts the cadence, exactly as the
+/// empty-delta branch does. Without it every subsequent `Stop` passes the gate
+/// and re-`stat`s a file that is not moving.
+#[test]
+fn a_caught_up_cursor_restarts_the_cadence() {
+    let f = fixture("");
+    let s = stub(|_, _| accepted("j1"));
+    let size = f.append_turns(2);
+    f.write_state(&state_file(
+        "s1",
+        serde_json::json!({"turns_since_retain": 10, "offset": size}),
+    ));
+
+    f.stop("s1", &s.url);
+    assert_eq!(s.accepts(), 0);
+    assert_eq!(
+        f.state("s1")["turns_since_retain"],
+        0,
+        "a caught-up turn must not leave the gate open for every later Stop"
+    );
+}
