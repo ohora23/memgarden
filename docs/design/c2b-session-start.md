@@ -237,42 +237,59 @@ driver's pipe write.
 
 | arm | p50 ms | p95 ms | p99 ms | min ms |
 |---|---|---|---|---|
-| A `hook session-start` | 0.547 | 0.708 | 1.306 | 0.483 |
-| B `hook noop` (baseline) | 0.308 | 0.386 | 0.481 | 0.267 |
-| paired A−B | **0.236** | 0.355 | 0.850 | -0.761 |
+| A `hook session-start` | 0.566 | 0.782 | 1.158 | 0.495 |
+| B `hook noop` (baseline) | 0.327 | 0.446 | 0.537 | 0.270 |
+| paired A−B | **0.238** | 0.369 | 0.777 | -0.290 |
 
-**0.236 ms of own work against the 10 ms per-hook budget** — two loopback
-POSTs, a config load, a locked state write and a `fork`. Arm B 0.308 ms against
-its 1.5 ms gate: **PASS**.
+**0.238 ms of own work against the 10 ms per-hook budget** — two loopback
+POSTs, a config load, a locked state write and a `fork`. Arm B 0.327 ms against
+its 1.5 ms gate: **PASS**. Null control on the same build (A = B = `hook noop`,
+payload on both arms): arm B 0.311, paired **0.002** — the harness still
+measures "no difference".
 
-### Arm B moved, from 0.243 to ~0.28 ms, and it is the binary
+### Did arm B move? Measured directly, not by elimination
 
-Two controls, same build, both null experiments (A = B = `hook noop`):
+C2a's note records arm B at 0.243 ms and this run reads ~0.31, so the obvious
+story is "the binary grew and that is the cost". The first version of this note
+said exactly that, by elimination. **It over-attributed, and the direct
+measurement says so.**
 
-| control | arm B p50 | paired p50 |
-|---|---|---|
-| payload on both arms | 0.278 | 0.002 |
-| empty stdin on both arms (C2a's shape) | 0.280 | 0.002 |
+`hook_bench` gained `--bin-b`, which pairs two *builds* the same way it already
+pairs two subcommands — because the reason not to compare across runs applies
+here with full force: C2a's own note measured **+1.5 ms on identical bits**
+between sessions, which is fifty times the effect being attributed. So C2a's
+binary was rebuilt from `c27e681` in this session (496,160 bytes, byte-for-byte
+the size its note quotes) and run as arm B against this one as arm A, same
+driver, same `hook noop`, alternating:
 
-So the 180-byte stdin costs nothing measurable, the harness still measures "no
-difference" at 0.002 ms, and arm B's move is the binary: **496,160 →
-1,386,648 bytes**, 165 → 220 relocations. `hook noop` never referenced
-`Config::load`, so the whole TOML parser was dead-stripped from the C2a binary;
-`session-start` references it and it is now linked. Every hook pays that on
-every `execve` — which is exactly why arm B is measured rather than assumed.
+| run | A (C2b binary) | B (C2a binary) | paired A−B |
+|---|---|---|---|
+| 1 | 0.288 | 0.271 | **0.016** |
+| 2 | 0.283 | 0.270 | **0.014** |
+| 3 | 0.280 | 0.268 | **0.015** |
 
-(The 0.308 in the main table vs 0.278 in the controls is the 300 detached
-catch-up children loading the box during the arm-A run. It moves both arms,
-which is what the paired design absorbs and why the paired number is the one
-quoted.)
+**The binary growth costs 0.015 ms**, stable to a microsecond across three
+runs of N=300. It is real, it is the expected direction, and it is *one fifth*
+of the apparent 0.07 ms gap against C2a's recorded number. The remainder is
+cross-session drift — the thing this harness exists to refuse to measure. The
+honest statement is therefore:
+
+* arm B's **paired** cost of the C2b binary over the C2a binary: **+0.015 ms**;
+* arm B's **absolute** number moved from 0.243 to ~0.31 between sessions, and
+  that difference is not attributable and should not be attributed.
+
+The mechanism is still the expected one: **496,160 → 1,390,184 bytes**, 165 →
+220 relocations, because `hook noop` never referenced `Config::load` so the
+TOML parser was dead-stripped from the C2a binary. What changed is the size of
+the claim, from an inference to a number.
 
 `scripts/hook-budget.sh`:
 
 ```
-1. size    1386648 bytes (1.32 MB)             <= 8 MB budget   ok   [human check]
+1. size    1390184 bytes (1.33 MB)             <= 8 MB budget   ok   [human check]
 2. ldd     linux-vdso, libgcc_s, libc, ld-linux-x86-64          ok   [human check]
 3. tree    21 crates, unchanged from C2a, diffed against the allowlist  [CI-WIRED]
-4. LD_DEBUG  220 relocations, 7 from cache, ~66.5k cycles loader time   [diagnostic]
+4. LD_DEBUG  220 relocations, 7 from cache                             [diagnostic]
 ```
 
 **Only #3 is a CI gate.** #1, #2 and #4 are human PR-body checks.
@@ -303,6 +320,113 @@ quoted.)
 
 ## Known limits and deferred items
 
+### The exclusion filter is not a complete answer to the concurrency it names
+
+The first version of this note called the current session *"the one race the
+advisory lock genuinely cannot arbitrate"*. **That is false, and it is the same
+class of error C2a's review caught in the `byte_offset` doc comment: an
+enforcement claim stronger than the code supports.**
+
+A session **live in another Claude Code window** passes every filter in
+`select` — it is not the current id, its transcript exists, and `file_size >
+offset` is true almost all of the time between its 10-turn retains. Its own
+`Stop` hook is on the same cursor. The `session_id != current` filter removes
+the one instance we can identify for free; it does not remove the class.
+
+What bounds it is **C4b's re-load under `state::with_lock`**, which the marker
+in `catchup.rs` now instructs rather than leaving to memory: re-read the state
+and re-check `offset < file_size` inside the lock, and the worst case is a
+redundant post the daemon answers `duplicate` — not byte loss, because both
+writers only ever move the cursor forward and the content hash dedups.
+
+A per-`state_dir` `catchup.lock` was considered and **rejected**: the
+per-session lock C4b will already take arbitrates two catch-up children against
+each other for the same reason it arbitrates catch-up against retain, so a
+second lock file buys nothing the first does not already cover. Recorded here
+because "settle it before C4b" was the ask, and this is the settlement.
+
+### Accepted risks, with the reason each was accepted
+
+* **`transcript_path` is stored from stdin unvalidated, and C4b reads that
+  file.** Demonstrated: `"transcript_path": "/etc/passwd"` is stored verbatim
+  and the child selects it; `metadata()` follows symlinks and needs no read
+  permission, so `/etc/shadow` is selected too. In C2b the child only `stat`s
+  it — the risk lands in C4b's `send_delta`, which reads the file and POSTs its
+  contents into a bank the model later recalls.
+  **Validating at store time was considered and deliberately not done**; see
+  §"Where to validate `transcript_path`" below for the argument. The C4b marker
+  carries the requirement.
+* **`with_lock` is the only place left that opens a path it did not create.**
+  It no longer truncates (`create_new` at 0600, falling back to a **read-only**
+  `File::open`), so a planted `sX.lock -> /outside/precious.conf` is opened and
+  flocked but never written. It is still *opened*, which on a FIFO would block —
+  a case that requires write access to the 0700 state dir, at which point the
+  attacker can simply write the state file.
+  `// ponytail:` `O_NOFOLLOW` is the airtight version and needs `libc`, which
+  the CI-enforced dependency closure refuses. The read-only fallback is the
+  property that matters; revisit if a `libc` ever enters for another reason.
+* **A state file named `--dry-run.json` is creatable.** `path_for` sanitizes
+  path separators and control characters but not a leading `-`, so a session id
+  that looks like a flag produces a filename that looks like one. Harmless to
+  us — `gc` and `load_all` use full paths, never a shell — and a hazard only
+  for a future `find … | xargs` over the state dir. Not sanitized because
+  Claude Code sends 36-character uuids and changing `path_for` would change
+  filenames for a hazard we do not have. The argv half, which was **not**
+  harmless, is fixed and tested.
+* **An empty daemon-side `[profile] bank_mission` now yields a bank with no
+  mission at all.** Since the hook sends none (divergence 2), the daemon's is
+  the only source. Legacy's `ensure_bank_mission` returns early on an empty
+  mission too, so this is parity; it just means "no mission anywhere" is now
+  reachable in one step instead of two.
+* **A *rejected* sessions POST loses the recovery, where the GET would have
+  had it.** An over-long `cwd`/`transcript_path` (400) or a missing bank (404)
+  falls to `SessionState::new` → offset 0 → a full re-ingest on the next
+  retain. Not lossy — `doc_key` answers `duplicate` — but not free on a 100 MB
+  transcript. **This is the only real cost of dropping the GET** (divergence 1),
+  and it is bounded by `retain.max_initial_messages`.
+
+### Where to validate `transcript_path` — at the read, not at the store
+
+Review's finding is correct and its suggested fix (absolute, `.jsonl`, no
+`ParentDir`, checked before storing) is the obvious one. **It is the wrong
+place, and three things say so.**
+
+1. **A store-time guard misses the caller that matters.** C4b's `retain` reads
+   the transcript from the **payload's** `transcript_path` on every `Stop` — it
+   never goes near the state file. Only catch-up reads the stored copy.
+   Validating at store time therefore guards the once-per-session path and
+   leaves the once-per-ten-turns path completely open. One guard in the reader
+   covers both callers; that is the same "fix it where all callers route
+   through" rule that put the escaping guard in `http::request` rather than in
+   six subcommands.
+2. **A store-time check is a time-of-check/time-of-use gap by construction.**
+   The stored path can be 89 days old. Whatever it named when we wrote it says
+   nothing about what it resolves to when catch-up finally reads it — and a
+   *stale* stored path is precisely the case most likely to have gone wrong,
+   because a session old enough to need catch-up is a session whose files have
+   had the most time to move.
+3. **It constrains a vocabulary Claude Code owns.** `.jsonl` under
+   `~/.claude/projects/…` is true today. This repo already has a decided
+   position on that shape of validation, from C1: `source` and `end_reason` are
+   *"stored, not validated… a mirror that 400s on a value it has not heard of
+   would break the hook on a Claude Code upgrade"*. A `.jsonl` allowlist has
+   the same failure mode with a worse blast radius — retain silently stops for
+   everyone on the day the extension changes, and the hook that stops working
+   is the one whose entire contract is "never break the session".
+
+So: **store it verbatim, validate at the point of the read in C4b**, and make
+the check about the *properties that matter at the read* rather than about the
+path's spelling — open it, `fstat` the handle, refuse anything that is not a
+regular file. That is not a pattern match, so a Claude Code path change cannot
+break it, and it is checked against the file we are actually about to send.
+
+The counter-argument, stated so it is not lost: this leaves a stored capability
+that a future author could read without the guard. The C4b marker in
+`catchup.rs` names the requirement at the call site, and this section is the
+reason it is a requirement rather than a preference.
+
+### Smaller ones
+
 * **The child does not post.** See divergence 3. C4b adds the one call.
 * **`session-start` does not consult the circuit breaker.** It runs once per
   session, and skipping it on an open breaker would skip the state recovery
@@ -312,11 +436,19 @@ quoted.)
   keeps writing to the bank it started in. `// ponytail:` the upgrade path is
   a bank change ending the session and starting a new one, which needs C4b's
   `session-end` to exist first.
-* **`load_all` reads every state file on every catch-up.** Bounded by the GC
-  the same child performs; at one file per session and a 90-day window this is
-  a few hundred small reads once per session start, in a detached process.
-  `// ponytail:` an index if a machine ever accumulates enough sessions for a
-  `read_dir` to matter.
+* **`load_all` reads every state file on every catch-up.** Bounded two ways
+  now: by the GC the same child performs (count), and by
+  `MAX_STATE_FILE_BYTES` (size) — `gc` prunes by mtime only, so without the
+  second one an oversized `*.json` is re-read in full on every session start
+  for the whole retention window. Note the count is **2× sessions**, not 1×:
+  every session leaves a `.json` *and* a `.lock`, and a crashed `store` can
+  leave a `.tmp`. `// ponytail:` an index if a machine ever accumulates enough
+  sessions for a `read_dir` to matter.
+* **A symlinked state file is skipped, not resolved.** `path_for`'s
+  containment check is lexical and cannot see through a symlink;
+  `entry.file_type()` (an `lstat`) is what covers it. The effect is that a
+  legitimate symlinked state file would also be ignored — nobody creates one,
+  and "reads as absent" is already the handling for every unusable file.
 * **Two `SessionStart`s for the same session racing** would both see an absent
   state file and both recover from the mirror. They would recover the *same*
   numbers, and the write is locked, so the outcome is identical either way.
@@ -377,12 +509,16 @@ tests and the bench binds port 0.
 
 ## Mutation evidence
 
-**26 mutations, applied one at a time by a script, each reverted after its
+**32 mutations, applied one at a time by a script, each reverted after its
 run** (C2a's standard was 13 + 16, and its own rule is that the convention this
-repo keeps getting wrong is a correct rule that no test pins). **23 caught, 3
+repo keeps getting wrong is a correct rule that no test pins). **29 caught, 3
 survive and are named below.** Two of the runs were written as *predicted*
 survivors, to check the prediction rather than to pass; one of the two was
-wrong in an instructive way and produced a 26th run.
+wrong in an instructive way and produced an extra run.
+
+The last six are the review round: each one reverts a fix to **exactly** the
+code that shipped before it, so "caught" means the new test fails on the code
+review demonstrated the defect against.
 
 | mutation | caught by |
 |---|---|
@@ -408,7 +544,13 @@ wrong in an instructive way and produced a 26th run.
 | `transcript_path` refresh removed | `an_existing_state_file_is_not_rewound_by_the_mirror` |
 | the bank `POST` dropped | `the_bank_is_created_on_the_first_run_and_a_409_is_not_a_failure` (request count) |
 | `encode_path_segment` dropped from the sessions path | the same test's three-token request-line assertion |
-| `none_if_empty` returns `Some(value)` unconditionally | `empty_payload_fields_are_sent_as_null_rather_than_as_an_empty_string` — **but see the first survivor**: this pins the helper, not its use |
+| `none_if_empty` returns `Some(value)` unconditionally | `empty_payload_fields_are_sent_as_null_rather_than_as_an_empty_string` — **but see the survivors**: this pins the helper, not its use |
+| **review round** — argv back to skipping a `--`-prefixed session id and scanning all of argv | `a_session_id_that_looks_like_a_flag_is_still_the_session_id` |
+| **review round** — the `poisoned_at <= now_ms` half dropped | `a_poisoned_at_in_the_future_does_not_throttle_a_session_out_of_existence` |
+| **review round** — `with_lock` back to `File::create` | `a_planted_symlink_at_the_lock_path_is_not_truncated` |
+| **review round** — `load_all`'s `file_type().is_file()` removed | `load_all_skips_a_symlinked_state_file` |
+| **review round** — `.mode(0o600)` removed | `state_files_are_created_0600_regardless_of_umask` |
+| **review round** — `load_all`'s read unbounded | `an_oversized_state_file_is_bounded_rather_than_read_whole` |
 
 **Survivors, reported rather than papered over:**
 

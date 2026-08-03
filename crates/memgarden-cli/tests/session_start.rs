@@ -508,9 +508,10 @@ fn a_detached_child_gets_dev_null_on_all_three_streams_and_its_own_process_group
         // the evidence file, reading `/proc/<outer shell>/fd/*`. Measured on
         // dash: redirecting a simple command (`readlink … > file`) or a brace
         // group also moves fd 1 of the shell being inspected, so both of those
-        // spellings reported `evidence.txt` for fd 1 and would have passed on
-        // a child whose stdout was a live pipe. A subshell is a separate pid,
-        // so `$p` still names the process the parent actually configured.
+        // spellings reported `evidence.txt` for fd 1 against a child that was
+        // correctly wired to `/dev/null` — a false failure that reads exactly
+        // like a real leak. A subshell is a separate pid, so `$p` still names
+        // the process the parent actually configured.
         "echo leaked-stdout; echo leaked-stderr >&2; cat >/dev/null; p=$$; \
          ( readlink /proc/$p/fd/0; readlink /proc/$p/fd/1; readlink /proc/$p/fd/2; \
            ps -o pgid= -p $p ) > {evidence:?}",
@@ -621,4 +622,53 @@ fn the_child_selects_stale_sessions_and_excludes_the_one_it_was_given() {
     );
     // The child never talks to the daemon in C2b — it selects, and C4b posts.
     assert!(s.requests().is_empty(), "{:#?}", s.requests());
+}
+
+/// A session id is untrusted stdin and it lands in an argv slot. Review
+/// demonstrated against the real binary that a `--`-prefixed id was thrown
+/// away — `excluded` came back **empty**, so the live session became a
+/// catch-up candidate and the exclusion filter was switched off by its own
+/// subject. Both slots are fixed positions now, so an id that looks like a
+/// flag is still just the id.
+#[test]
+fn a_session_id_that_looks_like_a_flag_is_still_the_session_id() {
+    let f = fixture("");
+    let s = healthy_stub();
+    std::fs::create_dir_all(&f.state_dir).unwrap();
+
+    for id in ["--dry-run", "stale-b"] {
+        let transcript = f.state_dir.join(format!("{}.jsonl", id.replace('-', "_")));
+        std::fs::write(&transcript, "x".repeat(4096)).unwrap();
+        let state = serde_json::json!({
+            "schema": 1,
+            "session_id": id,
+            "bank_id": "claude-code::demo-project",
+            "transcript_path": transcript.to_string_lossy(),
+            "offset": 0,
+            "chunk": 0, "turns": 0, "turns_since_retain": 0, "compactions": 0,
+            "pending": null, "transport_failures": 0, "reject_failures": 0,
+            "breaker_open_until_ms": 0, "poisoned_at": null,
+        });
+        std::fs::write(f.state_dir.join(format!("{id}.json")), state.to_string()).unwrap();
+    }
+
+    // argv[2] is the session id `--dry-run`; argv[3] is the flag.
+    let out = f.run(&["hook", "catchup", "--dry-run", "--dry-run"], b"", &s.url);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    // The assertion that fails on the old parse: it reported `excluded ` with
+    // nothing after it, and selected 2.
+    assert!(stdout.contains("\nexcluded --dry-run\n"), "{stdout}");
+    assert!(stdout.contains("\nselected 1\n"), "{stdout}");
+    assert!(
+        !stdout.contains("  --dry-run bank="),
+        "the current session was selected because its id looked like a flag: {stdout}"
+    );
+    assert!(stdout.contains("  stale-b bank="), "{stdout}");
+
+    // The state file for that id is literally `--dry-run.json`. Recorded in
+    // §Known limits rather than sanitized: a leading `-` is a hazard for a
+    // future `find … | xargs` over the state dir, and `gc` uses full paths.
+    assert!(f.state_dir.join("--dry-run.json").exists());
 }

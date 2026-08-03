@@ -49,12 +49,16 @@ pub struct Candidate {
 pub fn run(args: &[String]) {
     // argv: `hook catchup <current_session_id> [--dry-run]`. Hand-parsed, like
     // everything else in this binary — `clap`'s usage errors exit 2.
-    let current_session_id = args
-        .get(2)
-        .filter(|a| !a.starts_with("--"))
-        .map(String::as_str)
-        .unwrap_or("");
-    let dry_run = args.iter().any(|a| a == "--dry-run");
+    //
+    // **Both slots are fixed positions, and argv[2] is the session id whatever
+    // it looks like.** The first version skipped a `--`-prefixed argv[2] and
+    // scanned the whole of argv for `--dry-run`, which review demonstrated
+    // against the real binary: a session id of `--dry-run` made `excluded`
+    // empty, so the live session became a catch-up candidate — the exclusion
+    // filter turned *off* by its own subject. The id arrives on untrusted
+    // stdin; it does not get to choose which argv slot it occupies.
+    let current_session_id = args.get(2).map(String::as_str).unwrap_or("");
+    let dry_run = args.get(3).is_some_and(|a| a == "--dry-run");
 
     let Some(cfg) = super::enabled_config() else {
         return;
@@ -98,9 +102,17 @@ pub fn run(args: &[String]) {
         }
     }
 
-    // C4b: `retain::send_delta(&cfg, &mut c.state, c.file_size)` per candidate,
-    // with `is_initial = false`. Nothing is posted in C2b — see the module
-    // comment for why that is sequencing rather than an omission.
+    // C4b: per candidate, **re-load under `state::with_lock` and re-check
+    // `offset < file_size` before posting**, and validate `transcript_path` at
+    // the point of the read (see the module comment). Post with
+    // `is_initial = false`. Nothing is posted in C2b — see the module comment
+    // for why that is sequencing rather than an omission.
+    //
+    // The re-load is not defensive padding. `Candidate` is a **selection
+    // snapshot**: `state` came from `load_all` outside any lock and
+    // `file_size` is a `stat` from the same moment. Posting from it means
+    // posting a cursor that a live session's own retain hook may already have
+    // moved — see §Known limits, "a session live in another window".
     let _ = picked;
 }
 
@@ -119,14 +131,19 @@ pub fn select(
 ) -> Vec<Candidate> {
     let mut found: Vec<Candidate> = state::load_all(dir)
         .into_iter()
-        // **The current session is excluded**, and it is excluded here rather
-        // than left to the advisory lock. A `source: resume` `SessionStart`
-        // otherwise has catch-up and the live retain hook working one cursor
-        // concurrently: two of our own processes, so `File::lock()` does
-        // serialize them — but serializing a read-modify-write does not make
-        // "catch-up posts 0..N while retain posts M..N" correct, it only makes
-        // the two writes atomic. It is the one race the lock genuinely cannot
-        // arbitrate, and it is free to avoid.
+        // **The current session is excluded.** A `source: resume`
+        // `SessionStart` otherwise has catch-up and the live retain hook
+        // working one cursor concurrently: two of our own processes, so
+        // `File::lock()` does serialize them — but serializing a
+        // read-modify-write does not make "catch-up posts 0..N while retain
+        // posts M..N" correct, it only makes the two writes atomic.
+        //
+        // This filter is **not** a complete answer to that race and must not
+        // be described as one. A session live in *another Claude Code window*
+        // passes every filter here, and its own `Stop` hook is on the same
+        // cursor. What bounds that is C4b's re-load under the lock, not this
+        // line; this line only removes the one instance we can identify for
+        // free. See §Known limits.
         .filter(|s| s.session_id != current_session_id)
         // A poisoned session retries once per `poison_retry_secs`, exactly as
         // `retain` does. Selecting purely on `offset < file_size` — the
@@ -171,7 +188,13 @@ fn poisoned_within_throttle(state: &SessionState, retry_secs: u64, now_ms: i64) 
     // an operator who writes `u64::MAX` should get "never retry", not an
     // overflow panic in a process nobody is watching.
     let window_ms = i64::try_from(retry_secs.saturating_mul(1000)).unwrap_or(i64::MAX);
-    now_ms < poisoned_at.saturating_add(window_ms)
+    // `poisoned_at <= now_ms` is the half review added, and it needs no
+    // attacker to matter: an NTP step, a VM resume or a dual-boot RTC leaves a
+    // stamp in the future, and a bare `now_ms < poisoned_at + window` reads
+    // that as "still throttled" — **forever**, in a process that writes to
+    // `/dev/null` and so cannot tell anyone. A stamp we could not have written
+    // is not a throttle.
+    poisoned_at <= now_ms && now_ms < poisoned_at.saturating_add(window_ms)
 }
 
 fn days_ms(days: u64) -> i64 {
@@ -257,6 +280,27 @@ mod tests {
             ids(&select(dir.path(), "cur", &cfg, poisoned_at + window_ms)),
             vec!["poisoned"]
         );
+    }
+
+    /// A stamp in the future is not a throttle. No attacker required: an NTP
+    /// step, a VM resume or a dual-boot RTC produces one, and the bare
+    /// `now < poisoned_at + window` test read it as "throttled" **forever** —
+    /// silently removing a session from catch-up, decided by a process whose
+    /// output goes to `/dev/null`.
+    #[test]
+    fn a_poisoned_at_in_the_future_does_not_throttle_a_session_out_of_existence() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = plant(dir.path(), "clock-skew", 0, 5_000);
+        let now = now_ms();
+        for future in [now + 1, now + days_ms(3650), i64::MAX] {
+            s.poisoned_at = Some(future);
+            state::store(dir.path(), &s).unwrap();
+            assert_eq!(
+                ids(&select(dir.path(), "cur", &cfg(), now)),
+                vec!["clock-skew"],
+                "poisoned_at = {future} (now = {now}) must not throttle"
+            );
+        }
     }
 
     /// The cap truncates, so the order decides *which* sessions are dropped —

@@ -36,6 +36,7 @@
 //! cargo build --release -p memgarden-cli --bins
 //! ./target/release/hook_bench --n 300 --warmup 20
 //! ./target/release/hook_bench --arm-a "hook recall" --stdin-a payload.json
+//! ./target/release/hook_bench --bin-b /path/to/previous/memgarden  # paired builds
 //! ./target/release/hook_bench --real http://127.0.0.1:9100   # Gate C
 //! ```
 
@@ -52,6 +53,13 @@ const ARM_B_BUDGET_MS: f64 = 1.5;
 
 struct Args {
     bin: String,
+    /// Arm B's binary. Defaults to `--bin`, and the *only* reason to diverge
+    /// is the question "did arm B move, and was it the binary?" — which C2b
+    /// asked and could otherwise only answer by elimination. Pairing two
+    /// builds inside one driver is the same argument as pairing two
+    /// subcommands: cross-run comparison is invalid on this box (+1.5 ms
+    /// measured on identical bits).
+    bin_b: Option<String>,
     n: usize,
     warmup: usize,
     arm_a: Vec<String>,
@@ -72,6 +80,7 @@ fn parse_args() -> Args {
         // Same directory as this binary, which is how `cargo build --release
         // --bins` leaves them.
         bin: default_hook_bin(),
+        bin_b: None,
         n: 300,
         warmup: 20,
         arm_a: vec!["hook".into(), "noop".into()],
@@ -92,6 +101,7 @@ fn parse_args() -> Args {
         };
         match flag.as_str() {
             "--bin" => args.bin = value(),
+            "--bin-b" => args.bin_b = Some(value()),
             "--n" => args.n = value().parse().expect("--n"),
             "--warmup" => args.warmup = value().parse().expect("--warmup"),
             "--arm-a" => args.arm_a = split_words(&value()),
@@ -227,7 +237,13 @@ fn main() {
         None => spawn_stub(),
     };
 
+    let stdin_b = args.stdin_b.clone().unwrap_or_else(|| args.stdin_a.clone());
+    let bin_b = args.bin_b.clone().unwrap_or_else(|| args.bin.clone());
+
     println!("bin       : {}", args.bin);
+    if args.bin_b.is_some() {
+        println!("bin B     : {bin_b}");
+    }
     println!("arm A     : {:?}", args.arm_a);
     println!("arm B     : {:?} (paired baseline)", args.arm_b);
     println!("daemon    : {daemon_url}");
@@ -237,11 +253,9 @@ fn main() {
     );
     println!();
 
-    let stdin_b = args.stdin_b.clone().unwrap_or_else(|| args.stdin_a.clone());
-
     for _ in 0..args.warmup {
         run_once(&args.bin, &args.arm_a, &args.stdin_a, &daemon_url);
-        run_once(&args.bin, &args.arm_b, &stdin_b, &daemon_url);
+        run_once(&bin_b, &args.arm_b, &stdin_b, &daemon_url);
     }
 
     let mut a_ms = Vec::with_capacity(args.n);
@@ -250,7 +264,7 @@ fn main() {
     for _ in 0..args.n {
         // Strictly alternated inside one process: this is the whole design.
         let a = run_once(&args.bin, &args.arm_a, &args.stdin_a, &daemon_url).as_secs_f64() * 1e3;
-        let b = run_once(&args.bin, &args.arm_b, &stdin_b, &daemon_url).as_secs_f64() * 1e3;
+        let b = run_once(&bin_b, &args.arm_b, &stdin_b, &daemon_url).as_secs_f64() * 1e3;
         a_ms.push(a);
         b_ms.push(b);
         paired_ms.push(a - b);
