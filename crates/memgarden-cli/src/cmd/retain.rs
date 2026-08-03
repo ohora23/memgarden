@@ -87,11 +87,26 @@ struct RetainReply {
 
 /// What `GET /v1/retain/{job_id}` is allowed to tell the reconciler.
 ///
-/// `status` only. The row also carries `chunks_failed`, which is tempting and
-/// wrong to read: a job with one failed chunk out of four is still `done`, and
-/// the daemon has already decided what that means for `confirmed_offset`
-/// (`retain/mod.rs`'s clean-run block). A hook that second-guessed it would
-/// roll back bytes the daemon had confirmed.
+/// `status` **decides**; `chunks_failed` is read only to say so out loud.
+///
+/// The distinction matters and the manual verification is what surfaced it.
+/// The daemon fails a job only when *nothing* was written
+/// (`all_failed = facts_written == 0 && chunks_failed > 0`), but it withholds
+/// the content hash — and therefore declines to advance `confirmed_offset` —
+/// on any run with `chunks_failed > 0` (`retain/mod.rs`'s `clean`). So a job
+/// can be `done` and still leave a **permanent** gap between the two cursors,
+/// which §Binding decisions #8's two-state reconcile has no arm for.
+///
+/// This hook keeps the plan's reading — `done` settles the `pending` record —
+/// because the alternative is worse in both directions: re-sending duplicates
+/// the facts the successful chunks *did* write, and a deterministically bad
+/// chunk (a model reply that truncates at the same token every time, which is
+/// exactly what the manual verification hit) would then wedge the session at
+/// that offset forever, losing every subsequent delta rather than one chunk.
+///
+/// What it does instead is **name the gap on stderr**, so the number the
+/// runbook tells the user to watch has an explanation next to it rather than
+/// being an unattributed drift. See §Known limits.
 #[derive(Debug, Default, Deserialize)]
 struct JobReply {
     /// `Option` for `RetainReply`'s reason: an explicit `null` is not what
@@ -100,6 +115,8 @@ struct JobReply {
     /// a transport failure.
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    chunks_failed: i64,
 }
 
 /// What one round trip is allowed to move.
@@ -351,7 +368,22 @@ fn reconcile(cfg: &Config, st: &mut SessionState) -> bool {
         return true;
     };
     match job_status(cfg, &pending.job_id) {
-        JobOutcome::Done => {
+        JobOutcome::Done(chunks_failed) => {
+            if chunks_failed > 0 {
+                // The daemon wrote *some* facts and withheld the content
+                // hash, so `confirmed_offset` stays where it is — permanently,
+                // because this arm is what clears the only record that could
+                // re-send. Said out loud rather than left as an unexplained
+                // number on a dashboard.
+                super::debug(
+                    &cfg.hooks,
+                    &format!(
+                        "retain: job {} settled with {chunks_failed} failed chunk(s); \
+                         confirmed_offset stays behind byte_offset for bytes {}..{}",
+                        pending.job_id, pending.offset_from, pending.offset_to
+                    ),
+                );
+            }
             st.pending = None;
             true
         }
@@ -393,7 +425,9 @@ fn reconcile(cfg: &Config, st: &mut SessionState) -> bool {
 }
 
 enum JobOutcome {
-    Done,
+    /// Settled. Carries the daemon's `chunks_failed` so the reconciler can
+    /// report a gap it deliberately does not act on — see [`JobReply`].
+    Done(i64),
     Failed,
     /// `pending`, `running`, or a status word we do not recognise.
     Unsettled,
@@ -417,7 +451,7 @@ fn job_status(cfg: &Config, job_id: &str) -> JobOutcome {
         Ok(r) if r.is_success() => {
             let reply: JobReply = serde_json::from_slice(&r.body).unwrap_or_default();
             match reply.status.unwrap_or_default().as_str() {
-                "done" => JobOutcome::Done,
+                "done" => JobOutcome::Done(reply.chunks_failed),
                 "failed" => JobOutcome::Failed,
                 _ => JobOutcome::Unsettled,
             }

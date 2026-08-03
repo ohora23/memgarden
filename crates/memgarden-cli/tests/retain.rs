@@ -1292,3 +1292,201 @@ fn every_retain_argv_shape_exits_zero() {
         assert_silent(&out, "malformed stdin");
     }
 }
+
+// ------------------------------------------- found by mutation, round 2
+//
+// Five mutations survived the suite above. Each of the following is the test
+// that now fails on the code the mutation produced.
+
+/// **A `202` that carries no job id must not advance the cursor.** The mutant
+/// that treated it as `Settled` was invisible: every other assertion in the
+/// suite is about a 202 *with* an id.
+///
+/// Not advancing is at-least-once and self-terminating — the job either
+/// finishes and stamps the content hash, so the next attempt is `duplicate`
+/// and advances, or it fails and the next attempt is the re-send we wanted.
+#[test]
+fn a_202_without_a_job_id_does_not_advance_and_moves_no_counter() {
+    let f = fixture("");
+    let s = stub(|_, _| {
+        json_reply(
+            "202 Accepted",
+            &serde_json::json!({"status": "accepted", "job_id": null}).to_string(),
+        )
+    });
+    f.append_turns(2);
+    f.write_state(&state_file(
+        "s1",
+        serde_json::json!({"turns_since_retain": 10}),
+    ));
+
+    f.stop("s1", &s.url);
+    let st = f.state("s1");
+    assert_eq!(st["offset"], 0, "an unreconcilable accept must not advance");
+    assert_eq!(st["pending"], serde_json::Value::Null);
+    assert_eq!(st["chunk"], 0);
+    // Neither counter: the daemon answered, and it answered an accept.
+    assert_eq!(st["transport_failures"], 0);
+    assert_eq!(st["reject_failures"], 0);
+}
+
+/// **A 5xx that is not `503` is transport-class, never reject-class.**
+/// `reject_failures` is defined as a durable *client-side* rejection, so a
+/// daemon bug must not be able to poison a session — the mutant that widened
+/// the poisoning range to `400..600` passed everything else.
+#[test]
+fn a_500_counts_a_transport_failure_and_never_poisons() {
+    let f = fixture("breaker_failures = 100");
+    let s = stub(|_, _| error("500 Internal Server Error"));
+    f.append_turns(2);
+
+    for n in 1..=12 {
+        let mut st = f
+            .maybe_state("s1")
+            .unwrap_or_else(|| state_file("s1", serde_json::json!({})));
+        st["turns_since_retain"] = serde_json::json!(10);
+        f.write_state(&st);
+        f.stop("s1", &s.url);
+        assert_eq!(f.state("s1")["transport_failures"], n);
+    }
+    let st = f.state("s1");
+    assert_eq!(
+        st["reject_failures"], 0,
+        "a server fault is not a rejection"
+    );
+    assert_eq!(st["poisoned_at"], serde_json::Value::Null);
+    assert_eq!(st["offset"], 0);
+}
+
+/// **`--force` is read from a fixed slot, not scanned for.** The mutant that
+/// scanned the whole of argv is not exploitable through `session-end` today —
+/// that caller always passes `--force` first — which is exactly why it
+/// survived, and exactly why the property is worth pinning structurally
+/// rather than by its current reachability. C2b's version of this defect was
+/// also unreachable until it was not.
+#[test]
+fn force_in_a_value_slot_does_not_force_the_retain() {
+    let f = fixture("");
+    let s = stub(|_, _| accepted("j1"));
+    f.append_turns(2);
+    f.write_state(&state_file(
+        "s1",
+        serde_json::json!({"transcript_path": f.transcript.to_string_lossy()}),
+    ));
+
+    // `--force` appears in argv, in a **value** position. A scan would find
+    // it, force the retain and post on turn 1.
+    let out = f.run(
+        &[
+            "hook",
+            "retain",
+            "--session",
+            "--force",
+            "--end-reason",
+            "--force",
+        ],
+        &f.payload("s1"),
+        &s.url,
+    );
+    assert_silent(&out, "--force in a value slot");
+    assert_eq!(s.accepts(), 0, "the turn gate must still apply");
+    assert_eq!(f.state("s1")["turns"], 1);
+    assert_eq!(f.state("s1")["offset"], 0);
+}
+
+/// **The retain POST gets `retain_timeout_ms` (5 s), not `recall_timeout_ms`
+/// (400 ms).** The daemon's `prepare()` is synchronous before the 202 —
+/// tokenize twice, upsert the document, insert the ledger and job rows — and
+/// ~0.6 s was observed on a 9.4 MB initial retain. A 400 ms budget abandons a
+/// retain the daemon has **already queued**, which is the silent-loss shape
+/// §Binding decisions #8 exists to close, reached by a client that gave up.
+///
+/// The delay is 800 ms: comfortably outside 400 and comfortably inside 5000,
+/// so neither bound is satisfiable by accident. C2a's lesson — a bound test
+/// whose numbers are the defaults cannot fail on a hardcoded default.
+#[test]
+fn the_retain_post_waits_longer_than_the_interactive_budget() {
+    let f = fixture("");
+    let s = stub(|_, _| {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        accepted("slow-job")
+    });
+    f.append_turns(2);
+    f.write_state(&state_file(
+        "s1",
+        serde_json::json!({"turns_since_retain": 10}),
+    ));
+
+    let started = std::time::Instant::now();
+    f.stop("s1", &s.url);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_millis(800),
+        "the hook did not wait for the reply: {elapsed:?}"
+    );
+    let st = f.state("s1");
+    assert_eq!(
+        st["pending"]["job_id"], "slow-job",
+        "a 400 ms budget would have timed out"
+    );
+    assert!(st["offset"].as_u64().unwrap() > 0);
+    assert_eq!(st["transport_failures"], 0);
+}
+
+/// **An absent `cwd` is sent as `null`, not as `""`.** The daemon reads
+/// `Option<String>` and leaves the column untouched for `null`; an empty
+/// string clobbers a `cwd` a previous `session-start` recorded correctly.
+/// The unpinned survivor C2b's review named, now pinned on the retain path.
+#[test]
+fn an_absent_cwd_is_null_on_the_wire() {
+    let f = fixture("");
+    let s = stub(|_, _| accepted("j1"));
+    f.append_turns(2);
+    f.write_state(&state_file(
+        "s1",
+        serde_json::json!({
+            "turns_since_retain": 10,
+            "transcript_path": f.transcript.to_string_lossy(),
+        }),
+    ));
+
+    // The forced child: no payload, and the state file's `cwd` is empty.
+    let out = f.run(
+        &[
+            "hook",
+            "retain",
+            "--force",
+            "--session",
+            "s1",
+            "--end-reason",
+            "clear",
+        ],
+        b"",
+        &s.url,
+    );
+    assert_silent(&out, "forced retain with no cwd");
+    assert_eq!(s.retains()[0]["cwd"], serde_json::Value::Null);
+    // …and the `end_reason` update takes the same treatment for an empty one.
+    let f2 = fixture("");
+    let s2 = stub(|_, _| accepted("j1"));
+    f2.append_turns(2);
+    f2.write_state(&state_file(
+        "s1",
+        serde_json::json!({"transcript_path": f2.transcript.to_string_lossy()}),
+    ));
+    let out = f2.run(
+        &[
+            "hook",
+            "retain",
+            "--force",
+            "--session",
+            "s1",
+            "--end-reason",
+            "",
+        ],
+        b"",
+        &s2.url,
+    );
+    assert_silent(&out, "forced retain with no end reason");
+    assert_eq!(s2.body(1)["end_reason"], serde_json::Value::Null);
+}

@@ -133,6 +133,18 @@ fn split_words(raw: &str) -> Vec<String> {
 /// pre-serialized buffer. Lives in this process so the bench has no external
 /// dependency and can run in a sandbox.
 ///
+/// **It answers per route, and C4b is the PR that made that necessary.** Up to
+/// C3 every arm hit `POST …/recall`, so one reply was one reply. `hook retain`
+/// reads `status` and `job_id` out of its response and routes on them: a
+/// recall body served to a retain POST is a 200 the hook cannot classify,
+/// which is the *transport-failure* path — so arm A would have measured the
+/// failure branch while the table called it a steady-state retain.
+///
+/// It also drains the whole request rather than one 8 KB read. A retain body
+/// is ~100 KB and a stub that replies and closes mid-write leaves the hook's
+/// `write_all` on a reset socket — the same transport-failure branch, arrived
+/// at from the other side.
+///
 /// // ponytail: one connection at a time, sequentially. The driver is
 /// // single-threaded and the hook opens exactly one connection per
 /// // invocation, so a thread per connection would buy nothing; spawn per
@@ -158,24 +170,79 @@ fn spawn_stub() -> String {
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|t| t.trim().to_string())
         .unwrap_or_default();
-    let reply = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nx-memgarden-token: {token}\r\n\
-         content-length: {}\r\nconnection: close\r\n\r\n{body}",
-        body.len()
+    let framed = move |status: &str, body: &str| {
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\nx-memgarden-token: {token}\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    let recall = framed("200 OK", &body);
+    // The real `RetainResponse` on the accept path, so arm A pays for the
+    // `pending` record it is supposed to write.
+    let retain = framed(
+        "202 Accepted",
+        &serde_json::json!({
+            "status": "accepted", "job_id": "bench-job", "document_id": 1,
+            "raw_tokens": 900, "capped_tokens": 300,
+            "saved_tokens": 600, "saving_ratio": 0.667,
+        })
+        .to_string(),
     );
+    // A settled job, so the reconcile arm clears rather than skipping — the
+    // path that then goes on to POST.
+    let retain_job = framed(
+        "200 OK",
+        &serde_json::json!({"job_id": "bench-job", "status": "done"}).to_string(),
+    );
+    let ok = framed("200 OK", "{}");
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind stub");
     let addr = listener.local_addr().unwrap();
     std::thread::spawn(move || {
         for sock in listener.incoming() {
             let Ok(mut sock) = sock else { continue };
-            let mut buf = [0u8; 8192];
-            let _ = sock.read(&mut buf);
+            let request = drain_request(&mut sock);
+            let line = request.lines().next().unwrap_or("");
+            let reply = if line.starts_with("GET /v1/retain/") {
+                &retain_job
+            } else if line.starts_with("POST") && line.contains("/retain") {
+                &retain
+            } else if line.contains("/recall") {
+                &recall
+            } else {
+                &ok
+            };
             let _ = sock.write_all(reply.as_bytes());
             let _ = sock.flush();
         }
     });
     format!("http://{addr}")
+}
+
+/// Reads head + `Content-Length` body, so the hook's `write_all` completes
+/// against a peer that is still listening. See [`spawn_stub`].
+fn drain_request(sock: &mut std::net::TcpStream) -> String {
+    let mut buf = Vec::with_capacity(8192);
+    let mut chunk = [0u8; 8192];
+    loop {
+        if let Some(head_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+            let length: usize = head
+                .split("\r\n")
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            if buf.len() >= head_end + 4 + length {
+                break;
+            }
+        }
+        match sock.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 /// One `execve` -> exit, measured from the driver. Stdin is written and
