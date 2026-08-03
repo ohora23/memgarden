@@ -298,8 +298,10 @@ fn live_transcript_measurement() {
     let path = PathBuf::from(path);
     let size = std::fs::metadata(&path).expect("stat").len();
     println!("\ntranscript: {} ({size} bytes)", path.display());
-    println!("| from_offset | delta bytes | messages | compactions | truncated | wall |");
-    println!("|---|---|---|---|---|---|");
+    println!(
+        "| from_offset | delta bytes | body bytes | messages | compactions | truncated | wall | of which serialize |"
+    );
+    println!("|---|---|---|---|---|---|---|---|");
 
     for (label, from) in [
         ("0 (full file)", 0),
@@ -311,13 +313,21 @@ fn live_transcript_measurement() {
         let start = std::time::Instant::now();
         let delta = read_delta(&path, from, CAP);
         let wall = start.elapsed();
+        // One serialization pass over exactly the kept messages. `read_delta`
+        // pays this same cost internally to size the window, so it is the
+        // attribution for the gap between this row's wall time and the plan's
+        // parse-only reference — measured, not reasoned about.
+        let start = std::time::Instant::now();
+        let body = delta.body_bytes();
+        let serialize = start.elapsed();
         println!(
-            "| {label} | {} | {} | {} | {} | {:.2} ms |",
+            "| {label} | {} | {body} | {} | {} | {} | {:.2} ms | {:.2} ms |",
             delta.consumed_to - from,
             delta.messages.len(),
             delta.compactions,
             delta.truncated,
-            wall.as_secs_f64() * 1000.0
+            wall.as_secs_f64() * 1000.0,
+            serialize.as_secs_f64() * 1000.0
         );
         assert_eq!(delta.consumed_to.max(from), delta.consumed_to);
     }

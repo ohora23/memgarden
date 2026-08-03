@@ -324,6 +324,78 @@ mod tests {
         assert_eq!(next.consumed_to, (whole.len() + tail.len()) as u64);
     }
 
+    /// The skip list is load-bearing, not decorative.
+    ///
+    /// Found by mutation: adding `attachment` to the kept-types arm survived
+    /// the whole suite, because no real `attachment` entry happens to carry a
+    /// `message.role` and the `role` requirement was silently doing the work.
+    /// An entry type is excluded because of its **type**.
+    #[test]
+    fn a_skipped_type_is_skipped_even_when_it_carries_a_usable_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "{\"type\":\"attachment\",\"message\":{\"role\":\"user\",\"content\":\"nope\"}}\n\
+             {\"type\":\"queue-operation\",\"message\":{\"role\":\"user\",\"content\":\"nope\"}}\n\
+             {\"type\":\"file-history-snapshot\",\"message\":{\"role\":\"assistant\",\"content\":\"nope\"}}\n\
+             {\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"kept\"}}\n",
+        );
+        let delta = read_delta(&path, 0, CAP);
+        assert_eq!(delta.messages.len(), 1);
+        assert_eq!(delta.messages[0]["content"], "kept");
+    }
+
+    /// The one deliberate divergence from `retain.py:56-65`.
+    ///
+    /// Legacy reaches the flat-shape branch from an `elif`, so a *typed*
+    /// entry carrying top-level `role` and `content` is kept by legacy and
+    /// skipped by us. Measured: 0 such entries in 6,460 lines of the live
+    /// transcript and 0 in 7,338 of the 106.9 MB one. Pinned so the
+    /// divergence stays deliberate.
+    #[test]
+    fn a_typed_entry_with_top_level_role_and_content_is_skipped_unlike_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            // Both arms of the type match: `system` (which we branch on for
+            // the compaction counter) and a type that reaches the catch-all.
+            "{\"type\":\"system\",\"role\":\"user\",\"content\":\"legacy keeps this\"}\n\
+             {\"type\":\"attachment\",\"role\":\"user\",\"content\":\"legacy keeps this too\"}\n",
+        );
+        assert!(read_delta(&path, 0, CAP).messages.is_empty());
+    }
+
+    /// The cap is a `<=`, checked from both sides.
+    ///
+    /// Found by mutation: `total > cap` (dropping the `+1` that accounts for
+    /// the array's opening bracket) and dropping the per-message separator
+    /// byte both survived a fallback test whose cap had slack in it. A cap
+    /// with slack cannot distinguish them; a cap on the exact boundary can.
+    #[test]
+    fn the_cap_is_exact_on_both_sides_of_the_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut body = String::new();
+        for i in 0..4 {
+            body.push_str(&format!(
+                "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{i}\"}}}}\n"
+            ));
+        }
+        let path = write(&dir, &body);
+
+        let exact = read_delta(&path, 0, CAP).body_bytes();
+
+        let at = read_delta(&path, 0, exact);
+        assert_eq!(at.messages.len(), 4, "a body of exactly the cap fits");
+        assert!(!at.truncated);
+        assert_eq!(at.body_bytes(), exact);
+
+        let one_byte_tighter = exact - 1;
+        let under = read_delta(&path, 0, one_byte_tighter);
+        assert!(under.truncated, "one byte over the cap must truncate");
+        assert_eq!(under.messages.len(), 3);
+        assert!(under.body_bytes() <= one_byte_tighter);
+    }
+
     #[test]
     fn the_flat_role_content_shape_is_accepted_and_kept_whole() {
         let dir = tempfile::tempdir().unwrap();
