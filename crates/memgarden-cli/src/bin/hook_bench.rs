@@ -139,16 +139,28 @@ fn split_words(raw: &str) -> Vec<String> {
 /// // accept if a concurrent arm is ever added.
 fn spawn_stub() -> String {
     // A ~1.5 KB body, the measured size of a real recall response.
+    // The daemon's real `RecallOutcome` shape (CE-6), not an approximation of
+    // it: `hook recall` deserializes `counts`, so a stub that omits it charges
+    // arm A less parsing than production does.
     let injected = "· ".repeat(600);
     let body = serde_json::json!({
+        "results": [],
         "injected_text": injected,
-        "count": 8,
-        "took_ms": 12,
+        "counts": {"candidates": 30, "returned": 8, "tokens": 412},
     })
     .to_string();
+    // The stub stamps the same identity token the hook will read from
+    // `<data>/daemon.token`, because a hook that cannot identify the daemon
+    // refuses the response — arm A would otherwise measure the
+    // transport-failure path while claiming to measure the injection path.
+    let token = memgarden_core::paths::daemon_token_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| t.trim().to_string())
+        .unwrap_or_default();
     let reply = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-         connection: close\r\n\r\n{body}",
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nx-memgarden-token: {token}\r\n\
+         content-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     );
 
@@ -227,10 +239,15 @@ fn main() {
     let args = parse_args();
     let daemon_url = match &args.real {
         Some(url) => {
-            println!("# Gate C mode: live daemon at {url}");
+            // Also the way the *broken*-daemon paths are measured — a dead port
+            // and an open breaker are both "an external url", and quoting them
+            // under a banner that says "live daemon" would be a lie in the PR
+            // body. The banner names what is actually true of every such run.
+            println!("# external daemon at {url} (the stub is bypassed)");
             println!(
-                "# NOTE: these are AC-2 **recall-clause** numbers (daemon service time \
-                 INCLUDED), not hook overhead.\n"
+                "# NOTE: the callee's service time is INCLUDED here, so this is not hook \
+                 overhead.\n# Against a live seeded memgardend this is **Gate C** (AC-2's \
+                 recall clause).\n"
             );
             url.clone()
         }

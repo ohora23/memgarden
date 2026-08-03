@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Ceiling on one state file, applied by [`load_all`] as a bounded read.
+/// Ceiling on one state file, applied by [`load`] and [`load_all`] as a
+/// bounded read.
 ///
 /// A real file is ~400 bytes. This is not about a hostile writer so much as
 /// about the *shape* of the failure: `gc` prunes by mtime, so a single
@@ -212,7 +213,18 @@ pub fn path_for(dir: &Path, session_id: &str) -> Option<PathBuf> {
 /// into a recovery from the daemon rather than a full re-ingest.
 pub fn load(dir: &Path, session_id: &str) -> Option<SessionState> {
     let path = path_for(dir, session_id)?;
-    let bytes = std::fs::read(path).ok()?;
+    // Bounded for the same reason `load_all` is, and more urgently: C3 calls
+    // this on **every prompt**, where `load_all` runs twice a session. `gc`
+    // prunes by mtime only, so without the cap one oversized `<sid>.json` — a
+    // botched write, a log renamed in — is re-read in full on every turn for
+    // the whole retention window. Truncating makes it unparseable, which reads
+    // as absent, which is already the handling for every unusable file.
+    let mut bytes = Vec::new();
+    File::open(&path)
+        .ok()?
+        .take(MAX_STATE_FILE_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
     let state: SessionState = serde_json::from_slice(&bytes).ok()?;
     // The `session_id` conjunct is not belt-and-braces: sanitization is
     // **many-to-one**, so `a/b` and `a_b` share one file. Without this check
@@ -352,7 +364,11 @@ fn open_private(path: &Path) -> std::io::Result<File> {
 /// treatment for exactly that reason: `ensure_data_dir` only chmods its
 /// argument, so calling it on `<data>/hooks` alone would still leave `<data>`
 /// itself world-readable when the hook is what created it.
-fn ensure_dir(dir: &Path) -> std::io::Result<()> {
+///
+/// Public because C3 writes two non-state files into the same directory
+/// (`shadow-recall.jsonl`, `last_recall.json`) and must not be the caller that
+/// creates it at 0755.
+pub fn ensure_dir(dir: &Path) -> std::io::Result<()> {
     if let Some(parent) = dir.parent()
         && !parent.as_os_str().is_empty()
         && !parent.exists()
@@ -814,6 +830,25 @@ mod tests {
             .map(|s| s.session_id)
             .collect();
         assert_eq!(ids, vec!["real".to_string()]);
+    }
+
+    /// The same ceiling on the single-session path, which C3 calls on **every
+    /// prompt** — ten times the exposure `load_all` has.
+    #[test]
+    fn load_bounds_an_oversized_state_file_too() {
+        let dir = tempfile::tempdir().unwrap();
+        store(dir.path(), &sample("s1")).unwrap();
+        assert!(load(dir.path(), "s1").is_some(), "the premise");
+
+        let mut bloated = serde_json::to_vec(&sample("s1")).unwrap();
+        bloated.pop();
+        bloated.extend(format!(",\"pad\":\"{}\"}}", "x".repeat(200 * 1024)).bytes());
+        assert!(bloated.len() as u64 > MAX_STATE_FILE_BYTES);
+        std::fs::write(dir.path().join("s1.json"), &bloated).unwrap();
+
+        // Truncated -> unparseable -> absent, which is already the handling
+        // for every other unusable file.
+        assert!(load(dir.path(), "s1").is_none());
     }
 
     /// `gc` prunes by mtime, so without a ceiling one oversized file is

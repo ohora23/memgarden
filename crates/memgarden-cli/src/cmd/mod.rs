@@ -7,6 +7,7 @@
 //! correct handling is "exit 0".
 
 pub mod catchup;
+pub mod recall;
 pub mod session_start;
 
 use std::io::Write;
@@ -15,7 +16,21 @@ use std::process::{Command, Stdio};
 
 use memgarden_core::config::{Config, HooksConfig};
 
-use crate::http::Timeouts;
+use crate::http::{HttpError, Target, Timeouts};
+
+/// legacy/daemon: `memgarden_store::sessions::MAX_SESSION_ID_BYTES` — the bound
+/// `store::sessions::upsert` enforces, mirrored rather than imported because
+/// `memgarden-store` is exactly what this crate's dependency budget keeps out
+/// (`Cargo.toml`, CI-enforced).
+///
+/// Checked client-side because `session_id` arrives on untrusted stdin, which
+/// `hookio` bounds at 8 MB: without this, an 8 MB id would be written into a
+/// state file, POSTed as a body the daemon rejects, and passed as an argv
+/// element that blows `ARG_MAX`. Claude Code sends 36-character uuids.
+///
+/// It lives here rather than in one subcommand because C3 is the second caller
+/// and C4b is the third.
+pub const MAX_SESSION_ID_BYTES: usize = 200;
 
 /// Loads the config and hands it back **only when the hooks are on**.
 ///
@@ -57,6 +72,33 @@ pub fn debug(cfg: &HooksConfig, message: &str) {
 /// once here so `session-end` (C4b) inherits it rather than picking again.
 pub fn interactive_timeouts(cfg: &HooksConfig) -> Timeouts {
     Timeouts::from_ms(cfg.connect_timeout_ms, cfg.recall_timeout_ms)
+}
+
+/// The **only** production way to build a [`Target`]: the daemon's url plus
+/// the identity token every one of its responses must carry.
+///
+/// `Target::parse` alone is left for the in-process transport tests and the
+/// benchmark's stub, which have no daemon to identify. Routing every
+/// subcommand through here is the same "one guard where all callers pass"
+/// rule that put the path check in `http::request` — a future subcommand that
+/// called `Target::parse` directly would silently opt out of the check, so
+/// there is exactly one place to look.
+///
+/// An unreadable token is [`HttpError::Token`] and therefore **transport**
+/// class at every caller: it must not be a config fault, because a config
+/// fault moves no counter, the breaker would never open, and every prompt for
+/// the rest of the session would pay a full round trip to learn the same
+/// thing.
+pub fn target(cfg: &HooksConfig) -> Result<Target, HttpError> {
+    let path = memgarden_core::paths::daemon_token_path()
+        .map_err(|e| HttpError::Token(format!("cannot resolve the token path: {e}")))?;
+    let token = std::fs::read_to_string(&path)
+        .map_err(|e| HttpError::Token(format!("{}: {e}", path.display())))?;
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(HttpError::Token(format!("{} is empty", path.display())));
+    }
+    Target::parse_verified(&cfg.daemon_url, token.to_string())
 }
 
 /// Spawns a child that outlives us, wired to `/dev/null` on all three streams.

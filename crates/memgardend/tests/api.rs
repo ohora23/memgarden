@@ -382,3 +382,52 @@ async fn dry_run_extract_unreachable_ollama_503() {
     let body = body_json(response).await;
     assert_eq!(body["error"]["code"], "unavailable");
 }
+
+/// Every response carries this daemon's identity token, including the ones
+/// that skip the timing middleware and including a `check_host` rejection.
+///
+/// This is the daemon half of the C3 defence: the hook refuses a response that
+/// cannot produce the token, so a `stamp_token` layer that got dropped from the
+/// router would take **recall offline for everybody** while every other test in
+/// the workspace stayed green.
+///
+/// It is the only test in this binary that calls `token::init`, which sets a
+/// process-global `OnceLock` — deliberately, so the rest of the suite keeps
+/// running against an unstamped router and nothing here depends on test order.
+#[tokio::test]
+async fn every_response_carries_the_daemons_identity_token() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("daemon.token");
+    memgardend::token::init(&path).unwrap();
+    let expected = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(expected.len(), 64, "32 bytes, hex-encoded");
+
+    for uri in ["/livez", "/metrics.json", "/healthz", "/v1/banks"] {
+        let response = test_app().oneshot(get_request(uri)).await.unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get(memgardend::token::TOKEN_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some(expected.as_str()),
+            "{uri}"
+        );
+    }
+
+    // …including a rejection, because a hook that cannot identify the daemon
+    // treats the answer as a transport failure rather than as a 403 it could
+    // have reported.
+    let denied = Request::builder()
+        .method("GET")
+        .uri("/livez")
+        .header("host", "evil.com")
+        .body(Body::empty())
+        .unwrap();
+    let response = test_app().oneshot(denied).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        response
+            .headers()
+            .contains_key(memgardend::token::TOKEN_HEADER)
+    );
+}

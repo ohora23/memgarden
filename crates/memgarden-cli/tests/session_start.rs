@@ -79,10 +79,16 @@ fn read_request(sock: &mut TcpStream) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// The daemon's identity token, as `memgardend` would have written it to
+/// `<data>/daemon.token`. Every stub reply carries it, because a hook that
+/// cannot tell `memgardend` apart from an impostor refuses to read the
+/// response at all — see `crates/memgardend/src/token.rs`.
+const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 fn json_reply(status: &str, body: &str) -> String {
     format!(
-        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-         connection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\nx-memgarden-token: {TOKEN}\r\n\
+         content-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     )
 }
@@ -144,7 +150,11 @@ fn fixture(extra: &str) -> Fixture {
     let project = tmp.path().join("demo-project");
     let home = tmp.path().join("home");
     std::fs::create_dir_all(project.join(".git")).unwrap();
-    std::fs::create_dir_all(&home).unwrap();
+    // `XDG_DATA_HOME/memgarden/daemon.token`, resolved by
+    // `paths::daemon_token_path` on both sides.
+    let data = home.join("data").join("memgarden");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("daemon.token"), TOKEN).unwrap();
     let config = tmp.path().join("memgarden.toml");
     std::fs::write(
         &config,

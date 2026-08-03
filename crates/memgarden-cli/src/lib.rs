@@ -37,8 +37,10 @@
 //! (`src/bin/hook_bench.rs`) instead of against a number from yesterday.
 //!
 //! C2b adds the first subcommand that does work: `hook session-start`, and the
-//! detached `hook catchup` child it spawns (`src/cmd/`). `recall` (C3), the
-//! transcript reader (C4a) and `retain`/`session-end` (C4b) follow.
+//! detached `hook catchup` child it spawns (`src/cmd/`). C3 adds `hook recall`
+//! — the first subcommand on the per-prompt path and the only one that writes
+//! to stdout. The transcript reader (C4a) and `retain`/`session-end` (C4b)
+//! follow.
 
 pub mod bank;
 pub mod cmd;
@@ -73,6 +75,10 @@ pub fn dispatch(args: &[String]) {
         // `SessionStart`. Emits nothing on stdout by design — see
         // `cmd::session_start`.
         (Some("hook"), Some("session-start")) => cmd::session_start::run(),
+
+        // `UserPromptSubmit`. The only subcommand whose stdout is meant to be
+        // read — and only in `full` mode. See `cmd::recall`.
+        (Some("hook"), Some("recall")) => cmd::recall::run(),
 
         // Internal: the detached child `session-start` spawns. Reachable by
         // name so it can be run by hand with `--dry-run`, which is the only
@@ -131,7 +137,6 @@ mod tests {
             vec!["hook"],
             vec!["hook", "noop"],
             vec!["hook", "noop", "--extra", "junk"],
-            vec!["hook", "recall"], // not implemented until C3
             vec!["--help"],
             vec!["definitely-not-a-subcommand"],
         ] {
