@@ -8,6 +8,7 @@ mod mental;
 mod metrics;
 mod recall;
 mod retain;
+mod sessions;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
@@ -60,6 +61,17 @@ pub fn router(state: AppState) -> Router {
             post(retain::retain).layer(DefaultBodyLimit::max(retain::MAX_RETAIN_BODY_BYTES)),
         )
         .route("/v1/banks/{bank_id}/recall", post(recall::recall_bank))
+        // HK-1a session/turn state. The hook writes here twice per session
+        // (start and end); the retain route writes the same row on the
+        // per-retain path.
+        .route(
+            "/v1/banks/{bank_id}/sessions",
+            get(sessions::list_sessions).post(sessions::upsert_session),
+        )
+        .route(
+            "/v1/banks/{bank_id}/sessions/{session_id}",
+            get(sessions::get_session),
+        )
         // Synchronous: a manual round is bounded by `consolidation.batch_size`
         // facts but still runs LLM calls, so callers need a matching timeout.
         .route(
