@@ -1084,9 +1084,24 @@ async fn live_retain() {
 // ---------------------------------------------------------------------------
 
 fn session(db: &Db, session_id: &str) -> memgarden_store::sessions::Session {
-    memgarden_store::sessions::get(db, "b1", session_id)
+    session_in(db, "b1", session_id)
+}
+
+fn session_in(db: &Db, bank_id: &str, session_id: &str) -> memgarden_store::sessions::Session {
+    memgarden_store::sessions::get(db, bank_id, session_id)
         .unwrap()
         .unwrap_or_else(|| panic!("sessions row for {session_id} must exist"))
+}
+
+fn jobs_for(db: &Db, session_id: &str) -> i64 {
+    db.read()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM retain_jobs WHERE session_id = ?1",
+            [session_id],
+            |r| r.get(0),
+        )
+        .unwrap()
 }
 
 /// The happy path, and the reason there are two cursors: the optimistic one
@@ -1110,7 +1125,7 @@ async fn a_retain_mirrors_the_session_and_confirms_it_on_a_clean_run() {
                 "cwd": "/repo",
                 "byte_offset": 8192,
                 "turn": 30,
-                "compaction": 2,
+                "compactions": 2,
             }),
         ))
         .await
@@ -1196,26 +1211,22 @@ async fn a_failed_chunk_leaves_the_durable_cursor_behind() {
     // other. `sessions` carries the count and the cursors; the per-chunk
     // detail behind that one retain lives only in `retain_jobs`, joined on
     // `session_id`.
-    let jobs: i64 = harness
-        .db
-        .read()
-        .unwrap()
-        .query_row(
-            "SELECT count(*) FROM retain_jobs WHERE session_id = 'lagging'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(jobs as i64, row.retains);
+    assert_eq!(jobs_for(&harness.db, "lagging"), row.retains);
     assert_eq!(job.chunks_failed, 1);
     assert_eq!(row.compactions, 0, "no compaction was reported");
 }
 
-/// `skipped` and `duplicate` are accepts with nothing in flight, so both
-/// cursors move together. Leaving `confirmed_offset` behind for these would
-/// open a gap that nothing can ever close and read as permanently lost work.
+/// `skipped` and `duplicate` are accepts that queue nothing, so they may
+/// settle the durable cursor — **but only when nothing earlier is
+/// outstanding** (review HIGH 1). This test walks both halves: the clean
+/// ordering where they do confirm, and the ordering where a queued job is
+/// unresolved and the gap must survive.
+///
+/// The earlier version of this test asserted the defect: it confirmed at
+/// 1500 on a duplicate whose identical payload was itself proof that nothing
+/// had ingested 900..1500.
 #[tokio::test]
-async fn skipped_and_duplicate_advance_both_cursors() {
+async fn skipped_and_duplicate_settle_only_when_nothing_is_outstanding() {
     let (url, _calls) = spawn_stub_ollama(vec![]).await;
     let harness = with_worker(&url, |cfg| cfg.retain.chunk_size = 4000).await;
     memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
@@ -1279,9 +1290,73 @@ async fn skipped_and_duplicate_advance_both_cursors() {
     assert_eq!(row.byte_offset, 1500);
     assert_eq!(
         row.confirmed_offset, 1500,
-        "a duplicate means an earlier clean job already ingested these bytes"
+        "nothing was outstanding, so the duplicate may settle"
     );
     assert_eq!(row.retains, 3, "skipped and duplicate are both accepts");
+    // Reconciliation, stated as the inequality it actually is: two of those
+    // three accepts queued no job at all.
+    assert_eq!(
+        jobs_for(&harness.db, "settled"),
+        1,
+        "retains ({}) exceeds the job count by exactly the skipped + duplicate accepts",
+        row.retains
+    );
+}
+
+/// The other half of HIGH 1, and the case that was silently broken: a
+/// `skipped` landing at a higher offset while an earlier job is still
+/// unresolved must NOT close that job's gap. No worker runs here, so the
+/// first job never completes — the shape of a queued-then-failed retain.
+#[tokio::test]
+async fn a_later_skipped_does_not_swallow_an_unresolved_jobs_gap() {
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let queued = harness
+        .app
+        .clone()
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({
+                "messages": transcript(6),
+                "session_id": "s1",
+                "is_initial": true,
+                "byte_offset": 5000,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(queued.status(), StatusCode::ACCEPTED);
+    assert_eq!(session(&harness.db, "s1").inflight_bytes(), 5000);
+
+    // An ordinary role-filtered delta emptying out — the plan's own words.
+    let skipped = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({
+                "messages": [{ "role": "system", "content": "tool noise nobody retains" }],
+                "session_id": "s1",
+                "is_initial": false,
+                "byte_offset": 6000,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(body_json(skipped).await["status"], "skipped");
+
+    let row = session(&harness.db, "s1");
+    assert_eq!(row.byte_offset, 6000);
+    assert_eq!(
+        row.confirmed_offset, 0,
+        "the unresolved job's gap must not be swallowed"
+    );
+    assert_eq!(row.inflight_bytes(), 6000);
+    assert_eq!(
+        jobs_for(&harness.db, "s1"),
+        1,
+        "and that one job is still sitting there unfinished"
+    );
 }
 
 /// A caller that is not the hook — no `byte_offset`, no `turn` — must not
@@ -1305,7 +1380,7 @@ async fn a_retain_without_the_hook_fields_does_not_clobber_the_mirror() {
                 "is_initial": true,
                 "byte_offset": 7000,
                 "turn": 40,
-                "compaction": 3,
+                "compactions": 3,
             }),
         ))
         .await
@@ -1371,4 +1446,132 @@ async fn a_retain_without_a_session_id_writes_no_session_row() {
         .query_row("SELECT count(*) FROM sessions", [], |r| r.get(0))
         .unwrap();
     assert_eq!(rows, 0);
+}
+
+/// Review HIGH 2: the mirror must never fail a retain, and a `session_id`
+/// the mirror would reject must be caught **before** any DB work.
+///
+/// The defect: `sessions::upsert` enforced `MAX_SESSION_ID_BYTES` and the
+/// route propagated its error with `?` — after the document, the ledger row
+/// and the job row had all committed. The caller got a 400 and the job sat
+/// at `pending` forever, never dispatched and never failed, which a
+/// §Binding-#8 hook would poll for the rest of the session.
+#[tokio::test]
+async fn an_oversized_session_id_is_rejected_before_any_row_is_written() {
+    let (harness, mut rx, _state) = build("http://127.0.0.1:1", |_| {});
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let response = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({
+                "messages": transcript(2),
+                "session_id": "x".repeat(201),
+                "is_initial": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"]["code"], "invalid");
+
+    let conn = harness.db.read().unwrap();
+    for table in ["retain_jobs", "documents", "sessions", "benefit_ledger"] {
+        let n: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "{table} must be untouched by a rejected request");
+    }
+    assert!(
+        rx.try_recv().is_err(),
+        "and nothing may reach the retain queue"
+    );
+}
+
+/// `chunk` rides the retain payload, not only `POST …/sessions`: the case
+/// `chunk_index` exists for is a state-dir wipe *mid*-session, which
+/// end-of-session mirroring cannot reach.
+#[tokio::test]
+async fn the_retain_payload_mirrors_the_chunk_counter() {
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    for chunk in [3, 4] {
+        harness
+            .app
+            .clone()
+            .oneshot(post(
+                "/v1/banks/b1/retain",
+                json!({
+                    "messages": transcript(2),
+                    "session_id": "chunked",
+                    "document_id": format!("chunked-c{chunk}"),
+                    "is_initial": false,
+                    "chunk": chunk,
+                }),
+            ))
+            .await
+            .unwrap();
+    }
+    assert_eq!(session(&harness.db, "chunked").chunk_index, 4);
+
+    // Monotonic like the rest: a stale replay does not rewind it.
+    harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({
+                "messages": transcript(2),
+                "session_id": "chunked",
+                "document_id": "chunked-c1",
+                "is_initial": false,
+                "chunk": 1,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(session(&harness.db, "chunked").chunk_index, 4);
+}
+
+/// Binding #4 says test both shapes of real bank id. These are the first
+/// endpoints the hook ever calls, and it calls them with a percent-encoded
+/// `claude-code::<project>` — `::` in every case, and a space in at least
+/// one live bank.
+#[tokio::test]
+async fn a_real_world_bank_id_survives_the_url_path() {
+    let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
+    for bank in [
+        "claude-code::bank-b",
+        "claude-code::bank e",
+    ] {
+        memgarden_store::banks::create(&harness.db, bank, None, None).unwrap();
+        let encoded = bank.replace(':', "%3A").replace(' ', "%20");
+
+        let response = harness
+            .app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/banks/{encoded}/retain"),
+                json!({
+                    "messages": transcript(2),
+                    "session_id": "sess",
+                    "is_initial": true,
+                    "byte_offset": 2048,
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED, "bank {bank}");
+        assert_eq!(session_in(&harness.db, bank, "sess").byte_offset, 2048);
+
+        let listed = harness
+            .app
+            .clone()
+            .oneshot(get(&format!("/v1/banks/{encoded}/sessions/sess")))
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        assert_eq!(body_json(listed).await["bank_id"], bank);
+    }
 }

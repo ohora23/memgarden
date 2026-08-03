@@ -24,12 +24,39 @@
 //! |---|---|
 //! | `cwd`, `transcript_path`, `source`, `end_reason`, `ended_at`, `turns`, `chunk_index`, `byte_offset`, `compactions` | the hook, via `POST …/sessions` or the retain request |
 //! | `retains`, `messages_sent` | the daemon, `+=` once per accepted retain |
-//! | `confirmed_offset` | the daemon, only from a completion fact |
+//! | `confirmed_offset` | the daemon, only from a settlement it observed |
 //!
-//! `confirmed_offset` is never settable by a client field of its own: it is
-//! advanced by the retain worker on a clean run, and by the request path only
-//! for the two outcomes where "nothing is left to ingest for these bytes" is
-//! already true (`skipped`, `duplicate`).
+//! No client field is named `confirmed_offset` on any endpoint. It advances
+//! down two channels, and they are deliberately different
+//! ([`SessionUpdate::confirmed_offset`] vs
+//! [`SessionUpdate::confirm_if_settled`]):
+//!
+//! * the retain **worker**, unconditionally, on a clean run — it observed the
+//!   whole range it is confirming;
+//! * the retain **request path**, for the `skipped` and `duplicate` outcomes,
+//!   **only when there is no open gap already**. Those outcomes prove nothing
+//!   is outstanding for *this request's* bytes; they prove nothing about an
+//!   earlier queued job that has not come back. Without the guard, an
+//!   ordinary role-filtered `skipped` at a higher offset would swallow an
+//!   earlier failure's gap and the instrument would read zero over lost
+//!   bytes (review HIGH 1).
+//!
+//! ## Reconciliation with `retain_jobs`
+//!
+//! `retain_jobs` is one row per retain **request**; `sessions` is one row per
+//! **(bank, session)**. Neither carries a column of the other, and no field
+//! is written by both paths. The counts relate but are **not equal**:
+//!
+//! ```text
+//! sessions.retains >= count(retain_jobs WHERE session_id = …)
+//!    delta = the accepts that queue no job: `skipped` + `duplicate`
+//! ```
+//!
+//! `messages_sent` is likewise a running sum of a value `retain_jobs.detail.
+//! message_count` records per request — the same total only while no delta is
+//! ever re-sent. It is additive, therefore **not** idempotent under the
+//! rollback-and-resend of §Binding decisions #8; the cursors are the fields
+//! that survive that, which is why they are the ones anything reasons over.
 
 use rusqlite::{OptionalExtension, params};
 
@@ -73,6 +100,17 @@ impl Session {
     /// flight, or lost to a failed job. The number the runbook tells an
     /// operator to watch, and the reason there are two cursors at all.
     pub fn inflight_bytes(&self) -> i64 {
+        // An inverted pair would read as "all settled", which is the one
+        // wrong answer this number must never give. Nothing can produce it —
+        // the durable cursor only ever advances to an offset the optimistic
+        // one already reached — so make a future writer that breaks the
+        // invariant loud in tests and harmless in production.
+        debug_assert!(
+            self.confirmed_offset <= self.byte_offset,
+            "cursor inversion: confirmed {} > byte {}",
+            self.confirmed_offset,
+            self.byte_offset
+        );
         (self.byte_offset - self.confirmed_offset).max(0)
     }
 }
@@ -105,7 +143,24 @@ pub struct SessionUpdate<'a> {
     pub turns: Option<i64>,
     pub chunk_index: Option<i64>,
     pub byte_offset: Option<i64>,
+    /// **Unconditional** advance of the durable cursor. Only the retain
+    /// worker may use this, and only on a clean run: it has observed the
+    /// whole range it is confirming, so it may close a gap it did not open.
     pub confirmed_offset: Option<i64>,
+    /// **Conditional** advance of the durable cursor: applied only when the
+    /// row has no open gap (`confirmed_offset >= byte_offset`) at the moment
+    /// of the write.
+    ///
+    /// This is the request path's channel, for the `skipped` and `duplicate`
+    /// outcomes. Those outcomes are proof about *this request's* bytes and
+    /// say nothing about an earlier queued job that has not come back — and
+    /// because the column merges with `MAX`, an unconditional confirm at a
+    /// higher offset would erase that earlier gap outright (review HIGH 1).
+    ///
+    /// When the guard blocks it, the gap simply stays open until the next
+    /// clean job confirms past it. Over-reporting outstanding work is the
+    /// safe direction for an instrument whose whole job is to notice loss.
+    pub confirm_if_settled: Option<i64>,
     pub compactions: Option<i64>,
     pub retains_delta: i64,
     pub messages_sent_delta: i64,
@@ -136,6 +191,9 @@ pub fn upsert(db: &Db, bank_id: &str, u: &SessionUpdate) -> Result<Session> {
     let chunk_index = clamp(u.chunk_index);
     let byte_offset = clamp(u.byte_offset);
     let confirmed_offset = clamp(u.confirmed_offset);
+    // `0`, never NULL: SQLite's scalar `max()` returns NULL if *any* argument
+    // is NULL, which would blank the column instead of leaving it alone.
+    let confirm_if_settled = clamp(u.confirm_if_settled);
     let compactions = clamp(u.compactions);
     let retains_delta = u.retains_delta.max(0);
     let messages_sent_delta = u.messages_sent_delta.max(0);
@@ -146,7 +204,13 @@ pub fn upsert(db: &Db, bank_id: &str, u: &SessionUpdate) -> Result<Session> {
                (bank_id, session_id, cwd, transcript_path, source, end_reason,
                 turns, retains, chunk_index, byte_offset, confirmed_offset,
                 messages_sent, compactions, started_at, last_seen_at, ended_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?15)
+             -- A brand-new row has no earlier job outstanding by
+             -- construction, so the conditional channel always applies here;
+             -- the guard below is what makes it conditional on an existing
+             -- row. Mutating only the DO UPDATE branch is not a collapse of
+             -- the two cursors, because a session's first write is always
+             -- this insert.
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, max(?11, ?16), ?12, ?13, ?14, ?14, ?15)
              ON CONFLICT (bank_id, session_id) DO UPDATE SET
                cwd              = coalesce(excluded.cwd, cwd),
                transcript_path  = coalesce(excluded.transcript_path, transcript_path),
@@ -159,7 +223,18 @@ pub fn upsert(db: &Db, bank_id: &str, u: &SessionUpdate) -> Result<Session> {
                turns            = max(turns, excluded.turns),
                chunk_index      = max(chunk_index, excluded.chunk_index),
                byte_offset      = max(byte_offset, excluded.byte_offset),
-               confirmed_offset = max(confirmed_offset, excluded.confirmed_offset),
+               -- Two channels into one column. ?11 is the worker's
+               -- unconditional confirm; ?16 is the request path's, gated on
+               -- the row having no open gap *before* this write. Bound
+               -- positionally rather than through `excluded` on purpose:
+               -- `excluded.confirmed_offset` is `max(?11, ?16)` from the
+               -- VALUES list above, which would smuggle the conditional
+               -- value past its own guard.
+               confirmed_offset = max(
+                                    confirmed_offset,
+                                    ?11,
+                                    CASE WHEN confirmed_offset >= byte_offset
+                                         THEN ?16 ELSE 0 END),
                compactions      = max(compactions, excluded.compactions),
                -- additive: one write per accepted retain
                retains          = retains + excluded.retains,
@@ -181,6 +256,7 @@ pub fn upsert(db: &Db, bank_id: &str, u: &SessionUpdate) -> Result<Session> {
                 compactions,
                 now,
                 u.ended_at,
+                confirm_if_settled,
             ],
         )
         .map_err(|e| map_session_err(e, bank_id))?;
@@ -335,6 +411,63 @@ mod tests {
         assert_eq!(updated.transcript_path.as_deref(), Some("/t.jsonl"));
         assert_eq!(updated.started_at, created.started_at);
         assert_eq!(get(&db, "b1", "s1").unwrap().unwrap(), updated);
+
+        // `last_seen_at` must be *refreshed* by an upsert, not left at its
+        // insert value. Nothing else pins this and everything depends on it:
+        // GC expires by `last_seen_at`, so a frozen clock would collect a
+        // busy session 90 days after it started, and the dashboard's
+        // `ORDER BY last_seen_at DESC` would degrade to creation order.
+        // Forced to an unmistakable value first, because two upserts a
+        // microsecond apart share a millisecond.
+        db.write(|tx| {
+            tx.execute("UPDATE sessions SET last_seen_at = 0", [])
+                .map_err(store_err)?;
+            Ok(())
+        })
+        .unwrap();
+        let before = now_ms();
+        let touched = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            touched.last_seen_at >= before,
+            "an upsert must refresh last_seen_at, got {}",
+            touched.last_seen_at
+        );
+        assert_eq!(
+            touched.started_at, created.started_at,
+            "...without disturbing started_at"
+        );
+    }
+
+    /// `retains` and `messages_sent` are the two additive columns, and both
+    /// need the two-write assertion: with `+` mutated to `max(...)` a single
+    /// write still looks right.
+    #[test]
+    fn the_daemon_side_counters_accumulate_rather_than_replace() {
+        let db = db_with_bank();
+        for _ in 0..2 {
+            upsert(
+                &db,
+                "b1",
+                &SessionUpdate {
+                    session_id: "s1",
+                    retains_delta: 1,
+                    messages_sent_delta: 5,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let row = get(&db, "b1", "s1").unwrap().unwrap();
+        assert_eq!(row.retains, 2);
+        assert_eq!(row.messages_sent, 10);
     }
 
     /// The `async: true` `Stop` race: two retains overlap and the older one
@@ -429,6 +562,119 @@ mod tests {
         )
         .unwrap();
         assert_eq!(done.inflight_bytes(), 0);
+    }
+
+    /// Review HIGH 1. The two confirm channels are not interchangeable: the
+    /// worker's is unconditional because it observed the range, the request
+    /// path's is guarded because `skipped`/`duplicate` are evidence about
+    /// this request's bytes only. With one unconditional channel, a later
+    /// accept at a higher offset silently erases an earlier open gap — the
+    /// instrument reading zero over lost bytes.
+    #[test]
+    fn a_later_settled_accept_does_not_swallow_an_earlier_gap() {
+        let db = db_with_bank();
+        // A queued retain: bytes 0..5000 handed over, nothing confirmed.
+        upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                byte_offset: Some(5000),
+                retains_delta: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // A `skipped` at 6000 arrives while that job is still unresolved.
+        let after = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                byte_offset: Some(6000),
+                confirm_if_settled: Some(6000),
+                retains_delta: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(after.byte_offset, 6000);
+        assert_eq!(
+            after.confirmed_offset, 0,
+            "the gap opened by the queued job must survive a later accept"
+        );
+        assert_eq!(after.inflight_bytes(), 6000);
+
+        // The worker's channel is unconditional and does close it.
+        let confirmed = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                confirmed_offset: Some(5000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(confirmed.confirmed_offset, 5000);
+        // 5000..6000 is the skipped delta. It stays outstanding — over-
+        // reporting, which is the safe direction — until the next clean job
+        // confirms past it.
+        assert_eq!(confirmed.inflight_bytes(), 1000);
+
+        // With nothing outstanding, the guard opens and the request path
+        // confirms normally.
+        let settled = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                confirmed_offset: Some(6000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(settled.inflight_bytes(), 0);
+        let next = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                byte_offset: Some(7000),
+                confirm_if_settled: Some(7000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            next.confirmed_offset, 7000,
+            "with no open gap the request path may settle"
+        );
+    }
+
+    /// The guard is evaluated against the row as it stood *before* the
+    /// write, so the very first thing a session ever sees may settle: a
+    /// fresh row has nothing outstanding by construction. Without this the
+    /// `skipped`-arrives-first ordering would never confirm anything.
+    #[test]
+    fn a_settled_accept_on_a_fresh_row_confirms() {
+        let db = db_with_bank();
+        let row = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                byte_offset: Some(100),
+                confirm_if_settled: Some(100),
+                retains_delta: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(row.byte_offset, 100);
+        assert_eq!(row.confirmed_offset, 100);
+        assert_eq!(row.inflight_bytes(), 0);
     }
 
     #[test]
@@ -627,5 +873,60 @@ mod tests {
         // The cutoff is exclusive on equality: a row seen exactly at the
         // cutoff is kept.
         assert_eq!(gc(&db, 3000).unwrap(), 0);
+    }
+
+    /// Two writers on one session row, over a **file** database — the shape
+    /// C4b produces routinely (a retain arriving while the worker confirms
+    /// the previous job) and the configuration production actually runs.
+    ///
+    /// Deliberately not `Db::open_memory()`: that is a shared-cache database
+    /// where a second connection writing the same table gets `SQLITE_LOCKED`,
+    /// which `busy_timeout` does **not** retry. A file database under WAL
+    /// returns `SQLITE_BUSY` instead, which it does. So this test is also the
+    /// evidence that the harness limitation is a harness limitation.
+    #[test]
+    fn concurrent_writers_on_a_file_database_keep_the_high_water_marks() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = std::sync::Arc::new(Db::open(dir.path().join("sessions.db")).unwrap());
+        banks::create(&db, "b1", None, None).unwrap();
+
+        // Interleaved ascending values from both threads: whatever order the
+        // writes land in, every monotonic column must end at its maximum and
+        // the additive ones at the full count.
+        let threads: Vec<_> = [0i64, 1]
+            .into_iter()
+            .map(|which| {
+                let db = db.clone();
+                std::thread::spawn(move || {
+                    for i in 0..20i64 {
+                        let n = i * 2 + which;
+                        upsert(
+                            &db,
+                            "b1",
+                            &SessionUpdate {
+                                session_id: "s1",
+                                turns: Some(n),
+                                byte_offset: Some(n * 100),
+                                confirmed_offset: Some(n * 100),
+                                retains_delta: 1,
+                                messages_sent_delta: 1,
+                                ..Default::default()
+                            },
+                        )
+                        .expect("a file database must not fail a concurrent upsert");
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        let row = get(&db, "b1", "s1").unwrap().unwrap();
+        assert_eq!(row.turns, 39);
+        assert_eq!(row.byte_offset, 3900);
+        assert_eq!(row.confirmed_offset, 3900);
+        assert_eq!(row.retains, 40, "no increment may be lost to a race");
+        assert_eq!(row.messages_sent, 40);
     }
 }

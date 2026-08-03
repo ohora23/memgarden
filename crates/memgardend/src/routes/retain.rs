@@ -72,12 +72,13 @@ pub struct RetainRequest {
     #[serde(default)]
     pub mission: Option<String>,
 
-    // --- HK-1a session mirror (all three ignored without a `session_id`) ---
+    // --- HK-1a session mirror (all four ignored without a `session_id`) ---
     //
-    // These do not change what is ingested. They keep the `sessions` row in
-    // step with the hook's own state file so the daemon can answer "where is
-    // this transcript up to" after the hook's state dir is wiped, and so
-    // `byte_offset - confirmed_offset` means something. All three are
+    // These do not change what is ingested, and they can never fail a retain
+    // (see `mirror_session`). They keep the `sessions` row in step with the
+    // hook's own state file so the daemon can answer "where is this
+    // transcript up to" after the hook's state dir is wiped, and so
+    // `byte_offset - confirmed_offset` means something. All four are
     // cumulative **absolutes**, merged with `MAX` — see `store::sessions`.
     /// Byte position in the transcript file that this request's messages
     /// carry the hook up to (its `consumed_to`). Becomes the session's
@@ -88,12 +89,30 @@ pub struct RetainRequest {
     /// increment: retain fires on one `Stop` in ten.
     #[serde(default)]
     pub turn: Option<i64>,
-    /// The hook's cumulative count of `compact_boundary` markers seen in this
-    /// transcript. Diagnostic only — compaction is counted, never acted on
-    /// (plan §Binding decisions #6). Singular for wire compatibility with the
-    /// plan's payload; the value is the running total, not this delta's count.
+    /// The hook's delta counter, which drives the `document_id` suffix
+    /// (`session_id` bare on chunk 0, `session_id-cN` after — plan §Binding
+    /// decisions #7).
+    ///
+    /// Mirrored on the **retain** path, not only on `POST …/sessions`,
+    /// because the case the column exists for is a state-dir wipe
+    /// *mid-session*: recovery that restored `chunk = 0` would make the hook
+    /// reuse the bare `session_id` as `document_id`, and `document_metadata`
+    /// below rebuilds `documents.metadata` from scratch — overwriting chunk
+    /// 0's `message_count`/`files_modified`. A session that already reported
+    /// `session-end` never needs recovering, so mirroring at end-of-session
+    /// would not close it.
     #[serde(default)]
-    pub compaction: Option<i64>,
+    pub chunk: Option<i64>,
+    /// The hook's **cumulative** count of `compact_boundary` markers seen in
+    /// this transcript — its state file's running total, *not* this delta's
+    /// count (`Delta::compactions` in C4a is the other number). Cumulative is
+    /// the reading that stays idempotent under the rollback-and-resend of
+    /// §Binding decisions #8, which is why the column merges with `MAX`.
+    ///
+    /// Diagnostic only: compaction is counted, never acted on (§Binding
+    /// decisions #6).
+    #[serde(default)]
+    pub compactions: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -135,6 +154,22 @@ async fn retain_inner(
         return Err(
             memgarden_core::Error::Invalid("messages must not be empty".to_string()).into(),
         );
+    }
+    // Up here with the other guards, before any DB work, for the reason the
+    // queue permit is reserved up here: a rejection must be a clean 400, not
+    // a committed document + ledger + `pending` job row that nothing will
+    // ever dispatch or fail. `sessions::upsert` enforces the same bound, and
+    // discovering it there — after three commits — orphaned the job (review
+    // HIGH 2). Bound checked, not the whole mirror: everything else about
+    // the mirror is best-effort by design.
+    if let Some(session_id) = body.session_id.as_deref()
+        && session_id.len() > memgarden_store::sessions::MAX_SESSION_ID_BYTES
+    {
+        return Err(memgarden_core::Error::Invalid(format!(
+            "session_id too long (max {} bytes)",
+            memgarden_store::sessions::MAX_SESSION_ID_BYTES
+        ))
+        .into());
     }
 
     // Reserve the queue slot BEFORE doing any DB work: a full queue must be
@@ -283,10 +318,10 @@ fn prepare(
     let Some(plan) = crate::retain::plan_ingest(&body.messages, cwd, body.is_initial, cfg) else {
         // `skipped` is an accept: the delta emptied out under role filtering
         // or fell under the 10-character floor, so the hook advances its
-        // cursor and so do we. Both cursors, because there is nothing in
-        // flight and nothing to lose — leaving `confirmed_offset` behind
-        // would open a gap that never closes and read as lost work.
-        mirror_session(state, bank_id, body, 0, Confirm::Yes)?;
+        // cursor and so do we. The durable cursor follows too, but only
+        // `IfSettled` — this outcome proves nothing is outstanding for *these*
+        // bytes and proves nothing about an earlier queued job.
+        mirror_session(state, bank_id, body, 0, Confirm::IfSettled);
         return Ok(Prepared::Skipped);
     };
 
@@ -311,9 +346,11 @@ fn prepare(
         let doc_key_log: String = doc_key.chars().take(128).collect();
         tracing::debug!(bank_id, doc_key = ?doc_key_log, "retain skipped: identical content hash");
         // `unchanged` can only be true because an earlier job stamped the
-        // content hash on a clean run, so these bytes are ingested — durable,
-        // not in flight. Same reasoning as the `Skipped` arm above.
-        mirror_session(state, bank_id, body, plan.message_count, Confirm::Yes)?;
+        // content hash on a clean run, so *this content* is ingested. Same
+        // `IfSettled` caveat as the `Skipped` arm: a duplicate at offset
+        // 1500 says nothing about bytes 900..1500 that some other job was
+        // supposed to carry.
+        mirror_session(state, bank_id, body, plan.message_count, Confirm::IfSettled);
         return Ok(Prepared::Duplicate {
             plan,
             document_id: upsert.id,
@@ -362,7 +399,7 @@ fn prepare(
     // The optimistic half of the mirror. `confirmed_offset` stays put: a
     // queued job is not an ingested one, and the worker advances the durable
     // cursor itself when the run comes out clean (`retain/mod.rs`).
-    mirror_session(state, bank_id, body, plan.message_count, Confirm::No)?;
+    mirror_session(state, bank_id, body, plan.message_count, Confirm::No);
 
     // Every tag source goes through `sanitize_tags` together, not just the
     // caller-supplied ones (review MEDIUM): `session_id` is raw request
@@ -401,60 +438,70 @@ fn prepare(
     })
 }
 
-/// Whether this outcome also settles the durable cursor.
+/// Whether this outcome may also settle the durable cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Confirm {
-    /// Ingestion for these bytes is a settled fact *now* — `skipped` (there
-    /// was nothing to ingest) and `duplicate` (a clean earlier job already
-    /// did). Both cursors advance together.
-    Yes,
+    /// Nothing is outstanding for *this request's* bytes — `skipped` (there
+    /// was nothing to ingest) or `duplicate` (a clean earlier job already
+    /// ingested this content). Offered to `confirm_if_settled`, which drops
+    /// it if the row already has an open gap: neither outcome is evidence
+    /// about some earlier job that never came back.
+    IfSettled,
     /// A job was queued. `202` is not `ingested`; only the worker's clean-run
-    /// block may advance `confirmed_offset`.
+    /// block may advance `confirmed_offset` from here.
     No,
 }
 
 /// Mirrors the request into the `sessions` row, inside the caller's existing
 /// `spawn_blocking` — no extra round trip and no extra blocking hop.
 ///
+/// **Never fails the retain.** The mirror is diagnostic and recovery state;
+/// ingestion is the product. A failure here is logged and swallowed, exactly
+/// as the worker already treats the same write (`retain/mod.rs`) — the
+/// alternative, discovered in review, was a 4xx/5xx thrown *after* the
+/// document, the ledger row and the job row had all committed, leaving a
+/// `pending` job nothing would ever dispatch and a §Binding-#8 hook stuck
+/// polling it for the rest of the session (review HIGH 2).
+///
 /// A request without a `session_id` has no session to mirror and is a no-op:
 /// `POST …/retain` is a public endpoint, not only the hook's.
 ///
-/// This function writes exactly the fields the *request path* owns
-/// (`byte_offset`, `turns`, `compactions`, `cwd`, and the two daemon-side
-/// counters). It never touches `source`, `end_reason`, `ended_at` or
-/// `chunk_index` — those belong to `routes/sessions.rs` — and it advances
-/// `confirmed_offset` only where the argument says ingestion is already
-/// settled. `retain_jobs` keeps every per-request detail; `sessions.retains`
-/// is only the count, joinable back on `session_id`.
+/// Writes exactly the fields the *request path* owns (`byte_offset`,
+/// `turns`, `chunk_index`, `compactions`, `cwd`, and the two daemon-side
+/// counters). It never touches `source`, `end_reason` or `ended_at` — those
+/// belong to `routes/sessions.rs`.
 fn mirror_session(
     state: &AppState,
     bank_id: &str,
     body: &RetainRequest,
     messages_sent: usize,
     confirm: Confirm,
-) -> Result<(), ApiError> {
+) {
     let Some(session_id) = body.session_id.as_deref().filter(|s| !s.is_empty()) else {
-        return Ok(());
+        return;
     };
-    sessions::upsert(
+    let result = sessions::upsert(
         &state.db,
         bank_id,
         &sessions::SessionUpdate {
             session_id,
             cwd: body.cwd.as_deref().filter(|c| !c.is_empty()),
             turns: body.turn,
+            chunk_index: body.chunk,
             byte_offset: body.byte_offset,
-            confirmed_offset: match confirm {
-                Confirm::Yes => body.byte_offset,
+            confirm_if_settled: match confirm {
+                Confirm::IfSettled => body.byte_offset,
                 Confirm::No => None,
             },
-            compactions: body.compaction,
+            compactions: body.compactions,
             retains_delta: 1,
             messages_sent_delta: i64::try_from(messages_sent).unwrap_or(i64::MAX),
             ..Default::default()
         },
-    )?;
-    Ok(())
+    );
+    if let Err(e) = result {
+        tracing::warn!(bank_id, session_id, error = %e, "session mirror write failed");
+    }
 }
 
 /// Mission precedence: request -> the bank's `disposition.retain_mission` ->

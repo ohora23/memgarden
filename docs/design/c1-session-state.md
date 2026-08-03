@@ -53,16 +53,24 @@ Enforced, not merely intended: **no field is written by both paths.**
 | `retain_jobs` | one row per retain **request** | chunk counts, facts written, per-chunk failures, the token-accounting `detail` blob |
 | `sessions` | one row per **(bank, session)** | the two cursors, turn accounting |
 
-`sessions.retains` is a *count*; the detail behind each one stays in
-`retain_jobs`, joined on `session_id`. `sessions.messages_sent` is the
-session-level **sum** of a value `retain_jobs.detail.message_count` records
-per request — an aggregate at a different grain, not a duplicated column.
-The manual run confirms both identities hold:
+The counts relate but are **not equal**, and the earlier draft of this note
+claimed an identity that its own test contradicts:
 
+```text
+sessions.retains >= count(retain_jobs WHERE session_id = …)
+   delta = the accepts that queue no job: `skipped` + `duplicate`
 ```
-sessions.retains = 2          retain_jobs rows = 2
-sessions.messages_sent = 26   sum(retain_jobs.detail.message_count) = 26
-```
+
+`skipped_and_duplicate_settle_only_when_nothing_is_outstanding` ends at
+`retains == 3` against **one** job row, and now asserts both numbers side by
+side so the divergence is visible rather than surprising.
+
+`messages_sent` is the same shape: a running sum of a value
+`retain_jobs.detail.message_count` records per request. It equals the sum
+over jobs only while no delta is ever re-sent — it is **additive, therefore
+not idempotent** under the rollback-and-resend of §Binding decisions #8. The
+cursors are the fields that survive that, which is why they are the ones
+anything reasons over and `messages_sent` is only ever a rough volume figure.
 
 Within `sessions`, every field has one writer class:
 
@@ -70,24 +78,83 @@ Within `sessions`, every field has one writer class:
 |---|---|
 | `cwd`, `transcript_path`, `source`, `end_reason`, `ended_at`, `turns`, `chunk_index`, `byte_offset`, `compactions` | the hook — `POST …/sessions` or the retain request |
 | `retains`, `messages_sent` | the daemon, `+=` once per accepted retain |
-| `confirmed_offset` | the daemon, only from a completion fact |
+| `confirmed_offset` | the daemon, only from a settlement it observed |
 
-**`confirmed_offset` is not a request field anywhere.** Its only meaning is
-"ingestion is settled for these bytes", and that is a fact the daemon
-establishes, never a claim a client makes. A hook that could set it could mark
-unwritten bytes durable and lose them silently — the exact failure the split
-exists to prevent. Pinned by `a_client_cannot_set_the_durable_cursor`.
+### The durable cursor has two channels, and they are not interchangeable
 
-It advances in exactly two places, both of them completion facts:
+No client field on any endpoint is named `confirmed_offset`. It advances two
+ways:
 
-1. `retain/mod.rs`, inside the existing `if clean { … }` block — the same
-   condition, and the same `spawn_blocking`, as the content hash. The two
-   writes say the same thing to two audiences.
-2. `routes/retain.rs`, for the `skipped` and `duplicate` outcomes. Neither
-   queues work: `skipped` means the delta emptied out under role filtering,
-   `duplicate` means an earlier clean job already stamped the hash. Leaving
-   the durable cursor behind for these would open a gap that nothing can ever
-   close, and it would read as permanently lost work.
+1. **The worker, unconditionally** (`SessionUpdate::confirmed_offset`), inside
+   `retain/mod.rs`'s existing `if clean { … }` block — the same condition, and
+   the same `spawn_blocking`, as the content hash. Unconditional is correct
+   here: the worker observed the entire range it is confirming.
+2. **The request path, guarded** (`SessionUpdate::confirm_if_settled`), for
+   `skipped` and `duplicate`. Applied only when the row has no open gap
+   (`confirmed_offset >= byte_offset`) at the moment of the write.
+
+The guard is review HIGH 1, and the first draft of this PR did not have it.
+The reasoning that produced the bug — "neither outcome queues work, so there
+is nothing to leave behind" — is airtight about *this request's* bytes and
+false about earlier ones. Because the column merges with `MAX`, an
+unconditional confirm at a higher offset erases any gap an earlier
+queued-then-failed job left:
+
+```
+POST …/retain byte_offset=5000            -> 202, byte=5000 confirmed=0   [gap 5000]
+POST …/retain byte_offset=6000 (skipped)  -> 200, byte=6000 confirmed=6000 [gap gone]
+```
+
+Nothing ingested 0..5000, one `retain_jobs` row is still unfinished, and the
+instrument this PR exists to build reads `inflight_bytes: 0` over 5000 lost
+bytes. A role-filtered delta emptying out is what the plan itself calls
+"ordinary, not exotic" with `include_tool_calls = false`, so this needed no
+hook bug to fire. The `duplicate` arm had the same hole and the old test
+asserted it: it confirmed at 1500 on a re-POST whose byte-identical payload
+was itself proof that nothing had ingested 900..1500.
+
+**Ordering walk-through**, since the guard is only as good as the orderings
+it survives:
+
+| ordering | outcome |
+|---|---|
+| `skipped` first, fresh row | confirms — a new row has nothing outstanding by construction, so the INSERT branch applies it unguarded |
+| queued(5000) → `skipped`(6000) | gap survives at 6000; nothing confirmed |
+| queued(5000) → clean → `skipped`(6000) | confirms to 6000 |
+| stale `skipped`(3000) onto a settled row at 9000 | no-op; `MAX` absorbs it |
+| accept with no `byte_offset` | no-op; the channel carries `0` |
+| queued(5000) → `skipped`(6000) → worker confirms 5000 | gap narrows to 1000, not 0 |
+
+Only the last one is lossy in the reporting direction, and it errs the safe
+way: 5000..6000 was genuinely skipped, so the residual 1000 is **over**-
+reporting outstanding work, and the next clean job confirming past 6000
+closes it. For an instrument whose entire job is to notice loss, over-
+reporting is the correct failure mode.
+
+`0` is passed for "no conditional confirm", never `NULL`: SQLite's scalar
+`max()` returns `NULL` if any argument is `NULL`, which would blank the
+column instead of leaving it alone.
+
+### The mirror never fails a retain
+
+Review HIGH 2. `mirror_session` logs and swallows every error, matching what
+the worker already did with the identical write. Before that, a `?` on the
+mirror could return 4xx/5xx *after* the document, the ledger row and the job
+row had committed — leaving a `pending` job nothing would ever dispatch or
+fail, which a §Binding-#8 hook then polls for the rest of the session,
+skipping every turn. It also violated an invariant `routes/retain.rs` states
+a dozen lines above: *"a full queue must be a clean 429, not an orphaned
+document + job row."*
+
+The rule, stated once so everything else follows from it: **the mirror is
+diagnostic and recovery state; ingestion is the product; the mirror never
+fails a retain.**
+
+The one thing that *is* a hard 400 is an over-long `session_id`, and it is
+checked at the top of `retain_inner` with the other guards, before any DB
+work — the same reason the queue permit is reserved there. (`POST …/retain`
+did not bound `session_id` before this PR; discovering the bound inside the
+mirror is what orphaned the job.)
 
 ## Merge semantics
 
@@ -106,6 +173,41 @@ It advances in exactly two places, both of them completion facts:
 `retain` with `byte_offset`/`turn` writes the row; `retain` without them
 counts the accept and leaves every mirrored value alone
 (`a_retain_without_the_hook_fields_does_not_clobber_the_mirror`).
+
+`last_seen_at` is refreshed on every upsert. Obvious, and it was pinned by
+nothing until review mutation-tested it: freezing it at the insert value
+passes the whole suite while making GC expire a busy session 90 days after it
+*started* and degrading the dashboard's `ORDER BY last_seen_at DESC` into
+creation order. `insert_then_update_roundtrip` now forces it to `0` and
+asserts the next upsert brings it back to ~now. The additive rule on
+`messages_sent` had the same hole — `+` mutated to `max(...)` also survived —
+and now has the same two-write assertion `retains` already had.
+
+## Recovery seeds from `confirmed_offset`, never `byte_offset`
+
+C2b rebuilds a wiped state file from `GET …/sessions/{session_id}`. **It must
+take its `offset` from `confirmed_offset`.**
+
+`byte_offset` is the obvious reading and it is the unsafe one. It is what the
+hook *POSTed*, so it is already ahead of reality after a failed job — and
+after the byte-budget 429 in `routes/retain.rs`, where the mirror advanced
+and the hook deliberately did not. Seeding from it makes a recovering hook
+skip exactly the bytes the dual cursor exists to protect: silent loss,
+through the recovery door, in the PR that closed the gap.
+
+Re-sending from the durable cursor is safe and cheap. Identical content under
+the same `doc_key` is caught by the content-hash dedup and answers
+`duplicate`, so **at-least-once is the correct posture** here; the cost of
+over-sending is one round trip and the cost of under-sending is a fact that
+never existed.
+
+Corollary, and the reason the above is sufficient: the mirror carries **no
+`pending` job id**, so a hook whose state dir was wiped cannot reconcile an
+in-flight job it never saw. It does not need to — `confirmed_offset` is by
+construction behind anything unresolved, so re-sending from it covers the
+in-flight range too. **Do not add a `pending_job_id` column** to solve a
+problem this ordering does not have; the `pending` record belongs in the
+hook's local state (§Binding decisions #8), where the rollback also lives.
 
 ## No trigger, and the reason
 
@@ -159,48 +261,110 @@ so it pins the window that actually reaches the `DELETE`.
   recent). A mirror that 400s on a value it has not heard of would break the
   hook on a Claude Code upgrade. Bounded to 64 bytes; not enum-checked.
 
-## Known limits, for the PRs that build on this
+## Wire contract for C4b, decided here
 
-* **`chunk_index` has no writer on the retain path.** C4b's retain payload
-  (plan §PR C4b step 7) carries `byte_offset`, `turn` and `compaction` but no
-  `chunk`, so `chunk_index` only advances through `POST …/sessions`. A hook
-  recovering from a wiped state dir therefore restores its `chunk` from the
-  last value any `POST …/sessions` mirrored. C4b should either mirror `chunk`
-  on the session upsert it already makes at `session-end`, or add a `chunk`
-  field to the retain request. Flagged rather than fixed here, because the
-  wire contract for retain is C4b's to widen.
-* **`compaction` on the retain request is the hook's cumulative total, not
-  this delta's count.** The plan names the field in the singular and C4a's
-  `Delta` exposes a per-delta `compactions`; those are different numbers.
-  Cumulative is the one that survives a rollback-and-resend without
-  double-counting, so that is what the `MAX` merge expects. C4b must send
-  the state file's running total.
-* **Concurrent writers to one session row are not covered by an integration
-  test.** `Db::open_memory()` is a shared-cache database, where two
-  connections writing the same table get `SQLITE_LOCKED` — which
-  `busy_timeout` does not retry, unlike the `SQLITE_BUSY` a file database
-  returns under WAL. The overlap is fine in production and a coin flip in
-  that harness, so the merge semantics are pinned by sequential store-level
-  tests instead. Pre-existing harness property; `retain_api`'s known
+C1 owns the mirror's wire contract, so the two fields review flagged are
+settled in this PR rather than deferred.
+
+* **`chunk` rides the retain payload.** The plan's §C4b step 7 payload had no
+  `chunk`, which would have left `chunk_index` with no writer but
+  `POST …/sessions`. Mirroring it at `session-end` does **not** close the case
+  the column exists for: the failure is a state-dir wipe *mid*-session, where
+  recovery restores `chunk = 0`, the hook reuses the bare `session_id` as its
+  `document_id`, and `document_metadata` rebuilds `documents.metadata` from
+  scratch — overwriting chunk 0's `message_count`/`files_modified`. A session
+  that already reported `session-end` never needs recovering. Only a
+  per-retain writer closes it, so `RetainRequest` gained `chunk`.
+* **`compaction` is renamed `compactions`.** The semantics were already
+  cumulative and correct — the only reading idempotent under
+  rollback-and-resend — but the wire field was singular while the hook state
+  field, the DB column and C4a's `Delta` are all plural. A C4b author reaches
+  for `Delta.compactions`, and the wrong number never errors: it just reads
+  `1` forever. Renamed while it has zero callers.
+
+One thing C4b must handle rather than inherit: §Binding decisions #8 rolls
+back `offset` and `chunk` on a failed job but **not** `compactions`, so a
+rollback-and-resend re-counts the `compact_boundary` lines in the re-sent
+delta. Diagnostic-only, and cheaper to live with than to make the rollback
+carry a third field — but it means `sessions.compactions` is a lower-bound
+sighting count, not an exact event count.
+
+## Known limits
+
+* **Two in-flight jobs per session would blur the durable cursor.** It is a
+  single high-water mark, so if job B (5000..9000) finishes before job A
+  (0..5000) fails, `confirmed_offset` is already at 9000 and A's failure is
+  invisible. §Binding decisions #8 allows exactly one in-flight job per
+  session, which is what makes the single mark sufficient; the existing
+  `// ponytail: one in-flight job per session` note is the upgrade path.
+* **Concurrent writers are pinned at the store layer, not through the
+  router.** `concurrent_writers_on_a_file_database_keep_the_high_water_marks`
+  runs two threads at one row over a real `tempfile` database — the
+  configuration production runs. It is deliberately not an integration test:
+  `Db::open_memory()` is shared-cache, where a second connection writing the
+  same table gets `SQLITE_LOCKED`, which `busy_timeout` does **not** retry,
+  unlike the `SQLITE_BUSY` a file database returns under WAL. So the overlap
+  is fine in production and a coin flip in that harness. `retain_api`'s known
   `retain_jobs` lock flake is the same mechanism.
+* **Legacy session state is not migrated, and MG-1 will not migrate it.**
+  Legacy tracks retention position as a *message index* in
+  `retention_tracking.json`; `sessions` tracks a *byte offset*. There is no
+  function from one to the other without re-parsing every historical
+  transcript, and several no longer exist. Every session starts at offset 0
+  after cutover, which means one initial retain per session — bounded by
+  `retain.max_initial_messages`, which is exactly the cap the
+  102MB-transcript incident produced. The plan's trade-off table records
+  this; it is repeated here because Phase F reads the design notes.
 
 ## Manual verification
 
 `memgardend` on 127.0.0.1:9100 (release build, embeddings off, real Ollama at
-:11434), `/healthz` reporting `schema_version: 7`.
+:11434), `/healthz` reporting `schema_version: 7`. Fresh database.
 
 ```
-POST /v1/banks                                   -> claude-code::C1
-POST /v1/banks/claude-code%3A%3AC1/sessions      -> source=startup, byte_offset=0
-POST .../retain  byte_offset=8192 turn=10 compaction=1
-                                                 -> 202 accepted
-     mid-job   byte_offset=65536 confirmed_offset=8192  inflight=57344
-     job done  byte_offset=65536 confirmed_offset=65536 inflight=0
-POST .../sessions {source: resume, end_reason: logout, ended_at: …}
-                                                 -> source stays "startup", end_reason "logout"
-GET  .../sessions?active=true                    -> []
-GET  .../sessions?limit=5                        -> ["sess-c1"]
+POST /v1/banks                              -> claude-code::C1
+POST /v1/banks/claude-code%3A%3AC1/sessions -> source=startup, byte_offset=0
+
+POST .../retain  byte_offset=65536 turn=20 chunk=2 compactions=1   -> 202
+  job running   byte=65536 confirmed=0     inflight=65536
+                turns=20 chunk_index=2 compactions=1 retains=1
+
+  # HIGH 1: a `skipped` at a HIGHER offset while that job is unresolved
+POST .../retain  byte_offset=99999, messages=[{role:"system",…}]    -> 200 skipped
+                byte=99999 confirmed=0     inflight=99999   <- gap NOT swallowed
+
+  job done      byte=99999 confirmed=65536 inflight=34463
+                                          ^ the skipped range, still outstanding
+                                            (over-reporting, the safe direction)
+
+POST .../retain  byte_offset=120000                                 -> 202
+  job done      byte=120000 confirmed=120000 inflight=0   <- residual self-heals
+
+  # HIGH 2: a 201-byte session_id
+POST .../retain  session_id=<201 bytes>                             -> 400
+                pending/running retain_jobs = 0
+                sessions rows               = 1   (no row created)
+
+reconciliation, read straight from the file DB:
+  sessions.retains = 3   retain_jobs rows = 2   delta = the 1 skipped accept
 ```
 
 Bank ids are percent-encoded in the path (`::` → `%3A%3A`), which is the shape
-the hook will use (plan §Binding decisions #4).
+the hook will use (plan §Binding decisions #4). Both live shapes —
+`claude-code::bank-b` and `claude-code::bank e`,
+`::` plus a space — are covered by
+`a_real_world_bank_id_survives_the_url_path`.
+
+## Mutation evidence
+
+Six mutations, each reverted after the run. The convention this repo keeps
+getting wrong is a correct rule that no test pins, so the rules added here
+were checked by deleting them:
+
+| mutation | caught by |
+|---|---|
+| drop the `CASE WHEN confirmed_offset >= byte_offset` guard | `a_later_settled_accept_does_not_swallow_an_earlier_gap`, and `a_later_skipped_does_not_swallow_an_unresolved_jobs_gap` through the router |
+| `last_seen_at = excluded.last_seen_at` → `last_seen_at = last_seen_at` | `insert_then_update_roundtrip` |
+| `messages_sent + excluded` → `max(…)` | `the_daemon_side_counters_accumulate_rather_than_replace`, `concurrent_writers_on_a_file_database_keep_the_high_water_marks` |
+| collapse the two cursors in **both** the INSERT and the DO UPDATE branch | 3 tests (mutating only DO UPDATE is not a collapse — a session's first write is always the insert) |
+| remove the early `session_id` guard from `retain_inner` | `an_oversized_session_id_is_rejected_before_any_row_is_written` |

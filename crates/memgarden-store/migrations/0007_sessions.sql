@@ -12,7 +12,13 @@
 --     cursors and turn accounting).
 -- `sessions.retains` is a count; the detail behind each one stays in
 -- `retain_jobs`, joined on `session_id`. Neither table carries a column of
--- the other.
+-- the other, and no field is written by both paths.
+--
+-- The counts relate but are NOT equal:
+--     sessions.retains >= count(retain_jobs WHERE session_id = ...)
+-- The delta is the accepts that queue no job — `skipped` (nothing survived
+-- role filtering) and `duplicate` (an earlier clean job already ingested
+-- this content). Both are accepts; neither writes a `retain_jobs` row.
 
 CREATE TABLE sessions (
   bank_id           TEXT    NOT NULL REFERENCES banks(bank_id) ON DELETE CASCADE,
@@ -48,4 +54,10 @@ CREATE TABLE sessions (
 -- the `ON DELETE CASCADE` above is the whole cleanup story.
 
 -- The dashboard's list order, and the GC scan (DB-1, C1's `sessions::gc`).
+--
+-- `sessions::gc` deletes by age and leaves any `retain_jobs` rows for the
+-- same `session_id` behind: that column is plain TEXT with no foreign key,
+-- by design, because the two tables have independent lifetimes and both
+-- cascade from `banks` on their own. Orphaned job rows are harmless history;
+-- if they ever need trimming it is their own age-based GC, not this one.
 CREATE INDEX idx_sessions_last_seen ON sessions(last_seen_at DESC);

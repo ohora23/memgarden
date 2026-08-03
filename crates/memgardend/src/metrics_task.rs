@@ -12,11 +12,15 @@ use memgarden_store::{Db, metrics_store, sessions};
 
 /// How long a `sessions` row outlives its last sighting.
 ///
-/// // ponytail: a constant, not config. C2a adds `[hooks]
-/// // session_retention_days` for the CLI and this becomes
-/// // `cfg.hooks.session_retention_days`; adding half the `[hooks]` section
-/// // here would only collide with that PR. 90 days is the value C2a will
-/// // default to.
+/// // ponytail: a constant, not config, and it rides the metrics timer
+/// // rather than owning one. Two ceilings, both deliberate:
+/// //  * C2a adds `[hooks] session_retention_days` for the CLI and this
+/// //    becomes `cfg.hooks.session_retention_days`; landing half of that
+/// //    section here would only collide with C2a. 90 is what C2a defaults to.
+/// //  * `[metrics] snapshot_interval_secs = 0` disables the whole task, and
+/// //    therefore this GC too — sessions then accumulate forever. Acceptable
+/// //    while the coupling is one line and one process; the upgrade path is
+/// //    its own interval, not a second timer bolted to the same tick.
 pub const SESSION_RETENTION_DAYS: i64 = 90;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
@@ -43,9 +47,12 @@ pub fn tick(db: &Db) -> Result<()> {
     Ok(())
 }
 
-/// Runs `tick` every `interval_secs` until shutdown. A snapshot failure is
-/// logged, not fatal — losing one metrics row must never take the daemon
-/// down.
+/// Runs `tick` every `interval_secs` until shutdown. A tick failure is
+/// logged, not fatal — losing one metrics row (or one GC pass) must never
+/// take the daemon down.
+///
+/// `interval_secs == 0` disables the task, and with it the session GC. See
+/// `SESSION_RETENTION_DAYS`.
 pub async fn run(db: Arc<Db>, interval_secs: u64) {
     if interval_secs == 0 {
         return;
@@ -63,8 +70,10 @@ pub async fn run(db: Arc<Db>, interval_secs: u64) {
                 let db = db.clone();
                 match tokio::task::spawn_blocking(move || tick(&db)).await {
                     Ok(Ok(())) => {}
-                    Ok(Err(e)) => tracing::warn!(error = %e, "metrics snapshot insert failed"),
-                    Err(e) => tracing::warn!(error = %e, "metrics snapshot task panicked"),
+                    // `tick` does the snapshot AND the session GC, so the message
+                    // names the tick rather than guessing which half failed.
+                    Ok(Err(e)) => tracing::warn!(error = %e, "metrics tick failed"),
+                    Err(e) => tracing::warn!(error = %e, "metrics tick panicked"),
                 }
             }
             _ = &mut shutdown => break,

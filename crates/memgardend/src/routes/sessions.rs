@@ -12,6 +12,26 @@
 //! The retain path writes the same row, but through `routes/retain.rs`
 //! rather than here — see that file and `store::sessions` for which writer
 //! owns which field.
+//!
+//! # Recovery seeds from `confirmed_offset`, never `byte_offset`
+//!
+//! C2b rebuilds a wiped state file from the single-session `GET`. It must
+//! take its `offset` from **`confirmed_offset`**. `byte_offset` is the
+//! obvious reading and it is the unsafe one: it is what the hook *POSTed*,
+//! and it is already ahead of reality after a failed job, and after the
+//! byte-budget 429 in `routes/retain.rs`, where the mirror advanced and the
+//! hook deliberately did not. Seeding from it skips exactly the bytes the
+//! dual cursor exists to protect — silent loss through the recovery door.
+//!
+//! Re-sending from the durable cursor is safe and cheap: identical content
+//! under the same `doc_key` is caught by the content-hash dedup and answers
+//! `duplicate`. At-least-once is the correct posture here.
+//!
+//! The mirror deliberately carries **no `pending` job id**, so a recovering
+//! hook cannot reconcile an in-flight job it never saw — and does not need
+//! to, because `confirmed_offset` is already behind anything unresolved. Do
+//! not add a `pending_job_id` column to fix a problem this ordering does not
+//! have.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -91,12 +111,19 @@ impl From<Session> for SessionResponse {
 /// Everything the hook is allowed to mirror.
 ///
 /// **`confirmed_offset` is deliberately absent, and this is a security
-/// property rather than an oversight.** The durable cursor's only meaning is
-/// "ingestion is a settled fact for these bytes", and that fact is
-/// established by the retain worker, never asserted by a client. A field here
+/// property rather than an oversight.** No client field on any endpoint is
+/// named `confirmed_offset`: the durable cursor advances only from a
+/// settlement the daemon observed, and never over an open gap. A field here
 /// would let a buggy hook mark unwritten bytes as durable and silently lose
-/// them. `retains` and `messages_sent` are absent for the same reason: the
-/// daemon counts what it accepted.
+/// them.
+///
+/// The narrower claim is the accurate one, so state it: on the retain path
+/// the *value* that lands in `confirmed_offset` is still the client's
+/// `byte_offset` — what the daemon controls is the **timing**, i.e. whether
+/// a settlement has occurred and whether anything earlier is still
+/// outstanding. Here there is no such settlement to appeal to at all, so the
+/// field simply does not exist. `retains` and `messages_sent` are absent for
+/// the same shape of reason: the daemon counts what it accepted.
 #[derive(Debug, Deserialize)]
 pub struct UpsertSessionRequest {
     pub session_id: String,
