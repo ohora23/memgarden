@@ -289,7 +289,15 @@ The retain POST carries `cwd` so the daemon can relativize its `file:` tags; a
 child posting `null` produces absolute tags for the same files the live hook
 tagged relatively — one session, two spellings of one path.
 
-### 11. `hook_bench`'s stub had to learn routes
+### 11. The manual verification's "converging cursors" criterion is not always reachable
+
+Plan §C4b asks the manual verification to show `byte_offset` and
+`confirmed_offset` **converging**. They converge only when every chunk of every
+job extracts cleanly. A single failed chunk leaves a gap that nothing closes —
+see §Known limits, which is where the evidence for this lives. The criterion
+should read "converging, or a gap attributable to a named `chunks_failed`".
+
+### 12. `hook_bench`'s stub had to learn routes
 
 Up to C3 every arm hit `POST …/recall`, so one reply was one reply. `hook
 retain` routes on `status` and `job_id`, and a recall body served to a retain
@@ -324,6 +332,53 @@ other side).
   that prevents the turn from ending.
 
 ## Known limits and accepted risks
+
+### A `done` job with a failed chunk leaves the two cursors apart **forever**
+
+This is the finding the manual verification produced, and it is the one to read
+first, because it contradicts the criterion the plan sets for that very
+verification ("`byte_offset` and `confirmed_offset` **converging**").
+
+The daemon fails a job only when *nothing* was written:
+
+```rust
+let all_failed = progress.facts_written == 0 && progress.chunks_failed > 0;
+let clean = aborted.is_none() && !all_failed && progress.chunks_failed == 0;
+```
+
+`status` follows `all_failed`; the content hash and `confirmed_offset` follow
+`clean`. Those are **different conditions**. A job with 3 of 4 chunks extracted
+is `done` — so this hook clears `pending` and moves on — while the daemon has
+deliberately declined to settle it. Nothing will ever close that gap: the
+`pending` record that could have re-sent is gone, and `confirmed_offset` only
+ever advances from a settlement.
+
+It is not hypothetical and it is not rare. It happened **unprompted** on the
+first round of the manual verification below: one chunk's Ollama reply
+truncated mid-JSON, four retries all truncated at the same place, and the job
+finished `done chunks 3/4 failed=1 facts=34` with `confirmed_offset` stuck at
+0 and `inflight_bytes` at 1,008,399.
+
+**The plan's reading is kept**, and the alternative was considered rather than
+overlooked. Treating `chunks_failed > 0` as `failed` would:
+
+* duplicate the facts the successful chunks *did* write, on every retry; and
+* wedge the session at that offset **permanently** when the chunk fails
+  deterministically — which is exactly what was observed, since the model
+  truncated at the same token on all four attempts. Losing one chunk beats
+  losing every subsequent delta.
+
+What changed is that the hook now **says so**: a `done` with `chunks_failed > 0`
+writes one stderr line under `[hooks] debug` naming the byte range that will
+stay unconfirmed. The number the runbook tells the user to watch
+(`byte_offset - confirmed_offset`, §Open questions 6) now has an explanation
+next to it instead of being unattributed drift.
+
+**Re-entry criterion.** A shadow run where the gap grows monotonically — i.e.
+partial chunk failures are common rather than occasional — makes "one lost
+chunk" the wrong trade. The fix then is not in this hook: it is a per-chunk
+byte range in `retain_jobs`, so a re-send can carry the failed chunk alone.
+That is a C1-shaped change, not a C4b one.
 
 ### The rollback window is one job wide
 
