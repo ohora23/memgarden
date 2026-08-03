@@ -314,10 +314,17 @@ struct GoldQuery {
     /// "hybrid with no cosine floor protects proper-noun queries" is visible.
     stratum: String,
     query: String,
-    /// `provisional-pending-user-review` until the corpus owner signs the
-    /// labels off, `unlabelled` before the first pass. Carried through into
-    /// every results record so a number can never be quoted without the
-    /// caveat travelling with it.
+    /// **Per query, not per run.** `provisional-pending-user-review` until the
+    /// corpus owner signs *this query's* labels off, then
+    /// `ratified-YYYY-MM-DD`; `unlabelled` before the first pass. Carried
+    /// through into every results record — both per-query and as the run-level
+    /// union — so a number can never be quoted without the caveat travelling
+    /// with it.
+    ///
+    /// The field was always per-query; ratification just made that load-bearing
+    /// (q17 is signed off, the other 19 are not). The run-level
+    /// `labels_status` is the sorted **set** of the values present, so a mixed
+    /// run reports both and cannot read as fully ratified.
     labels_status: String,
     /// Free text; carries "no answer in this corpus" for an honestly empty
     /// query, which is data rather than a gap to be papered over with a
@@ -653,6 +660,10 @@ async fn bench(
     let mut label_status: Vec<&str> = gold.iter().map(|q| q.labels_status.as_str()).collect();
     label_status.sort_unstable();
     label_status.dedup();
+    // Printed, not only written: a run whose queries are a mix of ratified and
+    // provisional must say so on the terminal the numbers were read off, or the
+    // caveat only exists in a file nobody opens.
+    println!("\nlabels_status: {}", label_status.join(", "));
 
     let record = json!({
         "run_at_ms": memgarden_core::now_ms(),
@@ -670,8 +681,13 @@ async fn bench(
             // The treatment. `null` is the AX-2 baseline (RRF passthrough).
             "rerank_top_k": rerank_top_k,
         },
-        // Travels with every number so a figure can never be quoted without
-        // the "these labels are provisional" caveat attached to it.
+        // The **set** of per-query statuses present in this run, sorted. Travels
+        // with every number so a figure can never be quoted without the caveat
+        // attached to it — and because it is a set rather than a single flag, a
+        // run mixing ratified and provisional queries reports both values and
+        // cannot be read as fully ratified. The per-query status is on each
+        // `per_query` entry below, which is the resolution a per-query figure
+        // needs.
         "labels_status": label_status,
         "scored_queries": rows.len(),
         "unanswered": unanswered.iter().map(|q| &q.id).collect::<Vec<_>>(),
@@ -682,6 +698,7 @@ async fn bench(
         "per_query": rows.iter()
             .map(|(q, m, retrieved)| json!({
                 "id": q.id, "stratum": q.stratum, "metrics": m,
+                "labels_status": q.labels_status,
                 "relevant": q.labels.iter().filter(|l| l.grade >= 1).count(),
                 "retrieved": retrieved,
             }))

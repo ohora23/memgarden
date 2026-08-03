@@ -25,8 +25,8 @@ Origin: plan `.omc/plans/phase-b-impl.md`, "AX-2 상세 — 회수 품질 하네
 | `gold/export_legacy_corpus.py` | Read-only snapshot of the legacy bank (two GETs, no mutation). |
 | `gold/corpus.jsonl` | The snapshot itself — 2718 facts, committed. |
 | `gold/corpus.sha256` | `sha256sum -c`-compatible checksum. |
-| `gold/queries.jsonl` | 20 queries, 316 graded judgments, one rationale per label. |
-| `gold/results.jsonl` | Append-only results ledger. **Line 5 is the current baseline** (re-baselined by `fix/ce-8-korean-absolute-dates`); line 1 was, and is kept. |
+| `gold/queries.jsonl` | 20 queries, 331 graded judgments, one rationale per label. |
+| `gold/results.jsonl` | Append-only results ledger. **Line 8 is the current baseline** (q17's labels ratified by `fix/q17-labels`); lines 1 and 5 were, and are kept. |
 | `gold/results.pool.json` | The top-20 the last run produced, with text — the labelling pool and its audit trail. Rewritten each run, unlike the ledger. |
 | `crates/memgardend/src/bin/recall_bench.rs` | `import` + `bench`. |
 
@@ -148,10 +148,21 @@ new strata (identifier, conclusion, temporal, graph).
   plausible-looking hit was *examined*.
 * **Every label carries a one-line rationale.** `read_gold` rejects the file if
   any rationale is empty — the requirement is enforced, not just documented.
-* **The labels are provisional pending the corpus owner's review.** Every record
-  carries `"labels_status": "provisional-pending-user-review"`, and the value is
-  copied into every results record so a figure cannot be quoted without the
-  caveat travelling with it.
+* **Ratification is tracked per query, not per run.** `labels_status` lives on
+  each `gold/queries.jsonl` record: `provisional-pending-user-review` until the
+  corpus owner signs *that query's* labels off, then `ratified-YYYY-MM-DD`. The
+  field was always per-query; **q17 (`ratified-2026-08-03`) is the first query
+  to differ from the rest**, which is what made a single global flag stop
+  telling the truth.
+
+  Each results record carries the status twice, at the two resolutions a reader
+  needs: on every `per_query` entry, and at the top level as the sorted **set**
+  of the values present in the run. A set rather than a single flag is the whole
+  point — a mixed run reports
+  `["provisional-pending-user-review", "ratified-2026-08-03"]` and cannot be
+  read as fully ratified, which one collapsed "ratified" flag would have
+  allowed. `recall_bench` also prints the line to stdout, so the caveat is on
+  the terminal the numbers were read off and not only in a file.
 
 **The pool is not only the top-K.** Labelling from the current ranking alone
 bounds recall@10 at 1.0 by construction and hides every miss. Candidates came
@@ -179,15 +190,25 @@ does and does not capture.
 
 ## Baseline
 
-> **Re-baselined 2026-08-03 by `fix/ce-8-korean-absolute-dates`.** That PR made
-> `8월 2일` parse, which changes q17's retrieval — finding 1 under *Two
-> temporal findings* below was acted on. The table in this section is the
-> **current** baseline (`gold/results.jsonl` line 5, commit `33d49519`); every
-> future delta is measured against it. The superseded pre-fix figures are kept
-> immediately after it, because CE-11's recorded numbers were measured against
-> those and a reader comparing the two notes needs both. **Only q17 moved** —
-> every other query reproduces digit-for-digit, including its retrieved uuid
-> list.
+### Which line of the ledger is current
+
+`gold/results.jsonl` is append-only and now has three generations of the off
+arm. This table is the index; the superseded figures are kept below because
+`ce-11-reranker.md` and `ce-8-korean-absolute-dates.md` quote them.
+
+| Ledger line | Commit | What | Status |
+|---|---|---|---|
+| 1-2 | `f1b7d143` / `52a8288` | The original AX-2 baseline, pre-Korean-date fix. | Superseded — kept, CE-11's first tables used it |
+| 5 | `33d49519` | Re-baselined by `fix/ce-8-korean-absolute-dates`: `8월 2일` parses, q17's retrieval changes. | Superseded — kept, quoted in two notes |
+| **8** | **`73ba3b2c`** | **q17's labels ratified by `fix/q17-labels`; `\|R\|` 4 → 5.** | **Current baseline** |
+
+Lines 3-4, 6-7 and 9-10 are the matching `top_k = 10` / `top_k = 20` reranked
+arms for each generation (CE-11).
+
+> **Only q17 has ever moved.** Across both re-baselines, every other query
+> reproduces digit-for-digit including its retrieved uuid list. The 2026-08-03
+> ratification changed **no retrieval at all** — `gold/results.pool.json` is
+> byte-identical across it, since only the label set moved.
 
 **Note on the recorded commit.** `gold/results.jsonl` line 1 stamps
 `commit: f1b7d143`, but its numbers already include the two gold-label
@@ -197,7 +218,7 @@ correct and reproduce exactly (CE-11 re-ran them digit-for-digit at
 `52a8288`, appended as line 2); only the stamp is stale. Records written from
 CE-11 onward are stamped correctly.
 
-**Commit `33d495197`** (`gold/results.jsonl` line 5), corpus
+**Commit `73ba3b2c`** (`gold/results.jsonl` line 8), corpus
 `baee3f40…4bda868` (2718 nodes), `now = 1785715200000`,
 `|R|` = labelled relevant nodes, `ceil` = `min(10,|R|)/|R|`.
 The record carries the full per-query breakdown and the retrieved uuid lists.
@@ -205,7 +226,7 @@ The record carries the full per-query breakdown and the retrieved uuid lists.
 The pre-fix baseline was reproduced three times digit-for-digit: twice from
 separate `import` runs into fresh databases, and once more after rebasing onto
 CE-10 (schema v6). CE-11 reproduced it a fourth time at `52a8288` (line 2).
-The re-baseline run below imported into a fresh database again and reproduced
+Both re-baseline rounds imported into a fresh database again and reproduced
 this note's own structure counts exactly — 2718 nodes, 2129 entity rows from
 1471 facts, 54 012 temporal links.
 
@@ -222,22 +243,25 @@ q08    identifier      13   0.077   0.308    0.462    0.769   1.000    0.665
 q09    identifier      17   0.000   0.176    0.412    0.588   0.500    0.365
 q11    conclusion       5   0.000   0.000    0.200    1.000   0.143    0.113
 q15    temporal        16   0.000   0.000    0.000    0.625   0.000    0.000
-q17    temporal         4   0.250   0.750    1.000    1.000   1.000    0.628
+q17    temporal         5   0.200   0.600    1.000    1.000   1.000    0.638
 q18    graph            9   0.111   0.556    0.556    1.000   1.000    0.612
 q19    graph           15   0.000   0.200    0.267    0.667   0.500    0.486
 
 (5)    memcompare       -   0.000   0.164    0.348    0.875   0.383    0.203
 (4)    identifier       -   0.044   0.246    0.418    0.839   0.688    0.416
 (1)    conclusion       -   0.000   0.000    0.200    1.000   0.143    0.113
-(2)    temporal         -   0.125   0.375    0.500    0.812   0.500    0.314
+(2)    temporal         -   0.100   0.300    0.500    0.812   0.500    0.319
 (2)    graph            -   0.056   0.378    0.411    0.833   0.750    0.549
-(14)   ALL              -   0.038   0.236    0.388    0.859   0.522    0.323
+(14)   ALL              -   0.035   0.226    0.388    0.859   0.522    0.324
 ```
 
-### Superseded: the pre-fix baseline (lines 1-2, commit `d6165560`)
+### Superseded: the two earlier generations
 
-Kept because CE-11's tables were measured against it. The **only** rows that
-differ are q17 and the two aggregates it feeds:
+Kept because `ce-11-reranker.md` and `ce-8-korean-absolute-dates.md` quote them.
+In **both** transitions the **only** rows that differ are q17 and the two
+aggregates it feeds.
+
+**Pre-fix (lines 1-2, commit `d6165560`)** — `8월 2일` extracted no constraint:
 
 ```
 q17    temporal         4   0.000   0.000    0.250    1.000   0.100    0.149
@@ -245,9 +269,29 @@ q17    temporal         4   0.000   0.000    0.250    1.000   0.100    0.149
 (14)   ALL              -   0.021   0.183    0.335    0.859   0.458    0.289
 ```
 
-On the 13-query basis CE-11 uses (conclusion excluded), the re-baseline moves
-recall@1 0.0222 → 0.0414, recall@5 0.1969 → 0.2546, recall@10 0.3449 → 0.4026,
-MRR 0.4821 → 0.5513, nDCG@10 0.3021 → 0.3390.
+**Post-fix, pre-ratification (line 5, commit `33d49519`)** — the Korean date
+parses, but 15 of q17's 20 pooled documents were still ungraded and `|R|` was
+stale at 4:
+
+```
+q17    temporal         4   0.250   0.750    1.000    1.000   1.000    0.628
+(2)    temporal         -   0.125   0.375    0.500    0.812   0.500    0.314
+(14)   ALL              -   0.038   0.236    0.388    0.859   0.522    0.323
+```
+
+On the 13-query basis CE-11 uses (conclusion excluded), across both
+transitions: recall@1 0.0222 → 0.0414 → **0.0375**, recall@5
+0.1969 → 0.2546 → **0.2431**, recall@10 0.3449 → 0.4026 → **0.4026**, MRR
+0.4821 → 0.5513 → **0.5513**, nDCG@10 0.3021 → 0.3390 → **0.3398**.
+
+**The ratification moved q17's nDCG@10 up** (0.6285 → 0.6378) while moving
+recall@1 and recall@5 *down* (0.250 → 0.200, 0.750 → 0.600). Nothing was
+retrieved differently; `|R|` went 4 → 5 when the rank-9 document was graded 1,
+which raises the shallow recalls' `1/|R|` denominator while raising both the
+actual and the ideal DCG. recall@10 stayed at 1.000, and — with ranks 11-20 all
+graded 0 — that 1.000 is now robust rather than an artifact of a stale `|R|`;
+`ce-8-korean-absolute-dates.md` carries the corrected mechanism and strikes the
+wrong one.
 
 ### Reading these numbers
 
@@ -269,7 +313,7 @@ visible on this axis:
 |---|---|---|
 | identifier (proper noun) | **0.688** | **0.416** |
 | graph | 0.750 | 0.549 |
-| temporal | 0.500 | 0.314 |
+| temporal | 0.500 | 0.319 |
 | memcompare | 0.383 | 0.203 |
 | conclusion | 0.143 | 0.113 |
 
@@ -286,7 +330,7 @@ un-ported**, and CE-11 must not regress this column while chasing precision.
 * ~~**Temporal is the weakest stratum by a wide margin**~~ — it was, at
   0.050 MRR / 0.074 nDCG@10, and both of its scored queries had a temporal-arm
   problem rather than a ranking problem. Finding 1 below has since been fixed,
-  which took the stratum to 0.500 / 0.314 on q17 alone. **Conclusion is now
+  which took the stratum to 0.500 / 0.319 on q17 alone. **Conclusion is now
   the weakest**, for the structural reason two sections down.
 * **q05 has MRR 0.500 but recall@10 0.182**: it surfaces one related node early
   and then misses all six core nodes entirely.
@@ -323,9 +367,10 @@ Consequences, both binding:
    Recorded here rather than silently folded into the aggregate.
 
 The four-stratum design still did its job: the stratification is what made this
-visible at all. An aggregate-only harness would have reported **0.323** overall
+visible at all. An aggregate-only harness would have reported **0.324** overall
 and hidden the fact that one of its four axes is unmeasurable. (It read 0.287
-against the pre-re-baseline 14-query figure.)
+against the pre-re-baseline 14-query figure, and 0.323 before q17's labels were
+ratified.)
 
 ### Two temporal findings worth acting on — one fixed, one not a bug
 
@@ -337,9 +382,10 @@ against the pre-re-baseline 14-query figure.)
    then — once legacy's dateparser was re-checked under an explicit
    `RELATIVE_BASE` — not even that: legacy resolves the *month* only and takes
    the day and year from today. `fix/ce-8-korean-absolute-dates` implements it
-   day-precisely as a deliberate divergence. q17: nDCG@10 0.149 → **0.628**,
-   MRR 0.100 → **1.000**, recall@10 0.250 → **1.000**. See
-   `docs/design/ce-8-korean-absolute-dates.md`.
+   day-precisely as a deliberate divergence. q17: nDCG@10 0.149 → **0.638**,
+   MRR 0.100 → **1.000**, recall@10 0.250 → **1.000** — and with q17's pool now
+   fully graded, that 1.000 is robust rather than an artifact of a stale `|R|`.
+   See `docs/design/ce-8-korean-absolute-dates.md`.
 2. **`지난주` covers almost the whole corpus** (q15). With `now` pinned to
    Monday 2026-08-03, `Period::Week(-1)` resolves to 2026-07-27..08-02, which
    contains 2697 of 2718 facts. The window is nearly a no-op, so the temporal
@@ -364,10 +410,11 @@ in `memgardend` and links the library; nothing links `recall_bench`.
 
 ## Follow-ups
 
-* **The labels need the corpus owner's judgment.** Everything above is
-  provisional. The weakest calls: q16 (see below), q11's grade-1-only set, and
-  the choice to count near-duplicate facts individually rather than collapsing
-  them into one relevant "answer".
+* **The labels need the corpus owner's judgment — 1 of 20 queries done.**
+  q17 is `ratified-2026-08-03`; the other 19 are still
+  `provisional-pending-user-review`. The weakest calls remaining: q16 (see
+  below), q11's grade-1-only set, and the choice to count near-duplicate facts
+  individually rather than collapsing them into one relevant "answer".
 * **q16 is the shakiest empty verdict.** If the `git add -A` image-in-commit
   incident counts as "a CI problem", q16 becomes answerable and should be
   relabelled with `18a5cb9a` / `3294c14d` as grade 2.
