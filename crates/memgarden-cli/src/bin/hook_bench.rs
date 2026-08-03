@@ -149,9 +149,18 @@ fn spawn_stub() -> String {
         "counts": {"candidates": 30, "returned": 8, "tokens": 412},
     })
     .to_string();
+    // The stub stamps the same identity token the hook will read from
+    // `<data>/daemon.token`, because a hook that cannot identify the daemon
+    // refuses the response — arm A would otherwise measure the
+    // transport-failure path while claiming to measure the injection path.
+    let token = memgarden_core::paths::daemon_token_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| t.trim().to_string())
+        .unwrap_or_default();
     let reply = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-         connection: close\r\n\r\n{body}",
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nx-memgarden-token: {token}\r\n\
+         content-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     );
 

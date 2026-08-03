@@ -365,6 +365,19 @@ fn the_request_carries_budget_and_max_tokens_as_separate_knobs() {
         3,
         "the request line must be exactly three tokens"
     );
+    // **The token is never sent.** This is the invariant that makes the
+    // response check mean anything: a request carrying the secret hands it to
+    // the impostor, which can then echo it back and pass. Asserted on the
+    // bytes the stub actually received, not on the field that produced them.
+    assert!(
+        !s.requests()[0]
+            .to_ascii_lowercase()
+            .contains("x-memgarden-token"),
+        "the hook sent the daemon's token: {}",
+        s.requests()[0]
+    );
+    assert!(!s.requests()[0].contains(TOKEN));
+
     let body = s.body(0);
     assert_eq!(body["query"], "a real question");
     assert_eq!(body["budget"], "low");

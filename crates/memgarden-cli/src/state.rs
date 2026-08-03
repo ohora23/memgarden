@@ -832,6 +832,25 @@ mod tests {
         assert_eq!(ids, vec!["real".to_string()]);
     }
 
+    /// The same ceiling on the single-session path, which C3 calls on **every
+    /// prompt** — ten times the exposure `load_all` has.
+    #[test]
+    fn load_bounds_an_oversized_state_file_too() {
+        let dir = tempfile::tempdir().unwrap();
+        store(dir.path(), &sample("s1")).unwrap();
+        assert!(load(dir.path(), "s1").is_some(), "the premise");
+
+        let mut bloated = serde_json::to_vec(&sample("s1")).unwrap();
+        bloated.pop();
+        bloated.extend(format!(",\"pad\":\"{}\"}}", "x".repeat(200 * 1024)).bytes());
+        assert!(bloated.len() as u64 > MAX_STATE_FILE_BYTES);
+        std::fs::write(dir.path().join("s1.json"), &bloated).unwrap();
+
+        // Truncated -> unparseable -> absent, which is already the handling
+        // for every other unusable file.
+        assert!(load(dir.path(), "s1").is_none());
+    }
+
     /// `gc` prunes by mtime, so without a ceiling one oversized file is
     /// re-read in full on every session start for the whole retention window.
     #[test]
