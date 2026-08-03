@@ -276,7 +276,10 @@ async fn the_metrics_tick_expires_stale_sessions() {
     }
     let day_ms = 24 * 60 * 60 * 1000;
     let now = memgarden_core::now_ms();
-    let retention = metrics_task::SESSION_RETENTION_DAYS;
+    // A non-default window on purpose (C2a): the fixture ages are derived
+    // from the value *passed to* `tick`, so a `tick` that ignores its
+    // parameter and reaches for a hardcoded 90 collects neither row.
+    let retention: i64 = 7;
     db.write(|tx| {
         for (sid, age_days) in [("stale", retention + 1), ("fresh", retention - 1)] {
             tx.execute(
@@ -289,7 +292,7 @@ async fn the_metrics_tick_expires_stale_sessions() {
     })
     .unwrap();
 
-    metrics_task::tick(&db).unwrap();
+    metrics_task::tick(&db, retention as u64).unwrap();
 
     assert!(
         memgarden_store::sessions::get(&db, "b1", "stale")

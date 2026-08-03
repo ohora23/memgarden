@@ -22,6 +22,14 @@ const ENV_OLLAMA_MODEL: &str = "MEMGARDEN_OLLAMA_MODEL";
 const ENV_RETAIN_MAX_INITIAL: &str = "MEMGARDEN_RETAIN_MAX_INITIAL_MESSAGES";
 const ENV_RETAIN_TOOL_CALLS: &str = "MEMGARDEN_RETAIN_TOOL_CALLS";
 const ENV_PROFILE: &str = "MEMGARDEN_PROFILE";
+/// Truthy -> `[hooks] enabled = false`. The hook binary also short-circuits on
+/// this **before** loading any config (`memgarden_cli::dispatch`), so a user
+/// who wants the hooks off does not pay a TOML read to find out.
+pub const ENV_HOOKS_DISABLE: &str = "MEMGARDEN_HOOKS_DISABLE";
+/// Overrides `[hooks] daemon_url`. Exists mainly so the bench harness and the
+/// integration tests can point the CLI at an ephemeral port without writing a
+/// config file.
+pub const ENV_DAEMON_URL: &str = "MEMGARDEN_DAEMON_URL";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -36,7 +44,100 @@ pub struct Config {
     pub reranker: RerankerConfig,
     pub consolidation: ConsolidationConfig,
     pub profile: ProfileConfig,
+    pub hooks: HooksConfig,
 }
+
+/// `[hooks]` — the Claude Code integration (Phase C). Read by **two**
+/// binaries: `memgarden` (the hook CLI, on every invocation) and `memgardend`
+/// (only `session_retention_days`, for the `sessions` GC). It lives in core
+/// for exactly that reason.
+///
+/// Every timeout here is a *client* timeout. They are deliberately unequal —
+/// see the per-field comments — because the daemon's work behind each endpoint
+/// differs by four orders of magnitude, and a single number would either wedge
+/// a prompt for seconds or abandon a legitimate retain.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HooksConfig {
+    /// Master switch. `false` (or `MEMGARDEN_HOOKS_DISABLE=1`) makes every
+    /// subcommand a no-op that still exits 0.
+    pub enabled: bool,
+    /// `shadow` | `full`. **`shadow` is the default and injects nothing**
+    /// (plan §Binding decisions #13): installing the switch must not throw it.
+    pub mode: String,
+    /// Loopback only — `src/http.rs` refuses anything that is not
+    /// `127.0.0.1`/`localhost`/`::1`, and the daemon's `check_host` would 403
+    /// it anyway (`middleware.rs:34-46`).
+    pub daemon_url: String,
+    /// Loopback `connect()` completes in microseconds; 50ms is three orders of
+    /// magnitude of headroom and still bounds a daemon that is listening but
+    /// not accepting.
+    pub connect_timeout_ms: u64,
+    /// ~10x the measured loaded recall p95. The turn proceeds with no memories
+    /// past this — recall fails open.
+    pub recall_timeout_ms: u64,
+    /// Much larger than recall's on purpose: `POST /v1/retain`'s `prepare()`
+    /// is synchronous before the 202 (tokenize twice, upsert the document,
+    /// insert the ledger and job rows) and was observed at ~0.6s on a 9.4MB
+    /// initial retain.
+    pub retain_timeout_ms: u64,
+    /// legacy: `lib/config.py:34` `retainEveryNTurns`.
+    pub retain_every_n_turns: u64,
+    /// Consecutive transport failures before the circuit breaker opens.
+    pub breaker_failures: u32,
+    /// How long it stays open. A hung daemon then costs
+    /// `breaker_failures x recall_timeout_ms` per cooldown instead of
+    /// `recall_timeout_ms` per prompt.
+    pub breaker_cooldown_secs: u64,
+    /// Durable 4xx rejections before a session is marked poisoned.
+    pub max_reject_failures: u32,
+    /// Poisoning is a slow-retry state, not a latch: a poisoned session still
+    /// retries this often, and any success clears it.
+    pub poison_retry_secs: u64,
+    /// How many stale sessions the detached `hook catchup` child (C2b) works
+    /// through per launch. `0` disables catch-up.
+    pub catchup_max_sessions: usize,
+    /// How long a daemon-side `sessions` row outlives its last sighting.
+    /// Consumed by `memgardend`'s metrics tick, not by the CLI.
+    pub session_retention_days: u64,
+    /// Ceiling on a retain POST body. Must stay at or under the daemon's
+    /// `MAX_RETAIN_BODY_BYTES` (32MB, `routes/retain.rs:36`), which is
+    /// validated below — a larger value could only ever produce a 413.
+    pub max_post_bytes: usize,
+    /// Ceiling on what `hook recall` will put on stdout as model context.
+    pub max_inject_bytes: usize,
+    /// Ceiling on the shadow-mode log before it rotates (C3).
+    pub shadow_log_max_bytes: u64,
+    /// Where the per-session state cache files live. Default `<data>/hooks`.
+    pub state_dir: PathBuf,
+    /// Diagnostics on stderr. **Never changes an exit code** — legacy's
+    /// equivalent flag is exactly what makes `recall.py:287-291` exit 2 and
+    /// erase the user's prompt, and `debug: true` is live in that config.
+    pub debug: bool,
+
+    // --- bank derivation (plan §Binding decisions #4) ---
+    //
+    // These three are NOT in the plan's §C2a `[hooks]` key list, which names
+    // only the transport/failure knobs — but the same section requires
+    // `directoryBankMap` -> static -> `agent::project` resolution, which
+    // cannot be expressed without them. Added here rather than invented in
+    // `memgarden-cli`, so both binaries see one config surface.
+    /// Non-empty pins **every** session to this bank id verbatim: legacy's
+    /// `dynamicBankId = false` + `bankId` (`bank.py:103-106`), collapsed into
+    /// one knob because the two-knob form has an unreachable combination
+    /// (`dynamicBankId = false` with no `bankId` is just the default).
+    pub bank_id: String,
+    /// The `agent` segment of a dynamic bank id (`bank.py:124`).
+    pub agent_name: String,
+    /// Exact directory -> bank id overrides, highest precedence
+    /// (`bank.py:87-101`). Empty by default, and the lookup is skipped
+    /// entirely when empty — each entry costs a `canonicalize()` syscall.
+    pub directory_bank_map: HashMap<String, String>,
+}
+
+/// The daemon's `MAX_RETAIN_BODY_BYTES` (`routes/retain.rs:36`), mirrored here
+/// only to bound `[hooks] max_post_bytes`. A hook that posts more than the
+/// server accepts cannot succeed, so this is a config error, not a runtime one.
+pub const DAEMON_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 /// `[reranker]` — the embedded ms-marco cross-encoder (CE-11).
 ///
@@ -349,6 +450,31 @@ impl Config {
                 retain_mission: String::new(),
                 recall_budget: "mid".to_string(),
             },
+            hooks: HooksConfig {
+                enabled: true,
+                mode: "shadow".to_string(),
+                daemon_url: "http://127.0.0.1:9100".to_string(),
+                connect_timeout_ms: 50,
+                recall_timeout_ms: 400,
+                retain_timeout_ms: 5000,
+                // legacy: lib/config.py:34 retainEveryNTurns.
+                retain_every_n_turns: 10,
+                breaker_failures: 3,
+                breaker_cooldown_secs: 60,
+                max_reject_failures: 10,
+                poison_retry_secs: 3600,
+                catchup_max_sessions: 3,
+                session_retention_days: 90,
+                max_post_bytes: 24 * 1024 * 1024,
+                max_inject_bytes: 64 * 1024,
+                shadow_log_max_bytes: 64 * 1024 * 1024,
+                state_dir: paths::hooks_state_dir()?,
+                debug: false,
+                bank_id: String::new(),
+                // legacy: bank.py:26 DEFAULT_BANK_NAME / :124 agentName.
+                agent_name: "claude-code".to_string(),
+                directory_bank_map: HashMap::new(),
+            },
         })
     }
 
@@ -386,6 +512,8 @@ impl Config {
             ENV_RETAIN_MAX_INITIAL,
             ENV_RETAIN_TOOL_CALLS,
             ENV_PROFILE,
+            ENV_HOOKS_DISABLE,
+            ENV_DAEMON_URL,
         ] {
             if let Ok(v) = std::env::var(key) {
                 env.insert(key.to_string(), v);
@@ -577,6 +705,71 @@ pub fn from_parts(
                 explicit.push("recall_budget");
             }
         }
+        if let Some(hooks) = parsed.hooks {
+            if let Some(v) = hooks.enabled {
+                cfg.hooks.enabled = v;
+            }
+            if let Some(v) = hooks.mode {
+                cfg.hooks.mode = v;
+            }
+            if let Some(v) = hooks.daemon_url {
+                cfg.hooks.daemon_url = v;
+            }
+            if let Some(v) = hooks.connect_timeout_ms {
+                cfg.hooks.connect_timeout_ms = v;
+            }
+            if let Some(v) = hooks.recall_timeout_ms {
+                cfg.hooks.recall_timeout_ms = v;
+            }
+            if let Some(v) = hooks.retain_timeout_ms {
+                cfg.hooks.retain_timeout_ms = v;
+            }
+            if let Some(v) = hooks.retain_every_n_turns {
+                cfg.hooks.retain_every_n_turns = v;
+            }
+            if let Some(v) = hooks.breaker_failures {
+                cfg.hooks.breaker_failures = v;
+            }
+            if let Some(v) = hooks.breaker_cooldown_secs {
+                cfg.hooks.breaker_cooldown_secs = v;
+            }
+            if let Some(v) = hooks.max_reject_failures {
+                cfg.hooks.max_reject_failures = v;
+            }
+            if let Some(v) = hooks.poison_retry_secs {
+                cfg.hooks.poison_retry_secs = v;
+            }
+            if let Some(v) = hooks.catchup_max_sessions {
+                cfg.hooks.catchup_max_sessions = v;
+            }
+            if let Some(v) = hooks.session_retention_days {
+                cfg.hooks.session_retention_days = v;
+            }
+            if let Some(v) = hooks.max_post_bytes {
+                cfg.hooks.max_post_bytes = v;
+            }
+            if let Some(v) = hooks.max_inject_bytes {
+                cfg.hooks.max_inject_bytes = v;
+            }
+            if let Some(v) = hooks.shadow_log_max_bytes {
+                cfg.hooks.shadow_log_max_bytes = v;
+            }
+            if let Some(v) = hooks.state_dir {
+                cfg.hooks.state_dir = expand_tilde(&v, home);
+            }
+            if let Some(v) = hooks.debug {
+                cfg.hooks.debug = v;
+            }
+            if let Some(v) = hooks.bank_id {
+                cfg.hooks.bank_id = v;
+            }
+            if let Some(v) = hooks.agent_name {
+                cfg.hooks.agent_name = v;
+            }
+            if let Some(v) = hooks.directory_bank_map {
+                cfg.hooks.directory_bank_map = v;
+            }
+        }
     }
 
     if let Some(bind) = env.get(ENV_BIND) {
@@ -614,12 +807,23 @@ pub fn from_parts(
     }
     if let Some(raw) = env.get(ENV_RETAIN_TOOL_CALLS) {
         // Same truthy set as the fork's `_cast_env` (`lib/config.py:136`).
-        cfg.retain.include_tool_calls =
-            matches!(raw.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
+        cfg.retain.include_tool_calls = is_truthy(raw);
         explicit.push("include_tool_calls");
     }
     if let Some(name) = env.get(ENV_PROFILE) {
         cfg.profile.name = name.clone();
+    }
+    if let Some(raw) = env.get(ENV_HOOKS_DISABLE) {
+        // Same truthy set as `_cast_env` (`lib/config.py:136`), and the same
+        // set `memgarden_cli::hooks_disabled` applies before any config load —
+        // the two must agree or the pre-config short-circuit would disagree
+        // with what `hooks status` reports.
+        if is_truthy(raw) {
+            cfg.hooks.enabled = false;
+        }
+    }
+    if let Some(url) = env.get(ENV_DAEMON_URL) {
+        cfg.hooks.daemon_url = url.clone();
     }
 
     // Profile preset, applied LAST and only to keys nobody set explicitly.
@@ -800,7 +1004,61 @@ pub fn from_parts(
         ));
     }
 
+    if !matches!(cfg.hooks.mode.as_str(), "shadow" | "full") {
+        return Err(Error::Config(format!(
+            "hooks.mode must be shadow|full: {}",
+            cfg.hooks.mode
+        )));
+    }
+    // Same shape as the `[ollama]` check above, and for the same reason: a
+    // typo'd URL would otherwise surface only as a silent fail-open on every
+    // prompt, which is the failure mode hardest to notice.
+    if !cfg.hooks.daemon_url.starts_with("http://") {
+        return Err(Error::Config(format!(
+            "hooks.daemon_url must start with http:// (loopback, no TLS): {}",
+            cfg.hooks.daemon_url
+        )));
+    }
+    // A zero timeout is not "no timeout" — it is a socket option that fails
+    // every read immediately, i.e. a permanently broken hook that still
+    // exits 0. Zero breaker_failures would open the breaker before the first
+    // request and never make one.
+    for (name, value) in [
+        ("hooks.connect_timeout_ms", cfg.hooks.connect_timeout_ms),
+        ("hooks.recall_timeout_ms", cfg.hooks.recall_timeout_ms),
+        ("hooks.retain_timeout_ms", cfg.hooks.retain_timeout_ms),
+        ("hooks.retain_every_n_turns", cfg.hooks.retain_every_n_turns),
+        ("hooks.breaker_failures", cfg.hooks.breaker_failures as u64),
+        (
+            "hooks.max_reject_failures",
+            cfg.hooks.max_reject_failures as u64,
+        ),
+        ("hooks.max_post_bytes", cfg.hooks.max_post_bytes as u64),
+        ("hooks.max_inject_bytes", cfg.hooks.max_inject_bytes as u64),
+    ] {
+        if value == 0 {
+            return Err(Error::Config(format!("{name} must be > 0")));
+        }
+    }
+    if cfg.hooks.max_post_bytes > DAEMON_MAX_BODY_BYTES {
+        return Err(Error::Config(format!(
+            "hooks.max_post_bytes must be <= {DAEMON_MAX_BODY_BYTES} (the daemon's \
+             MAX_RETAIN_BODY_BYTES): {}",
+            cfg.hooks.max_post_bytes
+        )));
+    }
+    if cfg.hooks.session_retention_days == 0 {
+        return Err(Error::Config(
+            "hooks.session_retention_days must be > 0".to_string(),
+        ));
+    }
+
     Ok(cfg)
+}
+
+/// The fork's `_cast_env` truthy set (`lib/config.py:136`).
+fn is_truthy(raw: &str) -> bool {
+    matches!(raw.to_ascii_lowercase().as_str(), "true" | "1" | "yes")
 }
 
 fn expand_tilde(raw: &str, home: Option<&str>) -> PathBuf {
@@ -828,6 +1086,32 @@ struct TomlConfig {
     reranker: Option<TomlReranker>,
     consolidation: Option<TomlConsolidation>,
     profile: Option<TomlProfile>,
+    hooks: Option<TomlHooks>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TomlHooks {
+    enabled: Option<bool>,
+    mode: Option<String>,
+    daemon_url: Option<String>,
+    connect_timeout_ms: Option<u64>,
+    recall_timeout_ms: Option<u64>,
+    retain_timeout_ms: Option<u64>,
+    retain_every_n_turns: Option<u64>,
+    breaker_failures: Option<u32>,
+    breaker_cooldown_secs: Option<u64>,
+    max_reject_failures: Option<u32>,
+    poison_retry_secs: Option<u64>,
+    catchup_max_sessions: Option<usize>,
+    session_retention_days: Option<u64>,
+    max_post_bytes: Option<usize>,
+    max_inject_bytes: Option<usize>,
+    shadow_log_max_bytes: Option<u64>,
+    state_dir: Option<String>,
+    debug: Option<bool>,
+    bank_id: Option<String>,
+    agent_name: Option<String>,
+    directory_bank_map: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -990,7 +1274,153 @@ mod tests {
                 retain_mission: String::new(),
                 recall_budget: "mid".to_string(),
             },
+            hooks: HooksConfig {
+                enabled: true,
+                mode: "shadow".to_string(),
+                daemon_url: "http://127.0.0.1:9100".to_string(),
+                connect_timeout_ms: 50,
+                recall_timeout_ms: 400,
+                retain_timeout_ms: 5000,
+                retain_every_n_turns: 10,
+                breaker_failures: 3,
+                breaker_cooldown_secs: 60,
+                max_reject_failures: 10,
+                poison_retry_secs: 3600,
+                catchup_max_sessions: 3,
+                session_retention_days: 90,
+                max_post_bytes: 24 * 1024 * 1024,
+                max_inject_bytes: 64 * 1024,
+                shadow_log_max_bytes: 64 * 1024 * 1024,
+                state_dir: PathBuf::from("/data/hooks"),
+                debug: false,
+                bank_id: String::new(),
+                agent_name: "claude-code".to_string(),
+                directory_bank_map: HashMap::new(),
+            },
         }
+    }
+
+    /// The struct defaults are the ones that ship, so they are asserted
+    /// against the plan's table rather than left to whatever the literal says.
+    #[test]
+    fn hooks_defaults_are_the_planned_ones() {
+        let cfg = from_parts(defaults(), None, &HashMap::new()).unwrap();
+        let h = &cfg.hooks;
+        assert!(h.enabled);
+        // Shadow injects nothing. If this ever defaults to "full", installing
+        // the switch throws it — plan §Binding decisions #13.
+        assert_eq!(h.mode, "shadow");
+        assert_eq!(h.daemon_url, "http://127.0.0.1:9100");
+        assert_eq!(h.connect_timeout_ms, 50);
+        assert_eq!(h.recall_timeout_ms, 400);
+        assert_eq!(h.retain_timeout_ms, 5000);
+        assert_eq!(h.retain_every_n_turns, 10, "legacy lib/config.py:34");
+        assert_eq!(h.breaker_failures, 3);
+        assert_eq!(h.breaker_cooldown_secs, 60);
+        assert_eq!(h.max_reject_failures, 10);
+        assert_eq!(h.poison_retry_secs, 3600);
+        assert_eq!(h.catchup_max_sessions, 3);
+        assert_eq!(h.session_retention_days, 90);
+        assert_eq!(h.max_post_bytes, 24 * 1024 * 1024);
+        assert_eq!(h.max_inject_bytes, 64 * 1024);
+        assert_eq!(h.shadow_log_max_bytes, 64 * 1024 * 1024);
+        assert!(!h.debug);
+        assert_eq!(h.bank_id, "");
+        assert_eq!(h.agent_name, "claude-code");
+        assert!(h.directory_bank_map.is_empty());
+    }
+
+    #[test]
+    fn hooks_toml_and_env_precedence() {
+        let toml_str = r#"
+            [hooks]
+            mode = "full"
+            daemon_url = "http://127.0.0.1:9199"
+            recall_timeout_ms = 250
+            state_dir = "~/hookstate"
+            debug = true
+            bank_id = "pinned"
+            agent_name = "codex"
+            [hooks.directory_bank_map]
+            "/srv/one" = "bank-one"
+        "#;
+        let mut env = HashMap::new();
+        env.insert(ENV_HOME.to_string(), "/home/u".to_string());
+        let cfg = from_parts(defaults(), Some(toml_str), &env).unwrap();
+        assert_eq!(cfg.hooks.mode, "full");
+        assert_eq!(cfg.hooks.daemon_url, "http://127.0.0.1:9199");
+        assert_eq!(cfg.hooks.recall_timeout_ms, 250);
+        assert_eq!(cfg.hooks.state_dir, PathBuf::from("/home/u/hookstate"));
+        assert!(cfg.hooks.debug);
+        assert_eq!(cfg.hooks.bank_id, "pinned");
+        assert_eq!(cfg.hooks.agent_name, "codex");
+        assert_eq!(
+            cfg.hooks
+                .directory_bank_map
+                .get("/srv/one")
+                .map(String::as_str),
+            Some("bank-one")
+        );
+        // Untouched by this TOML: still default.
+        assert_eq!(cfg.hooks.retain_timeout_ms, 5000);
+
+        // Env beats TOML, for both hook env keys.
+        env.insert(
+            ENV_DAEMON_URL.to_string(),
+            "http://localhost:9198".to_string(),
+        );
+        env.insert(ENV_HOOKS_DISABLE.to_string(), "1".to_string());
+        let cfg = from_parts(defaults(), Some(toml_str), &env).unwrap();
+        assert_eq!(cfg.hooks.daemon_url, "http://localhost:9198");
+        assert!(!cfg.hooks.enabled);
+
+        // Only the truthy set disables. "0" is not a disable, and reading it
+        // as one would silently turn the hooks off for anyone who wrote
+        // `MEMGARDEN_HOOKS_DISABLE=0` meaning "on".
+        env.insert(ENV_HOOKS_DISABLE.to_string(), "0".to_string());
+        assert!(
+            from_parts(defaults(), Some(toml_str), &env)
+                .unwrap()
+                .hooks
+                .enabled
+        );
+    }
+
+    #[test]
+    fn hooks_validation_rejects_unusable_values() {
+        let cases = [
+            ("[hooks]\nmode = \"loud\"", "mode"),
+            ("[hooks]\ndaemon_url = \"https://127.0.0.1:9100\"", "https"),
+            ("[hooks]\nconnect_timeout_ms = 0", "connect"),
+            ("[hooks]\nrecall_timeout_ms = 0", "recall"),
+            ("[hooks]\nretain_timeout_ms = 0", "retain"),
+            ("[hooks]\nretain_every_n_turns = 0", "turn gate"),
+            ("[hooks]\nbreaker_failures = 0", "breaker"),
+            ("[hooks]\nmax_reject_failures = 0", "reject"),
+            ("[hooks]\nmax_post_bytes = 0", "post bytes"),
+            ("[hooks]\nmax_inject_bytes = 0", "inject bytes"),
+            ("[hooks]\nsession_retention_days = 0", "retention"),
+            // Above the daemon's own body limit this could only ever 413.
+            (
+                "[hooks]\nmax_post_bytes = 33554433",
+                "over the daemon limit",
+            ),
+        ];
+        for (toml_str, what) in cases {
+            assert!(
+                from_parts(defaults(), Some(toml_str), &HashMap::new()).is_err(),
+                "expected {what} to be rejected: {toml_str}"
+            );
+        }
+        // …and the boundary itself is allowed.
+        assert!(
+            from_parts(
+                defaults(),
+                Some("[hooks]\nmax_post_bytes = 33554432"),
+                &HashMap::new()
+            )
+            .is_ok()
+        );
     }
 
     #[test]

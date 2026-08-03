@@ -21,3 +21,23 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace
+      # The hook binary's dependency closure (plan §Cross-PR rules 2). A stray
+      # `use memgarden_store::…` compiles fine and silently adds a 90 s C build
+      # and 1.5 MB of SQLite to a process that runs thousands of times per
+      # session; `indexmap` would mean serde_json's `preserve_order` got
+      # switched on, which feature unification then applies to memgardend too.
+      #
+      # This is the ONLY one of the four hook budgets that CI enforces. Size,
+      # `ldd` and `LD_DEBUG` are human PR-body checks — `scripts/hook-budget.sh`
+      # prints all four, and a green CI does not prove the other three.
+      - name: memgarden-cli dependency containment
+        run: |
+          tree=$(cargo tree -p memgarden-cli --edges normal)
+          echo "$tree"
+          for forbidden in rusqlite libsqlite3-sys fastembed ort tokio reqwest \
+                           hf-hub tiktoken-rs sqlite-vec axum clap indexmap; do
+            if grep -qE "(^|[^a-zA-Z0-9_-])${forbidden} v" <<<"$tree"; then
+              echo "::error::memgarden-cli must not depend on ${forbidden}"
+              exit 1
+            fi
+          done

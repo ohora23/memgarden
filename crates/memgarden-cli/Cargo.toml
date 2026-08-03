@@ -1,0 +1,39 @@
+[package]
+name = "memgarden-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "memgarden_cli"
+path = "src/lib.rs"
+
+# The hook binary. Short name because it is what lands in the user's
+# `settings.json` `command` field (C5) and gets typed by hand.
+[[bin]]
+name = "memgarden"
+path = "src/main.rs"
+
+# A hook process pays for its binary on EVERY invocation, so this dependency
+# list is a budget, not a preference. `cargo tree -p memgarden-cli` is CI-wired
+# (plan §Cross-PR rules 2) to keep `rusqlite`, `fastembed`, `ort`, `tokio`,
+# `reqwest`, `axum`, `clap` and `indexmap` out of it: a stray
+# `use memgarden_store::…` compiles fine and silently adds a 90s C build and
+# 1.5MB of SQLite to a process that runs thousands of times per session.
+#
+# Deliberately absent and not to be added without re-measuring:
+#   clap    — its usage errors exit **2**, which on UserPromptSubmit erases the
+#             user's prompt. Six subcommands and three flags are a `match`.
+#   reqwest — pulls tokio; a multi-threaded async runtime inside a 0.34ms
+#             process is the whole cost. `src/http.rs` is ~200 lines of std.
+[dependencies]
+memgarden-core = { path = "../memgarden-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+# No `[profile.release]` overrides here on purpose. `lto = "fat"` and
+# `panic = "abort"` are out of scope (plan §Deliberately out of scope) with a
+# stated re-entry criterion: arm B's paired p50 exceeding the 1.5ms budget.

@@ -10,7 +10,7 @@
 #   MEMGARDEN_METRICS_INTERVAL, MEMGARDEN_MODEL_DIR, MEMGARDEN_EMBED_THREADS,
 #   MEMGARDEN_OLLAMA_URL, MEMGARDEN_OLLAMA_MODEL,
 #   MEMGARDEN_RETAIN_MAX_INITIAL_MESSAGES, MEMGARDEN_RETAIN_TOOL_CALLS,
-#   MEMGARDEN_PROFILE
+#   MEMGARDEN_PROFILE, MEMGARDEN_HOOKS_DISABLE, MEMGARDEN_DAEMON_URL
 
 [server]
 # Note: ports 9077 (hindsight) and 9090 (memdash) are already in use on
@@ -216,3 +216,100 @@ name = "coding"
 # retain_mission = ""
 # low | mid | high. Consumed by CE-6 recall; part of the ported preset.
 # recall_budget = "mid"
+
+# ---------------------------------------------------------------------------
+# [hooks] — the Claude Code integration (Phase C).
+#
+# Read by BOTH binaries: `memgarden` (the hook CLI, on every invocation) and
+# `memgardend` (only `session_retention_days`, for the sessions GC).
+#
+# Nothing in this section does anything until `memgarden hooks install` wires
+# the four events into ~/.claude/settings.json (C5), and even then the default
+# mode injects nothing.
+[hooks]
+# Master switch. MEMGARDEN_HOOKS_DISABLE=1 does the same thing without an
+# edit, and short-circuits before the config is even read.
+enabled = true
+
+# shadow | full. **shadow injects nothing** and is the default on purpose: the
+# switch must not be thrown by the act of installing it. Turning injection on
+# is a second, explicit step.
+mode = "shadow"
+
+# Loopback only. The client refuses any other host and the daemon's check_host
+# would 403 it anyway. MEMGARDEN_DAEMON_URL overrides.
+daemon_url = "http://127.0.0.1:9100"
+
+# Client timeouts, all in milliseconds. They are unequal because the daemon's
+# work behind each endpoint differs by four orders of magnitude:
+#   connect — loopback connect is microseconds; 50 ms bounds a daemon that is
+#             listening but not accepting.
+#   recall  — ~10x the measured loaded p95. Past it the turn proceeds with no
+#             memories (recall fails open).
+#   retain  — POST /v1/retain does synchronous work before its 202 (tokenize
+#             twice, upsert the document, insert the ledger and job rows);
+#             ~0.6 s was observed on a 9.4 MB initial retain.
+connect_timeout_ms = 50
+recall_timeout_ms = 400
+retain_timeout_ms = 5000
+
+# Retain fires every N Stop hooks (legacy lib/config.py:34 retainEveryNTurns).
+retain_every_n_turns = 10
+
+# Circuit breaker, on transport failures only (connection refused, timeout,
+# unparseable body). A merely-down daemon lives here and can never poison a
+# session: after this many consecutive failures the hook stops connecting for
+# the cooldown, and any success clears it.
+breaker_failures = 3
+breaker_cooldown_secs = 60
+
+# Poisoning, on durable 4xx rejections only — a different counter, because a
+# daemon being down must never disable a session. Poisoning is a slow-retry
+# state, not a latch: a poisoned session still retries once per
+# poison_retry_secs, and `memgarden hooks status --clear-poison <sid>` is the
+# manual exit.
+max_reject_failures = 10
+poison_retry_secs = 3600
+
+# How many stale sessions the detached catch-up child works through per
+# launch. 0 disables catch-up.
+catchup_max_sessions = 3
+
+# How long a daemon-side `sessions` row outlives its last sighting. Read by
+# memgardend, not by the CLI; collected on the metrics tick.
+session_retention_days = 90
+
+# Byte ceilings. max_post_bytes must stay at or under the daemon's 32 MB body
+# limit — a larger value could only ever produce a 413.
+max_post_bytes = 25165824
+max_inject_bytes = 65536
+shadow_log_max_bytes = 67108864
+
+# Per-session hook state (a cache; the daemon's `sessions` row is
+# authoritative). Defaults to <data_dir>/hooks. "~" is expanded to $HOME.
+# state_dir = "~/.local/share/memgarden/hooks"
+
+# Diagnostics on stderr. It never changes an exit code — legacy's equivalent
+# flag is exactly what makes recall.py exit 2 and erase the user's prompt.
+debug = false
+
+# --- bank derivation ---
+#
+# Default: `claude-code::<project>`, byte-identical to the live legacy bank
+# ids, which is what lets AC-1 compare the two systems on the same bank.
+# `<project>` is the basename of the repository root containing the project
+# dir — resolved by walking up for `.git` rather than by shelling out to
+# `git rev-parse` (measured at 0.435 ms, more than the whole rest of a hook).
+# Every worktree of a repo therefore shares one bank.
+
+# Non-empty pins EVERY session to this bank id verbatim (legacy's static mode).
+# bank_id = ""
+
+# The `agent` segment of a dynamic bank id.
+agent_name = "claude-code"
+
+# Exact directory -> bank id overrides. Highest precedence, and compared after
+# canonicalization. Empty by default, and skipped entirely when empty: each
+# entry costs a canonicalize() syscall on the per-prompt path.
+# [hooks.directory_bank_map]
+# "/home/me/projects/thing" = "claude-code::thing"
