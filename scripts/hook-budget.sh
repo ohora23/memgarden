@@ -66,21 +66,44 @@ done
 # --- 3. dependency closure (CI-wired) --------------------------------------
 # The check that will actually fire one day: a stray `use memgarden_store::…`
 # compiles fine and silently adds a 90 s C build and 1.5 MB of SQLite to every
-# hook process. `indexmap` is on the list because its appearance would mean
-# serde_json's `preserve_order` got switched on somewhere — which Cargo feature
-# unification would then apply to memgardend, reordering every API response.
+# hook process.
+#
+# An ALLOWLIST diff, matching .github/workflows/ci.yml. A denylist of known-bad
+# names is not containment — a future ureq/hyper/rustls/libc would pass it.
+# `indexmap` appearing would additionally mean serde_json's `preserve_order`
+# got switched on, which feature unification then applies to memgardend.
 note "3. cargo tree containment (CI-wired)"
-TREE=$(cd "$REPO_ROOT" && cargo tree -p memgarden-cli --edges normal 2>&1)
-TREE_DIRTY=0
-for forbidden in rusqlite libsqlite3-sys fastembed ort tokio reqwest hf-hub \
-                 tiktoken-rs sqlite-vec axum clap indexmap; do
-    if grep -qE "(^|[^a-zA-Z0-9_-])${forbidden} v" <<<"$TREE"; then
-        fail "memgarden-cli depends on $forbidden"
-        TREE_DIRTY=1
-    fi
-done
-printf '%s\n' "$TREE"
-(( TREE_DIRTY == 0 )) && pass "dependency closure is clean"
+EXPECTED=$(sort -u <<'CLOSURE'
+itoa
+memchr
+memgarden-cli
+memgarden-core
+proc-macro2
+quote
+serde
+serde_core
+serde_derive
+serde_json
+serde_spanned
+syn
+thiserror
+thiserror-impl
+toml
+toml_datetime
+toml_parser
+toml_writer
+unicode-ident
+winnow
+zmij
+CLOSURE
+)
+ACTUAL=$(cd "$REPO_ROOT" && cargo tree -p memgarden-cli --edges normal \
+    --prefix none --no-dedupe | awk 'NF {print $1}' | sort -u)
+if diff -u <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$ACTUAL"); then
+    pass "dependency closure matches the expected $(wc -l <<<"$ACTUAL") crates"
+else
+    fail "memgarden-cli's dependency closure changed (see the diff above)"
+fi
 
 # --- 4. link-time explanation (on regression only) -------------------------
 # Not a gate. Arm B's paired p50 (budget 1.5 ms) is the behavioural number;

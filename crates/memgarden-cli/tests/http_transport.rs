@@ -127,33 +127,87 @@ fn a_daemon_that_is_down_is_a_connect_error() {
 }
 
 /// The mutation this test exists to catch: a `Timeouts` value that is
-/// constructed correctly and then never reaches `set_read_timeout`. Asserting
-/// the *elapsed wall time* is the only way to see the value that arrives.
+/// constructed correctly and then never reaches the socket. Asserting the
+/// *elapsed wall time* is the only way to see the value that arrives.
+///
+/// **Two values, not one.** The first version of this test asserted a single
+/// call fell in `[150 ms, 600 ms)` and claimed that caught a hardcoded 400 ms.
+/// It did not — 400 satisfies both bounds, and 400 is the *most likely*
+/// hardcode because it is the shipped `recall_timeout_ms`. Only the 5 s mutant
+/// was caught. Two distinguishable budgets, both asserted, admit no constant.
 #[test]
 fn the_read_timeout_that_arrives_is_the_one_the_caller_passed() {
+    for budget_ms in [150u64, 700] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Accepts and never answers — the "daemon hung" column, measured at
+        // 1536 ms per prompt in the plan when the timeout is 1.5 s.
+        std::thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(30));
+            drop(sock);
+        });
+
+        let started = Instant::now();
+        let err = http::get(
+            &target(addr),
+            "/v1/recall",
+            &Timeouts::from_ms(500, budget_ms),
+        )
+        .unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(matches!(err, HttpError::Timeout), "{budget_ms}ms: {err}");
+        assert!(
+            elapsed >= Duration::from_millis(budget_ms),
+            "{budget_ms}ms: gave up early at {elapsed:?}"
+        );
+        // +450 ms of slack for a loaded CI box. The two windows
+        // ([150,600) and [700,1150)) are disjoint, so no single constant
+        // satisfies both iterations.
+        assert!(
+            elapsed < Duration::from_millis(budget_ms + 450),
+            "{budget_ms}ms: waited {elapsed:?}"
+        );
+    }
+}
+
+/// **HIGH, found by review and measured before the fix: `SO_RCVTIMEO` is not
+/// a request budget.** It bounds one `read()` and re-arms on every byte, so a
+/// server dribbling one byte per 300 ms held a 400 ms `recall` for **30.0 s
+/// and then returned `Ok`** — invisible to the circuit breaker, on the event
+/// where a stall erases the user's prompt.
+///
+/// The head arrives promptly and the body trickles, so this exercises the
+/// second loop specifically; `an_expired_deadline_short_circuits_before_the_byte_bound`
+/// covers the first.
+#[test]
+fn a_trickling_server_is_bounded_by_the_whole_request_deadline() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    // Accepts and never answers — the "daemon hung" column, measured at
-    // 1536 ms per prompt in the plan when the timeout is 1.5 s.
     std::thread::spawn(move || {
-        let (sock, _) = listener.accept().unwrap();
-        std::thread::sleep(Duration::from_secs(30));
-        drop(sock);
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 8192];
+        let _ = sock.read(&mut buf);
+        let _ = sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n");
+        let _ = sock.flush();
+        // 100 bytes at one per 300 ms = 30 s, every one of which reset the
+        // old per-read timeout.
+        for _ in 0..100 {
+            if sock.write_all(b"x").is_err() {
+                return;
+            }
+            let _ = sock.flush();
+            std::thread::sleep(Duration::from_millis(300));
+        }
     });
 
     let started = Instant::now();
-    let err = http::get(&target(addr), "/v1/recall", &Timeouts::from_ms(500, 150)).unwrap_err();
+    let err = http::get(&target(addr), "/v1/recall", &Timeouts::from_ms(50, 400)).unwrap_err();
     let elapsed = started.elapsed();
     assert!(matches!(err, HttpError::Timeout), "{err}");
     assert!(
-        elapsed >= Duration::from_millis(150),
-        "gave up before the deadline: {elapsed:?}"
-    );
-    // Loose upper bound: generous enough for a loaded CI box, tight enough
-    // that a hardcoded 400 ms / 5 s default would fail.
-    assert!(
-        elapsed < Duration::from_millis(600),
-        "waited past the caller's 150ms: {elapsed:?}"
+        elapsed < Duration::from_millis(1500),
+        "the whole-request deadline did not bound a trickling server: {elapsed:?}"
     );
 }
 

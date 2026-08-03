@@ -25,11 +25,13 @@
 
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// Ceiling on the status line plus headers. Nothing the daemon sends is close;
-/// this exists so a server that never sends `\r\n\r\n` cannot grow the buffer
-/// until the hook is OOM-killed (which would exit 137, not 0).
+/// Ceiling on the status line plus headers, in **bytes**. Time is bounded
+/// separately, by the whole-request deadline in [`read_response`] — this one
+/// only stops a server that never sends `\r\n\r\n` from growing the buffer
+/// until the hook is OOM-killed (which would exit 137, not 2, but is still a
+/// failure we can prevent).
 pub const MAX_HEAD_BYTES: usize = 16 * 1024;
 
 /// Ceiling on a response body. The largest thing we ever read is a recall
@@ -158,6 +160,15 @@ fn split_authority(authority: &str) -> Result<(&str, u16), HttpError> {
         };
         return Ok((host, port));
     }
+    // More than one `:` in an unbracketed authority is a bare IPv6 address
+    // (`::1:9100`). `rsplit_once` would read the last group as a port and the
+    // rest as a host, which then passes our allowlist by accident and 403s at
+    // the daemon. Refuse it here, where the message can say why.
+    if authority.matches(':').count() > 1 {
+        return Err(HttpError::Url(format!(
+            "ipv6 authority must be bracketed, e.g. http://[::1]:9100 — got {authority}"
+        )));
+    }
     match authority.rsplit_once(':') {
         Some((host, p)) => Ok((host, parse_port(p)?)),
         None => Ok((authority, 80)),
@@ -201,11 +212,26 @@ fn request(
     body: Option<&[u8]>,
     timeouts: &Timeouts,
 ) -> Result<Response, HttpError> {
-    let mut stream =
+    // The one place every request routes through, so the escaping rule is
+    // enforced here rather than in each subcommand. Bank ids and (from C2b)
+    // session ids reach the path from untrusted stdin; `encode_path_segment`
+    // exists and is correct, but nothing *enforced* it, and a raw space or CR
+    // in a path is request splitting, not a 400.
+    if path.is_empty() || !path.starts_with('/') || path.bytes().any(|b| b <= 0x20 || b == 0x7f) {
+        return Err(HttpError::Url(format!(
+            "path must be an escaped absolute path: {path:?}"
+        )));
+    }
+
+    let stream =
         TcpStream::connect_timeout(&target.addr, timeouts.connect).map_err(HttpError::Connect)?;
     // Both directions get the caller's budget. Without the write timeout a
     // daemon whose receive buffer is full would block a `Stop` hook forever on
     // a 9 MB initial retain.
+    //
+    // NOTE: these are `SO_RCVTIMEO`/`SO_SNDTIMEO`, which bound **one** syscall
+    // and re-arm on every byte. They are not the request budget — see
+    // `read_response`'s deadline.
     stream
         .set_read_timeout(Some(timeouts.io))
         .map_err(HttpError::from_io)?;
@@ -237,20 +263,48 @@ fn request(
     if let Some(body) = body {
         req.extend_from_slice(body);
     }
-    stream.write_all(&req).map_err(HttpError::from_io)?;
-    stream.flush().map_err(HttpError::from_io)?;
+    // `&TcpStream` implements both `Read` and `Write`, which is what lets the
+    // reader and the timeout-setter below borrow the socket at the same time.
+    (&mut &stream).write_all(&req).map_err(HttpError::from_io)?;
+    (&mut &stream).flush().map_err(HttpError::from_io)?;
 
-    read_response(&mut stream)
+    read_response(
+        &mut &stream,
+        &|left| stream.set_read_timeout(Some(left)),
+        Instant::now() + timeouts.io,
+    )
 }
 
 /// Reads until the header terminator, then **exactly** `Content-Length` more
-/// bytes.
+/// bytes, and gives up at `deadline` however the bytes are paced.
 ///
-/// Deliberately not `read_to_end`: that would be shorter, but it waits for the
-/// peer to close even after the whole body has arrived, so a daemon that
-/// ignored `Connection: close` would cost every hook its full io timeout while
-/// looking perfectly healthy.
-fn read_response(stream: &mut impl Read) -> Result<Response, HttpError> {
+/// **`SO_RCVTIMEO` is not a request budget.** It bounds one `read()` and
+/// re-arms on every byte that arrives, so a server dribbling one byte per
+/// 300 ms held a 400 ms-budgeted `recall` for a measured **30 s and then
+/// returned `Ok`** — invisible to the circuit breaker, on the event where a
+/// stall erases the user's prompt. `MAX_HEAD_BYTES` did not help: it bounds
+/// bytes, not time. So the socket option stays (it bounds a single blocked
+/// syscall) and `deadline` is re-armed onto it before every read, which makes
+/// the *whole request* cost at most `timeouts.io`.
+///
+/// Deliberately still not `read_to_end`: that would be shorter and wrong — it
+/// waits for the peer's FIN even after the whole body has arrived, so a daemon
+/// that ignored `Connection: close` would cost every hook its full budget
+/// while looking perfectly healthy.
+fn read_response(
+    stream: &mut impl Read,
+    rearm: &dyn Fn(Duration) -> std::io::Result<()>,
+    deadline: Instant,
+) -> Result<Response, HttpError> {
+    // `Some(ZERO)` is rejected by `set_read_timeout`, and a zero budget has
+    // already elapsed anyway.
+    let tick = |rearm: &dyn Fn(Duration) -> std::io::Result<()>| -> Result<(), HttpError> {
+        match deadline.checked_duration_since(Instant::now()) {
+            Some(left) if !left.is_zero() => rearm(left).map_err(HttpError::from_io),
+            _ => Err(HttpError::Timeout),
+        }
+    };
+
     let mut buf = Vec::with_capacity(2048);
     let mut chunk = [0u8; 2048];
     let head_end = loop {
@@ -262,6 +316,7 @@ fn read_response(stream: &mut impl Read) -> Result<Response, HttpError> {
                 "response head exceeds {MAX_HEAD_BYTES} bytes"
             )));
         }
+        tick(rearm)?;
         let n = stream.read(&mut chunk).map_err(HttpError::from_io)?;
         if n == 0 {
             return Err(HttpError::Protocol(
@@ -276,6 +331,7 @@ fn read_response(stream: &mut impl Read) -> Result<Response, HttpError> {
     body.reserve(content_length.saturating_sub(body.len()));
     while body.len() < content_length {
         let want = (content_length - body.len()).min(chunk.len());
+        tick(rearm)?;
         let n = stream
             .read(&mut chunk[..want])
             .map_err(HttpError::from_io)?;
@@ -339,6 +395,14 @@ fn parse_head(head: &[u8]) -> Result<(u16, usize), HttpError> {
                     "content-length {n} exceeds {MAX_RESPONSE_BYTES}"
                 )));
             }
+            // Two disagreeing lengths is request-smuggling shaped, and this
+            // module's whole argument is that it refuses ambiguity rather than
+            // picking a reading. Two *agreeing* ones are merely redundant.
+            if content_length.is_some_and(|prev| prev != n) {
+                return Err(HttpError::Protocol(
+                    "conflicting content-length headers".to_string(),
+                ));
+            }
             content_length = Some(n);
         }
     }
@@ -393,6 +457,10 @@ mod tests {
             "http://127.0.0.1:9100/v1", // path prefix would misroute
             "http://127.0.0.1:999999",  // not a port
             "127.0.0.1:9100",           // no scheme
+            // Unbracketed ipv6: `rsplit_once(':')` would read `9100` as the
+            // port and `::1` as the host, pass the allowlist by accident, and
+            // 403 at the daemon with no useful message.
+            "http://::1:9100",
         ] {
             assert!(Target::parse(bad).is_err(), "{bad} must be refused");
         }
@@ -437,6 +505,14 @@ mod tests {
         // A length that lies about a gigabyte must not be allocated.
         let err = head("HTTP/1.1 200 OK\r\ncontent-length: 1073741824").unwrap_err();
         assert!(matches!(err, HttpError::Protocol(_)), "{err}");
+        // Two disagreeing lengths: pick neither.
+        let err = head("HTTP/1.1 200 OK\r\ncontent-length: 5\r\ncontent-length: 9").unwrap_err();
+        assert!(matches!(err, HttpError::Protocol(_)), "{err}");
+        // Two agreeing ones are redundant, not ambiguous.
+        assert_eq!(
+            head("HTTP/1.1 200 OK\r\ncontent-length: 5\r\ncontent-length: 5").unwrap(),
+            (200, 5)
+        );
         for bad in [
             "ICY 200 OK\r\ncontent-length: 0",
             "HTTP/1.1 \r\ncontent-length: 0",
@@ -446,13 +522,24 @@ mod tests {
         }
     }
 
+    /// An in-memory reader never blocks, so the deadline is generous and the
+    /// re-arm is a no-op. The deadline's real behaviour needs a socket and
+    /// lives in `tests/http_transport.rs`.
+    fn read_for_test(stream: &mut impl Read) -> Result<Response, HttpError> {
+        read_response(
+            stream,
+            &|_| Ok(()),
+            Instant::now() + Duration::from_secs(60),
+        )
+    }
+
     /// The body is taken from `Content-Length`, not from "everything until
     /// EOF": a server that appends trailing junk must not have it handed to
     /// the caller.
     #[test]
     fn body_is_bounded_by_content_length() {
         let raw = b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhelloTRAILING JUNK";
-        let response = read_response(&mut &raw[..]).unwrap();
+        let response = read_for_test(&mut &raw[..]).unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"hello");
         assert!(response.is_success());
@@ -461,7 +548,7 @@ mod tests {
     #[test]
     fn a_truncated_body_is_an_error_not_a_short_read() {
         let raw = b"HTTP/1.1 200 OK\r\ncontent-length: 99\r\n\r\nhello";
-        assert!(read_response(&mut &raw[..]).is_err());
+        assert!(read_for_test(&mut &raw[..]).is_err());
     }
 
     #[test]
@@ -473,7 +560,49 @@ mod tests {
                 Ok(buf.len())
             }
         }
-        let err = read_response(&mut Endless).unwrap_err();
+        let err = read_for_test(&mut Endless).unwrap_err();
         assert!(matches!(err, HttpError::Protocol(_)), "{err}");
+    }
+
+    /// The byte ceiling and the time ceiling are independent, and this is the
+    /// half that proves the deadline works without a socket: an endless
+    /// reader that never completes a head, against an already-expired
+    /// deadline, is `Timeout` rather than the byte-bound `Protocol`.
+    #[test]
+    fn an_expired_deadline_short_circuits_before_the_byte_bound() {
+        struct Endless;
+        impl Read for Endless {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                buf.fill(b'x');
+                Ok(buf.len())
+            }
+        }
+        let past = Instant::now() - Duration::from_secs(1);
+        let err = read_response(&mut Endless, &|_| Ok(()), past).unwrap_err();
+        assert!(matches!(err, HttpError::Timeout), "{err}");
+    }
+
+    /// The path guard is at the choke point, so every future subcommand
+    /// inherits it. Asserted without a listener: it must fail before connect.
+    #[test]
+    fn a_path_with_control_characters_never_reaches_the_socket() {
+        // Port 1 is not listening; a reachable path would give Connect, not Url.
+        let target = Target::parse("http://127.0.0.1:1").unwrap();
+        let t = Timeouts::from_ms(50, 50);
+        for bad in [
+            "",
+            "v1/recall",                         // not absolute
+            "/v1/banks/a b/sessions",            // raw space = request splitting
+            "/v1/banks/a\r\nX-Evil: 1/sessions", // CRLF injection
+            "/v1/banks/a\u{7f}/sessions",        // DEL
+            "/v1/banks/a\u{0}/sessions",         // NUL
+        ] {
+            let err = get(&target, bad, &t).unwrap_err();
+            assert!(matches!(err, HttpError::Url(_)), "{bad:?} -> {err}");
+        }
+        // The escaped form of the same bank id is accepted by the guard and
+        // then fails at connect, which is what "reached the socket" looks like.
+        let ok = format!("/v1/banks/{}/sessions", encode_path_segment("a b"));
+        assert!(matches!(get(&target, &ok, &t), Err(HttpError::Connect(_))));
     }
 }

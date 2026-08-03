@@ -77,16 +77,34 @@ pub fn project_name(dir: &str) -> String {
 fn repo_root(start: &Path) -> Option<PathBuf> {
     for dir in start.ancestors() {
         let dot_git = dir.join(".git");
-        let meta = std::fs::symlink_metadata(&dot_git).ok();
-        let Some(meta) = meta else { continue };
+        // `metadata`, which **follows symlinks**, not `symlink_metadata`.
+        // A symlinked `.git` (`ln -s /repo/.git /proj/.git`) lstats as
+        // not-a-dir, fell into the `gitdir:` branch, and `read_to_string` on a
+        // directory returns EISDIR — which then abandoned the whole ancestor
+        // walk and gave every subdirectory its own bank. Measured:
+        // `derive(cfg, "/tmp/proj/sub")` was `claude-code::sub`, splitting one
+        // project's memories across two banks depending on where the model
+        // happened to be. `git rev-parse` handles it, so this had to too.
+        let Ok(meta) = std::fs::metadata(&dot_git) else {
+            continue;
+        };
 
         if meta.is_dir() {
             return Some(dir.to_path_buf());
         }
         // `.git` as a *file* means a linked worktree or a submodule; it holds
         // `gitdir: <path>` pointing at the real git dir.
-        let contents = std::fs::read_to_string(&dot_git).ok()?;
-        let gitdir = contents.split_once("gitdir:")?.1.trim();
+        //
+        // An unreadable or shapeless `.git` file `continue`s rather than `?`s:
+        // giving up on the entire walk because one ancestor was odd is how the
+        // symlink bug above became a wrong bank instead of a slower lookup.
+        let Some(gitdir) = std::fs::read_to_string(&dot_git)
+            .ok()
+            .and_then(|c| c.split_once("gitdir:").map(|(_, g)| g.trim().to_string()))
+        else {
+            continue;
+        };
+        let gitdir = gitdir.as_str();
         let gitdir = if Path::new(gitdir).is_absolute() {
             PathBuf::from(gitdir)
         } else {
@@ -170,6 +188,43 @@ mod tests {
         );
         assert_eq!(
             derive(&cfg(), wt2.to_str().unwrap()),
+            "claude-code::myproject"
+        );
+    }
+
+    /// Review found this by measurement: with `symlink_metadata` a symlinked
+    /// `.git` split one project across two banks depending on which
+    /// subdirectory the model was in.
+    #[test]
+    fn a_symlinked_git_dir_still_resolves_to_the_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(real.join(".git")).unwrap();
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(proj.join("sub")).unwrap();
+        std::os::unix::fs::symlink(real.join(".git"), proj.join(".git")).unwrap();
+
+        assert_eq!(derive(&cfg(), proj.to_str().unwrap()), "claude-code::proj");
+        // The subdirectory is the case that regressed: it must not become
+        // `claude-code::sub`.
+        assert_eq!(
+            derive(&cfg(), proj.join("sub").to_str().unwrap()),
+            "claude-code::proj"
+        );
+    }
+
+    /// One odd ancestor must not abandon the walk — the mechanism behind the
+    /// symlink bug, pinned separately from the symlink itself.
+    #[test]
+    fn an_unreadable_git_entry_does_not_abandon_the_ancestor_walk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("myproject");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let inner = repo.join("vendor");
+        // A `.git` file with no `gitdir:` line at all.
+        write(&inner.join(".git"), "this is not a git link\n");
+        assert_eq!(
+            derive(&cfg(), inner.to_str().unwrap()),
             "claude-code::myproject"
         );
     }

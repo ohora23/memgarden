@@ -57,6 +57,12 @@ struct Args {
     arm_a: Vec<String>,
     arm_b: Vec<String>,
     stdin_a: Vec<u8>,
+    /// Defaults to `--stdin-a`, not to empty. The null experiment is only a
+    /// control if the two arms are identical *including* their stdin: arm B
+    /// reading nothing while arm A reads a 4 KB payload charges the delta for
+    /// a pipe write that has nothing to do with the subcommand. Pass
+    /// `--stdin-b ""`-style divergence only deliberately.
+    stdin_b: Option<Vec<u8>>,
     real: Option<String>,
     transport_n: usize,
 }
@@ -71,6 +77,7 @@ fn parse_args() -> Args {
         arm_a: vec!["hook".into(), "noop".into()],
         arm_b: vec!["hook".into(), "noop".into()],
         stdin_a: Vec::new(),
+        stdin_b: None,
         real: None,
         transport_n: 200,
     };
@@ -90,6 +97,7 @@ fn parse_args() -> Args {
             "--arm-a" => args.arm_a = split_words(&value()),
             "--arm-b" => args.arm_b = split_words(&value()),
             "--stdin-a" => args.stdin_a = std::fs::read(value()).expect("--stdin-a"),
+            "--stdin-b" => args.stdin_b = Some(std::fs::read(value()).expect("--stdin-b")),
             "--real" => args.real = Some(value()),
             "--transport-n" => args.transport_n = value().parse().expect("--transport-n"),
             other => panic!("unknown flag {other}"),
@@ -229,9 +237,11 @@ fn main() {
     );
     println!();
 
+    let stdin_b = args.stdin_b.clone().unwrap_or_else(|| args.stdin_a.clone());
+
     for _ in 0..args.warmup {
         run_once(&args.bin, &args.arm_a, &args.stdin_a, &daemon_url);
-        run_once(&args.bin, &args.arm_b, &[], &daemon_url);
+        run_once(&args.bin, &args.arm_b, &stdin_b, &daemon_url);
     }
 
     let mut a_ms = Vec::with_capacity(args.n);
@@ -240,7 +250,7 @@ fn main() {
     for _ in 0..args.n {
         // Strictly alternated inside one process: this is the whole design.
         let a = run_once(&args.bin, &args.arm_a, &args.stdin_a, &daemon_url).as_secs_f64() * 1e3;
-        let b = run_once(&args.bin, &args.arm_b, &[], &daemon_url).as_secs_f64() * 1e3;
+        let b = run_once(&args.bin, &args.arm_b, &stdin_b, &daemon_url).as_secs_f64() * 1e3;
         a_ms.push(a);
         b_ms.push(b);
         paired_ms.push(a - b);
@@ -297,11 +307,12 @@ fn transport_probe(daemon_url: &str, n: usize) {
             samples.push(elapsed);
         }
     }
+    // `samples.len()`, not `n - 10`: the latter underflows on `usize` for any
+    // `--transport-n` under 10 and panics the harness in the one place a
+    // measuring instrument must not.
+    let reported = samples.len();
     let s = stats(samples);
-    println!(
-        "\nin-process transport round trip (NOT hook overhead), N={}:",
-        n - 10
-    );
+    println!("\nin-process transport round trip (NOT hook overhead), N={reported}:");
     println!("| arm | p50 ms | p95 ms | p99 ms | min ms |");
     println!("|---|---|---|---|---|");
     row("http::post -> stub", &s);

@@ -4,10 +4,15 @@
 //!
 //! On `UserPromptSubmit`, exit 2 "Blocks prompt processing and erases the
 //! prompt" — it deletes what the user typed. On `Stop` it prevents the turn
-//! from ending. Legacy has this live: `recall.py:287-291` exits 2 when
-//! `debug` is set, and `debug: true` is in the user's real
-//! `~/.hindsight/claude-code.json`, so any unhandled exception in the legacy
-//! recall hook erases a prompt.
+//! from ending. `recall.py:287-291` exits 2 when `debug` is set, so any
+//! unhandled exception in the legacy recall hook erases a prompt.
+//!
+//! That was live, not hypothetical: the user's real
+//! `~/.hindsight/claude-code.json` carried `debug: true` until **2026-08-03**,
+//! when it was set to `false` after this hazard was found. Legacy's own
+//! default is `false` and the `coding` preset does not set it — but the flag
+//! is one env var (`HINDSIGHT_DEBUG`) away from erasing prompts again, which
+//! is why the answer here is a structural guarantee rather than a setting.
 //!
 //! Here it is structural rather than careful:
 //!

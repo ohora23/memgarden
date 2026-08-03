@@ -21,23 +21,57 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace
-      # The hook binary's dependency closure (plan §Cross-PR rules 2). A stray
-      # `use memgarden_store::…` compiles fine and silently adds a 90 s C build
-      # and 1.5 MB of SQLite to a process that runs thousands of times per
-      # session; `indexmap` would mean serde_json's `preserve_order` got
-      # switched on, which feature unification then applies to memgardend too.
+      # The hook binary's dependency closure (plan §Cross-PR rules 2). A hook
+      # pays for its binary on every `execve`, and a stray
+      # `use memgarden_store::…` compiles fine while silently adding a 90 s C
+      # build and 1.5 MB of SQLite to a process that runs thousands of times
+      # per session.
       #
-      # This is the ONLY one of the four hook budgets that CI enforces. Size,
-      # `ldd` and `LD_DEBUG` are human PR-body checks — `scripts/hook-budget.sh`
+      # An **allowlist**, not a denylist. The first version listed 11 forbidden
+      # names, which is not containment: a future `ureq`/`hyper`/`rustls`/`libc`
+      # would have passed green while the PR body claimed the closure was
+      # enforced. This diffs the whole closure, so it fails on additions *and*
+      # on removals, and the expected list is something a reviewer reads once
+      # instead of a denylist someone has to remember to extend.
+      #
+      # `indexmap` appearing would additionally mean serde_json's
+      # `preserve_order` got switched on somewhere, which feature unification
+      # then applies to memgardend, reordering every API response.
+      #
+      # This is the ONLY one of the four hook budgets CI enforces. Size, `ldd`
+      # and `LD_DEBUG` are human PR-body checks — `scripts/hook-budget.sh`
       # prints all four, and a green CI does not prove the other three.
       - name: memgarden-cli dependency containment
         run: |
-          tree=$(cargo tree -p memgarden-cli --edges normal)
-          echo "$tree"
-          for forbidden in rusqlite libsqlite3-sys fastembed ort tokio reqwest \
-                           hf-hub tiktoken-rs sqlite-vec axum clap indexmap; do
-            if grep -qE "(^|[^a-zA-Z0-9_-])${forbidden} v" <<<"$tree"; then
-              echo "::error::memgarden-cli must not depend on ${forbidden}"
-              exit 1
-            fi
-          done
+          cargo tree -p memgarden-cli --edges normal --prefix none --no-dedupe \
+            | awk 'NF {print $1}' | sort -u > /tmp/actual.txt
+          cat > /tmp/expected.txt <<'CLOSURE'
+          itoa
+          memchr
+          memgarden-cli
+          memgarden-core
+          proc-macro2
+          quote
+          serde
+          serde_core
+          serde_derive
+          serde_json
+          serde_spanned
+          syn
+          thiserror
+          thiserror-impl
+          toml
+          toml_datetime
+          toml_parser
+          toml_writer
+          unicode-ident
+          winnow
+          zmij
+          CLOSURE
+          sort -u -o /tmp/expected.txt /tmp/expected.txt
+          if ! diff -u /tmp/expected.txt /tmp/actual.txt; then
+            echo "::error::memgarden-cli's dependency closure changed. If the \
+          addition is intended, justify it in the PR body and update this list \
+          — the hook pays for every crate on every invocation."
+            exit 1
+          fi

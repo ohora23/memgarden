@@ -111,7 +111,8 @@ pub struct HooksConfig {
     pub state_dir: PathBuf,
     /// Diagnostics on stderr. **Never changes an exit code** — legacy's
     /// equivalent flag is exactly what makes `recall.py:287-291` exit 2 and
-    /// erase the user's prompt, and `debug: true` is live in that config.
+    /// erase the user's prompt. That is not theoretical: the live
+    /// `~/.hindsight/claude-code.json` had `debug: true` until 2026-08-03.
     pub debug: bool,
 
     // --- bank derivation (plan §Binding decisions #4) ---
@@ -1035,6 +1036,17 @@ pub fn from_parts(
         ),
         ("hooks.max_post_bytes", cfg.hooks.max_post_bytes as u64),
         ("hooks.max_inject_bytes", cfg.hooks.max_inject_bytes as u64),
+        // A zero cooldown makes the breaker open and immediately close, i.e.
+        // no breaker; a zero poison retry turns the hourly throttle back into
+        // every-turn hammering; a zero shadow-log cap rotates on every write.
+        // `catchup_max_sessions = 0` is deliberately NOT here — zero is its
+        // documented "disable catch-up".
+        (
+            "hooks.breaker_cooldown_secs",
+            cfg.hooks.breaker_cooldown_secs,
+        ),
+        ("hooks.poison_retry_secs", cfg.hooks.poison_retry_secs),
+        ("hooks.shadow_log_max_bytes", cfg.hooks.shadow_log_max_bytes),
     ] {
         if value == 0 {
             return Err(Error::Config(format!("{name} must be > 0")));
@@ -1047,10 +1059,16 @@ pub fn from_parts(
             cfg.hooks.max_post_bytes
         )));
     }
-    if cfg.hooks.session_retention_days == 0 {
-        return Err(Error::Config(
-            "hooks.session_retention_days must be > 0".to_string(),
-        ));
+    // Bounded above as well as below, because the consumer multiplies it:
+    // `metrics_task::tick` computes `now_ms() - days * 86_400_000` as `i64`,
+    // and a large enough value overflows to a cutoff in the *future* — a GC
+    // that deletes every session row instead of none. 100 years is past any
+    // legitimate retention and far below the overflow.
+    if !(1..=36_500).contains(&cfg.hooks.session_retention_days) {
+        return Err(Error::Config(format!(
+            "hooks.session_retention_days must be 1..=36500: {}",
+            cfg.hooks.session_retention_days
+        )));
     }
 
     Ok(cfg)
@@ -1400,6 +1418,15 @@ mod tests {
             ("[hooks]\nmax_post_bytes = 0", "post bytes"),
             ("[hooks]\nmax_inject_bytes = 0", "inject bytes"),
             ("[hooks]\nsession_retention_days = 0", "retention"),
+            // `now_ms() - days * 86_400_000` as i64 overflows to a cutoff in
+            // the *future*, and the GC then deletes every session row.
+            (
+                "[hooks]\nsession_retention_days = 200000000000000",
+                "retention overflow",
+            ),
+            ("[hooks]\nbreaker_cooldown_secs = 0", "breaker cooldown"),
+            ("[hooks]\npoison_retry_secs = 0", "poison retry"),
+            ("[hooks]\nshadow_log_max_bytes = 0", "shadow log"),
             // Above the daemon's own body limit this could only ever 413.
             (
                 "[hooks]\nmax_post_bytes = 33554433",
@@ -1412,15 +1439,18 @@ mod tests {
                 "expected {what} to be rejected: {toml_str}"
             );
         }
-        // …and the boundary itself is allowed.
-        assert!(
-            from_parts(
-                defaults(),
-                Some("[hooks]\nmax_post_bytes = 33554432"),
-                &HashMap::new()
-            )
-            .is_ok()
-        );
+        // …and the boundaries themselves are allowed.
+        for ok in [
+            "[hooks]\nmax_post_bytes = 33554432",
+            "[hooks]\nsession_retention_days = 36500",
+            // 0 is this knob's documented "disable catch-up", not an error.
+            "[hooks]\ncatchup_max_sessions = 0",
+        ] {
+            assert!(
+                from_parts(defaults(), Some(ok), &HashMap::new()).is_ok(),
+                "{ok}"
+            );
+        }
     }
 
     #[test]

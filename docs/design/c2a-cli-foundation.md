@@ -13,12 +13,19 @@ arm B's fixed cost is pinned before anything can quietly inflate it.
 ## The property this crate exists to guarantee: never exit **2**
 
 On `UserPromptSubmit`, exit 2 "Blocks prompt processing and **erases the
-prompt**". On `Stop` it prevents the turn from ending. Legacy has this live:
-`recall.py:287-291` exits 2 when `debug` is set, and `debug: true` is in the
-user's real `~/.hindsight/claude-code.json` — so any unhandled exception in the
-legacy recall hook deletes what the user typed. It is the single strongest
-argument for the cutover, and MemGarden makes it structurally impossible rather
-than carefully avoided:
+prompt**". On `Stop` it prevents the turn from ending. `recall.py:287-291`
+exits 2 when `debug` is set, so any unhandled exception in the legacy recall
+hook deletes what the user typed.
+
+**This is history, with a date, not a hypothetical.** The user's real
+`~/.hindsight/claude-code.json` carried `debug: true` — that is what the Phase C
+plan recorded and what motivated this crate — until **2026-08-03**, when it was
+set to `false` in response to the hazard being found. Legacy's own default is
+`false` and the `coding` preset does not set it; the flag remains one env var
+(`HINDSIGHT_DEBUG`) from erasing prompts again. A configuration that had to be
+changed by hand to stop deleting user input is the single strongest argument for
+the cutover, and MemGarden makes the failure structurally impossible rather than
+carefully avoided:
 
 | mechanism | where |
 |---|---|
@@ -79,6 +86,46 @@ timeout while looking perfectly healthy. Missing `Content-Length` is a failure
 for the same reason chunked is — "read until close" is exactly the ambiguity
 this client refuses to have.
 
+### `SO_RCVTIMEO` is not a request budget (review HIGH)
+
+The first version of this PR set `set_read_timeout(timeouts.io)` and stopped
+there. That is `SO_RCVTIMEO`: it bounds **one `read()`** and re-arms on every
+byte that arrives. Review measured the consequence against the shipped
+`recall_timeout_ms = 400` — a server sending the head promptly and then one
+body byte per 300 ms:
+
+```
+http::get(&target, "/v1/recall", &Timeouts::from_ms(50, 400))
+  -> returned after 30.007 s, and returned Ok
+```
+
+Thirty seconds on `UserPromptSubmit`, **reported as success**, so the circuit
+breaker never sees it, `transport_failures` never moves, and the daemon reads
+healthy. It contradicted this file's own "recall fails open", and it happened in
+the PR whose entire premise is a bounded wall clock — the one place the
+instrument could not see itself.
+
+`MAX_HEAD_BYTES` was no help and the old comment overclaimed: it bounds
+**bytes, not time.** 16 KB at one byte per read is 16,384 reads, and the body
+loop allowed 8 M.
+
+The fix is a whole-request deadline (`Instant::now() + timeouts.io`) re-armed
+onto the socket before **both** loops' every read, so the remaining budget
+shrinks monotonically and the socket option only ever bounds a single blocked
+syscall. The early return is preserved — still exactly `Content-Length`, still
+no wait for FIN. Measured after: **408 ms** against a 400 ms budget, `Timeout`.
+Removing the two re-arms puts it back to 29.71 s returning `Ok`, which is what
+`a_trickling_server_is_bounded_by_the_whole_request_deadline` now pins.
+
+### The path guard is at the choke point
+
+`request()` refuses any path that is empty, not absolute, or contains a byte
+`<= 0x20` or `0x7f`. Not reachable in C2a, but C2b puts `session_id` — which
+arrives on untrusted stdin — into `GET /v1/banks/{bank}/sessions/{session_id}`,
+and a raw CR there is request splitting, not a 400. `encode_path_segment`
+existed and was correct; nothing *enforced* it. One guard where all six future
+subcommands route through beats six guards they each have to remember.
+
 A 4xx is a **response**, not a transport failure. The client returns it with
 its body rather than erroring, because `transport_failures` and
 `reject_failures` are counted separately precisely so a down daemon can never
@@ -116,6 +163,22 @@ SessionState::recovered(session_id, bank_id, confirmed_offset, chunk)
 whose parameter is named for the column it takes. There is no constructor that
 accepts `byte_offset`, so the wrong one cannot be reached for without
 deliberately renaming an argument.
+
+### No `fsync`, and saying so out loud
+
+The first version fsynced the temp file and justified it as "what makes the
+rename publish complete bytes". That reasoning is a *crash* property, and
+within a live system it is not needed: the page cache is coherent, so
+`rename(2)` publishes full contents with or without the sync and no reader can
+observe the empty inode. What the fsync actually bought was power-cut survival
+— which the very next sentence of the same comment explicitly declined to pay
+for. A real disk sync on the per-turn hot path for a property the code
+disclaims two lines later is not a trade-off, it is a contradiction, and arm B
+cannot see the cost because `noop` never touches state.
+
+Deleted. **This cache is not crash-durable, deliberately.** Deleting the code
+is also how the unpinnable "dropping `sync_all` fails no test" mutation gets
+closed: there is nothing left to drop.
 
 ### `File::lock()` is advisory, and the comment says only what it does
 
@@ -198,13 +261,20 @@ daemon):
 
 | arm | p50 ms | p95 ms | p99 ms | min ms |
 |---|---|---|---|---|
-| A `hook noop` | 0.243 | 0.285 | 0.317 | 0.227 |
-| B `hook noop` (baseline) | 0.243 | 0.296 | 0.316 | 0.226 |
-| paired A-B | -0.000 | 0.032 | 0.059 | -0.105 |
+| A `hook noop` | 0.242 | 0.296 | 0.324 | 0.226 |
+| B `hook noop` (baseline) | 0.243 | 0.305 | 0.323 | 0.225 |
+| paired A-B | 0.000 | 0.036 | 0.065 | -0.150 |
 
 **Arm B p50 0.243 ms against the 1.5 ms gate — PASS, with 6x headroom.** That
-is *below* the plan's 0.34 ms prototype, because this binary is smaller (462 KB
-vs 606 KB: no `toml` in the CLI's own link path) and `noop` loads no config.
+is *below* the plan's 0.34 ms prototype, because this binary is smaller (484 KB
+vs 606 KB) and `noop` loads no config. Arm B did **not** move across the review
+round (0.243 both before and after the deadline, path guard and `create_new`
+retry landed); the binary grew 462264 -> 496160 bytes.
+
+The null experiment is a stronger control than "the harness works": with
+A = B, any within-pair position effect δ (arm A always running first) would
+appear as `paired = δ`. Measuring 0.000 at N=300 bounds δ below a microsecond,
+which retires the confounder by measurement instead of assuming it away.
 
 C2a ships only `noop`, so the default run is a **null experiment**: A = B, and
 the paired delta must sit at ~0. It does (-0.000 ms). A harness that cannot
@@ -215,17 +285,24 @@ first result for a measuring instrument, and
 `scripts/hook-budget.sh`, on the same build:
 
 ```
-1. size    462264 bytes (0.44 MB)              <= 8 MB budget   ok   [human check]
+1. size    496160 bytes (0.47 MB)              <= 8 MB budget   ok   [human check]
 2. ldd     linux-vdso, libgcc_s, libc, ld-linux-x86-64          ok   [human check]
            no libssl / libcrypto / libonnxruntime / libsqlite3 / libstdc++
-3. tree    memgarden-core, serde, serde_json, thiserror, toml, winnow, itoa,
-           memchr, zmij, serde_spanned, toml_datetime/parser/writer      ok   [CI-WIRED]
-4. LD_DEBUG  165 relocations, 7 from cache, 61743 cycles total loader time
+3. tree    21 crates, diffed against an explicit allowlist               ok   [CI-WIRED]
+4. LD_DEBUG  165 relocations, 7 from cache, ~75k cycles total loader time
              (diagnostic only, never a gate)
 ```
 
 **Only #3 is a CI gate.** A green CI does not prove #1, #2 or #4 — they are
 human PR-body checks, and saying so plainly is part of the deliverable.
+
+#3 is an **allowlist diff, not a denylist.** The first version listed 11
+forbidden crate names, which is not containment: a future `ureq`, `hyper`,
+`rustls` or `libc` would have passed it green while the PR body claimed the
+closure was enforced. Diffing the whole closure fails on additions *and*
+removals for the same line count, and turns the crate list into something a
+reviewer reads once instead of a denylist someone must remember to extend.
+`ci.yml` and `scripts/hook-budget.sh` carry the same list.
 
 The in-process transport probe (`http::post` -> stub, N=190) reports p50
 0.015 ms / p95 0.019 ms. That is **not** a hook-overhead number — there is no
@@ -248,7 +325,19 @@ breaking them. Each mutation was reverted after the run.
 |---|---|
 | `parse_head` stops rejecting `Transfer-Encoding` | `a_chunked_reply_is_a_failure_and_not_a_mis_parse`, `head_parsing_refuses_chunked_and_lengthless_replies` |
 | missing `Content-Length` defaults to `0` instead of erroring | `a_reply_without_content_length_is_a_failure` + the unit test |
-| `set_read_timeout(timeouts.io)` -> a hardcoded 5 s | `the_read_timeout_that_arrives_is_the_one_the_caller_passed` (asserts elapsed wall time, which is the only way to see the value that *arrives*) |
+| the io budget -> a hardcoded constant | `the_read_timeout_that_arrives_is_the_one_the_caller_passed`, which asserts elapsed wall time — the only way to see the value that *arrives*. **Corrected in review:** it originally made one call and asserted `[150 ms, 600 ms)`, claiming that caught a hardcoded 400 ms. It did not — 400 satisfies both bounds, and 400 is the *most likely* hardcode because it is the shipped `recall_timeout_ms`; only the 5 s mutant was caught. It now calls twice with 150 and 700 and asserts both, and the two windows are disjoint, so no constant survives |
+| both `tick(rearm)?` deadline re-arms removed | `a_trickling_server_is_bounded_by_the_whole_request_deadline` — 29.71 s and `Ok`, exactly the pre-fix measurement |
+| the deadline check alone (byte bounds kept) | `an_expired_deadline_short_circuits_before_the_byte_bound` |
+| the `request()` path guard removed | `a_path_with_control_characters_never_reaches_the_socket` |
+| `symlink_metadata` restored in `repo_root` | `a_symlinked_git_dir_still_resolves_to_the_repo` |
+| the `gitdir:` `continue` back to `?` | `an_unreadable_git_entry_does_not_abandon_the_ancestor_walk` |
+| `gc` filters `.json` only | `gc_collects_lock_and_temp_leftovers_too` |
+| `load` drops the `session_id` conjunct | `a_filename_collision_reads_as_absent_rather_than_as_another_session` |
+| `ensure_dir` back to bare `create_dir_all` | `the_state_dir_and_its_parent_are_created_0700` |
+| `File::create_new` back to `File::create` | `a_planted_symlink_at_the_temp_path_is_not_followed` |
+| the `session_retention_days` upper bound removed | `hooks_validation_rejects_unusable_values` |
+| duplicate-`Content-Length` conflict check removed | `head_parsing_refuses_chunked_and_lengthless_replies` |
+| the unbracketed-ipv6 refusal removed | `parses_loopback_urls_and_refuses_everything_else` |
 | panic hook `exit(0)` -> `exit(1)` | `an_injected_panic_exits_zero_with_empty_stdout` |
 | `MEMGARDEN_HOOKS_DISABLE` check deleted from `dispatch` | `the_disable_switch_exits_zero_and_stays_silent` (via the `__panic` half) |
 | truthy set gains `"0"` | `the_disable_switch_matches_the_configs_truthy_set` |
@@ -264,28 +353,29 @@ breaking them. Each mutation was reverted after the run.
 | `tick` ignores its `session_retention_days` argument | `the_metrics_tick_expires_stale_sessions` (fixture ages derive from a non-default 7) |
 | `store()` writes in place instead of temp+rename | 6 state tests |
 
-**Two mutations survived, and both are reported rather than papered over:**
+**One mutation still survives, and it is reported rather than papered over:**
 
-1. **The containment re-check in `path_for` (`if path.parent() != Some(dir)`)
-   is pinned by nothing.** Deleting it fails no test — because the sanitizer
-   above it already makes the branch unreachable, which is exactly what
-   defense-in-depth means. It stays (three lines, and it is what survives
-   someone later "improving" the sanitizer), but it is honest to record that
-   only the *sanitizer* is tested. Making it testable would mean shipping a
-   deliberately weakened sanitizer behind `cfg(test)`, which is worse.
-2. **Dropping `f.sync_all()` from `store()` fails no test.** Also expected:
-   durability across a power cut is not observable from inside a test process.
-   It stays because it is what makes the rename publish complete bytes rather
-   than a filename pointing at an empty inode. The containing *directory* is
-   deliberately **not** fsynced — this file is a cache, so surviving a power cut
-   is not worth a second sync on the per-turn path.
+**The containment re-check in `path_for` (`if path.parent() != Some(dir)`) is
+pinned by nothing.** Deleting it fails no test — because the sanitizer above it
+already makes the branch unreachable, which is exactly what defense-in-depth
+means. It stays: it is a trust-boundary backstop, and if the sanitizer ever
+stops replacing `/`, `dir.join("/etc/passwd")` returns `/etc/passwd` and this
+check is what fires. Unreachable-today is not unreachable-tomorrow, and pinning
+it would mean shipping a deliberately weakened sanitizer behind `cfg(test)`,
+which is worse than an honest note. Only the *sanitizer* is tested, and the
+mutation that removes `/` from it is caught.
+
+The second survivor from the first round — dropping `f.sync_all()` — is gone
+because the `sync_all()` is gone. See §No `fsync`: the justification was a
+crash property the same comment declined to pay for, and deleting the code is a
+valid way to close an unpinnable mutation.
 
 ## Diverged from legacy
 
 * **Never exit 2.** Legacy exits 2 under `debug` (`recall.py:287-291`,
-  `retain.py:283-287`) and `debug` is true in the live config. On
-  `UserPromptSubmit` that erases the prompt. Ours cannot: see the table at the
-  top.
+  `retain.py:283-287`), and the live config had `debug: true` until it was
+  turned off on 2026-08-03. On `UserPromptSubmit` that erases the prompt. Ours
+  cannot: see the table at the top.
 * **No `git` subprocess for worktree resolution** (`bank.py:52-63`). Measured
   0.435 ms — more than the entire rest of the hook. A `.git` walk replaces it.
 * **One state file per session**, replacing `turns.json` +
@@ -322,20 +412,29 @@ breaking them. Each mutation was reverted after the run.
 * **`lto = "fat"` and `panic = "abort"` are out of scope** (plan §Deliberately
   out of scope). Arm B is at 0.243 ms against a 1.5 ms budget; the re-entry
   criterion is arm B's paired p50 exceeding it.
+* **`SessionState`'s fields are all `pub`,** so "the wrong cursor cannot be
+  reached for" is about ergonomics, not enforcement — C2b could still assign
+  `offset` directly. The airtight version is to omit `byte_offset` from C2b's
+  mirror-response struct entirely; a field that is never deserialized cannot be
+  misused. Noted at `SessionState::recovered`.
+* **`empty_and_malformed_stdin_exit_zero` does not cover `hookio`.** It drives
+  `hook noop`, which never reads stdin, so it pins the exit code only. Repoint
+  it at `hook session-start` in C2b.
 * **The bench's stub daemon serves one connection at a time.**
   `// ponytail:` the driver is single-threaded and the hook opens exactly one
   connection per invocation; spawn per accept if a concurrent arm is ever added.
-* **`retain_api::wall_timeout_fails_the_job_and_keeps_partial_progress` flaked
-  once** during a mutation run and passes on the clean tree. It is the known
-  `retain_jobs` lock flake C1's note already records, not something C2a
-  introduced.
+* **`retain_api::wall_timeout_fails_the_job_and_keeps_partial_progress` flakes
+  under a full parallel workspace run** (twice observed) and passes 5/5 in
+  isolation on the clean tree. It is the known `retain_jobs` lock flake C1's
+  note already records, not something C2a introduced.
 
 ## Manual verification
 
 ```
 $ cargo build --release -p memgarden-cli --bins
 $ ./scripts/hook-budget.sh target/release/memgarden
-   (output quoted in §Measurement — 462264 bytes, glibc-only ldd, clean tree)
+   (output quoted in §Measurement — 496160 bytes, glibc-only ldd, 21-crate
+    closure matching the allowlist exactly)
 
 $ ./target/release/hook_bench --n 300 --warmup 20
    (table quoted in §Measurement — arm B p50 0.243 ms, PASS)

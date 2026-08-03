@@ -2,9 +2,12 @@
 //! `dispatch`.
 //!
 //! Exit 2 on `UserPromptSubmit` "Blocks prompt processing and erases the
-//! prompt". Legacy does exactly that under its live `debug: true`
-//! (`recall.py:287-291`). These tests are the reason `main` has no `?`, no
-//! `clap`, and a panic hook.
+//! prompt". Legacy does exactly that whenever `debug` is set
+//! (`recall.py:287-291`), and the user's `~/.hindsight/claude-code.json`
+//! carried `debug: true` until 2026-08-03, when it was turned off in response
+//! to this hazard. Historical fact, not hypothetical — and one env var
+//! (`HINDSIGHT_DEBUG`) from being true again. These tests are the reason
+//! `main` has no `?`, no `clap`, and a panic hook.
 //!
 //! They assert `== 0`, not `!= 2`: the stronger claim is the one we can
 //! actually make from inside the process, and a test that only excluded 2
@@ -74,6 +77,10 @@ fn every_argv_shape_that_is_not_a_subcommand_exits_zero() {
     }
 }
 
+/// **Coverage note for C2b.** This drives `hook noop`, which never reads
+/// stdin, so it pins the *exit code* and not `hookio` — deleting
+/// `hookio.rs` from the binary's path would not fail it. Repoint it at
+/// `hook session-start` as soon as a subcommand actually parses stdin.
 #[test]
 fn empty_and_malformed_stdin_exit_zero() {
     for stdin in [&b""[..], b"   ", b"not json", b"{\"session_id\":"] {
