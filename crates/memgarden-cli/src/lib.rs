@@ -45,6 +45,7 @@ pub mod cmd;
 pub mod hookio;
 pub mod http;
 pub mod state;
+pub mod transcript;
 
 pub use memgarden_core::config::{ENV_DAEMON_URL, ENV_HOOKS_DISABLE};
 
