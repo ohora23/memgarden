@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------- the stub
 
@@ -743,6 +744,68 @@ fn an_unparseable_two_hundred_is_a_transport_failure() {
         &f.recall(&payload("s1", "a real question"), &s.url),
         "garbage",
     );
+    assert_eq!(f.state("s1").expect("state file")["transport_failures"], 1);
+    assert_eq!(f.last_recall()["status"], "transport_failure");
+}
+
+/// **The trickle, at the hook level.** A daemon that sends its head promptly
+/// and then dribbles its body is the failure C2a shipped and review caught:
+/// `SO_RCVTIMEO` re-arms on every byte, so one byte per 300 ms held a 400 ms
+/// budget for a measured **30.007 s and returned `Ok`** — invisible to the
+/// circuit breaker, on the event where a stall erases the user's prompt.
+///
+/// `http_transport.rs` already pins the *transport* half and genuinely fails
+/// under the mutation (re-measured: 29.71 s, exactly C2a's number). What
+/// nothing pinned is this half: that `hook recall` passes
+/// **`recall_timeout_ms`** into it, and that a stalled daemon is still exit 0
+/// with an empty stdout and one transport failure. A `recall` that used
+/// `retain_timeout_ms` (5 s) would be a five-second stall before every prompt
+/// and would pass every other test in this file.
+///
+/// 350 ms rather than the 400 default so a hardcoded default fails here too.
+#[test]
+fn a_trickling_daemon_is_bounded_by_the_recall_budget_and_still_emits_nothing() {
+    let f = fixture("mode = \"full\"\nrecall_timeout_ms = 350");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let Ok((mut sock, _)) = listener.accept() else {
+            return;
+        };
+        let mut buf = [0u8; 8192];
+        let _ = sock.read(&mut buf);
+        // The head is prompt and complete — including the token, so the
+        // response is not refused before the body loop is ever reached.
+        let _ = sock.write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                 x-memgarden-token: {TOKEN}\r\ncontent-length: 40\r\nconnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        let _ = sock.flush();
+        // 40 bytes at one per 250 ms = 10 s, every one of which reset the old
+        // per-`read()` timeout.
+        for _ in 0..40 {
+            if sock.write_all(b"x").is_err() {
+                return;
+            }
+            let _ = sock.flush();
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    });
+
+    let started = Instant::now();
+    let out = f.recall(&payload("s1", "a real question"), &url);
+    let elapsed = started.elapsed();
+
+    assert_silent(&out, "trickle");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "a trickling daemon stalled the prompt for {elapsed:?}"
+    );
+    // And it counted, which is the half that was invisible before: a stall the
+    // breaker cannot see is a stall that repeats on every prompt.
     assert_eq!(f.state("s1").expect("state file")["transport_failures"], 1);
     assert_eq!(f.last_recall()["status"], "transport_failure");
 }
