@@ -3,6 +3,18 @@
 Branch `fix/ce-8-korean-absolute-dates`. No migration, no schema change, no new
 dependency, no new REST endpoint, no config knob.
 
+## Changelog
+
+Two rounds of correction have landed on this note. Each is recorded in place,
+next to the claim it changes, per this repo's convention; this table exists so a
+reader can tell at a glance which figures are current without reconstructing the
+order from the prose.
+
+| Round | What changed | Where |
+|---|---|---|
+| **1** — 2026-08-03, PR #19 (merged) | The `N월 N일` fix itself, the correction of `parity-gaps.md`'s legacy-dateparser claim, and the AX-2 re-baseline of all three arms. | whole note |
+| **2** — 2026-08-03, `fix/q17-labels` | q17's 15 ungraded pool entries graded and **ratified by the corpus owner**; `\|R\|` 4 → 5. All three arms re-run at the same pinned configuration; **every figure in this note refreshed**. One wrong mechanism claim — that `recall@10 = 1.000` was an artifact of a frozen `\|R\|` — struck and corrected. | *The defect*, the three re-baseline tables, *q17's pool*, *Follow-ups* |
+
 **Why a separate note rather than an edit to `ce-8-temporal.md`.** That note is
 the record of PR B6 and carries B6's own verification counts and latency runs;
 folding a later PR's measurements into it would make neither PR's evidence
@@ -21,7 +33,9 @@ candidate.
 
 AX-2's gold query q17 (`8월 2일에 터진 사고`) is a live counterexample from our
 own gold set. Before this change it scored nDCG@10 **0.149** with MRR 0.100;
-after, **0.628** with MRR 1.000.
+after, **0.638** with MRR 1.000. (Round 1 recorded 0.628 against a pool that
+was three-quarters ungraded; the ratified labels moved it to 0.6378 — see
+*q17's pool* below.)
 
 ## What this adds
 
@@ -199,7 +213,8 @@ day); `an_impossible_date_is_no_constraint_rather_than_a_clamped_one`;
 
 The re-baselined figures below were re-verified after the `gold/queries.jsonl`
 note correction: the harness reproduces every number in this note
-digit-for-digit, including q17 and the 0.323 fourteen-query aggregate.
+digit-for-digit. Round 2 re-ran them against the ratified labels; the
+fourteen-query aggregate moved 0.3229 → **0.3236** nDCG@10, entirely from q17.
 
 ## The AX-2 re-baseline
 
@@ -210,22 +225,37 @@ All three AX-2 arms were re-run at the recorded configuration exactly: corpus
 `baee3f40…4bda868` (2718 nodes, `sha256sum -c` verified), `now =
 1785715200000`, `limit = 20`, `max_tokens = 8192`, budget `mid`, all three
 `recallTypes`. The import reproduced AX-2's own structure counts exactly (2718
-nodes, 2129 entity rows from 1471 facts, 54 012 temporal links). Appended to
-`gold/results.jsonl` as lines 5-7, stamped `33d49519`.
+nodes, 2129 entity rows from 1471 facts, 54 012 temporal links).
 
-**Only q17 moved.** Every other query in every arm reproduces the previously
-recorded run digit-for-digit, including the retrieved uuid lists — which is the
-isolation claim this change needs, measured rather than asserted.
+Round 1 appended lines 5-7, stamped `33d49519`. **Round 2 re-ran all three arms
+against the ratified labels** — same corpus sha, same pinned `now`, same
+`limit`/`max_tokens`/`budget`/`recallTypes`, so the three stay mutually
+comparable — and appended lines 8-10, stamped `73ba3b2c`. The tables below carry
+the round-2 figures.
+
+**Only q17 moved, in both rounds.** Every other query in every arm reproduces
+the previously recorded run digit-for-digit, including the retrieved uuid lists
+— which is the isolation claim this change needs, measured rather than
+asserted. Round 2 changed no retrieval at all: `gold/results.pool.json` is
+byte-identical to round 1's, because only the labels moved.
 
 ### The shipped configuration (reranker off), 13 queries, conclusion excluded
 
-| metric | before | after | Δ |
-|---|---|---|---|
-| recall@1 | 0.0222 | 0.0414 | +0.019 |
-| recall@5 | 0.1969 | 0.2546 | +0.058 |
-| recall@10 | 0.3449 | 0.4026 | +0.058 |
-| MRR | 0.4821 | 0.5513 | +0.069 |
-| nDCG@10 | 0.3021 | 0.3390 | +0.037 |
+`before` is the pre-fix baseline (lines 1-2, `d6165560`); `after` is round 2
+(line 8, `73ba3b2c`), with round 1's figure alongside where the ratification
+moved it.
+
+| metric | before | after (r1) | **after (r2, ratified)** | Δ vs before |
+|---|---|---|---|---|
+| recall@1 | 0.0222 | 0.0414 | **0.0375** | +0.015 |
+| recall@5 | 0.1969 | 0.2546 | **0.2431** | +0.046 |
+| recall@10 | 0.3449 | 0.4026 | **0.4026** | +0.058 |
+| MRR | 0.4821 | 0.5513 | **0.5513** | +0.069 |
+| nDCG@10 | 0.3021 | 0.3390 | **0.3398** | +0.038 |
+
+recall@1 and recall@5 came *down* between r1 and r2 without any ranking change:
+q17's `|R|` went 4 → 5, and both metrics are `1/|R|`-bounded floors. See the
+mechanism correction two sections down.
 
 ### Per stratum, reranker off
 
@@ -234,53 +264,91 @@ places, which is the same isolation claim from the other direction.
 
 | stratum | q | nDCG@10 before | after | Δ | MRR before | after | Δ |
 |---|---|---|---|---|---|---|---|
-| **temporal** | 2 | 0.0745 | **0.3142** | **+0.240** | 0.0500 | **0.5000** | **+0.450** |
+| **temporal** | 2 | 0.0745 | **0.3189** | **+0.244** | 0.0500 | **0.5000** | **+0.450** |
 | identifier | 4 | 0.4163 | 0.4163 | — | 0.6875 | 0.6875 | — |
 | memcompare | 5 | 0.2032 | 0.2032 | — | 0.3833 | 0.3833 | — |
 | graph | 2 | 0.5489 | 0.5489 | — | 0.7500 | 0.7500 | — |
 | conclusion | 1 | excluded — structurally unmeasurable (AX-2) | | | | | |
 
-**Temporal improved, and by a lot.** q17 alone: recall@10 0.250 → **1.000**
-(all four *currently labelled* relevant nodes now inside the measurement
-window), MRR 0.100 → **1.000**, nDCG@10 0.149 → **0.628**.
+**Temporal improved, and by a lot.** q17 alone: recall@10 0.250 → **1.000**,
+MRR 0.100 → **1.000**, nDCG@10 0.149 → **0.638**. The recall@10 figure is
+**robust rather than an artifact of the label set** — see below, where the
+opposite claim is struck.
 
 The mechanism: `Some(window)` **adds** a third retrieval arm, so the merged
-candidate set strictly grows — the temporal arm injects four relevant nodes
-into RRF that the lexical and semantic arms did not reach. It is candidate
-injection, not filtering; nothing is narrowed away.
+candidate set strictly grows — the temporal arm injects all five relevant nodes
+into RRF's top 10, where the lexical and semantic arms had reached one. It is
+candidate injection, not filtering; nothing is narrowed away.
 
-### q17's pool is now three-quarters ungraded, and both its headline numbers inherit that
+### q17's pool was three-quarters ungraded — now fully graded and ratified
 
-**This softness is specific to the one query this PR moves, and it is new.**
-The temporal arm firing turned q17's labelling pool over almost completely:
+**Ratified 2026-08-03 by the corpus owner.** The temporal arm firing had turned
+q17's labelling pool over almost completely; all 15 ungraded entries have since
+been reviewed and graded. **q17's whole 20-entry pool is graded**, `|R|` is 5,
+and `gold/queries.jsonl` carries `labels_status: ratified-2026-08-03` on q17
+alone.
 
-| | before | after |
-|---|---|---|
-| top-20 entries carried over | — | 3 of 20 (**17 new**) |
-| top-20 entries with a grade | **20 of 20** | **5 of 20** |
-| scored top-10 entries with a grade | 10 of 10 | 5 of 10 |
+| | pre-fix | post-fix (r1) | **ratified (r2)** |
+|---|---|---|---|
+| top-20 entries carried over | — | 3 of 20 (**17 new**) | 3 of 20 |
+| top-20 entries with a grade | 20 of 20 | **5 of 20** | **20 of 20** |
+| scored top-10 entries with a grade | 10 of 10 | **5 of 10** | **10 of 10** |
 
-Two consequences, neither of which the generic
-`provisional-pending-user-review` flag conveys:
+The grading found **one** new relevant node — `9c3e3f69` at rank 9, the FTS
+implicit-AND defect of 2026-08-02, graded **1** because it was caught in review
+before shipping — and fourteen zeroes: ten pieces of agent-lifecycle
+boilerplate, three Phase B work logs, and a CE-8 progress report whose alarming
+p99 was later resolved as a harness artifact rather than a regression.
 
-1. **nDCG@10 0.628 is a lower bound, not a point estimate.** Five ungraded
-   documents sit inside the scored top 10; any of them turning out relevant
-   raises the figure.
-2. **`recall@10 = 1.000` is an artifact of `|R|` frozen at 4** by the *pre-fix*
-   pool. Grade one of the five new documents as relevant and `|R|` becomes 5,
-   and recall@10 falls below 1.000 **with no code change at all.** So
-   "0.250 → 1.000" is not the clean sweep it reads as, and should not be
-   quoted as one.
+Two consequences were recorded here. **The first stands. The second was wrong,
+and the mechanism it named was wrong** — struck rather than edited away,
+because it was load-bearing for a caveat that propagated into
+`ax-2-recall-quality.md`, `ce-11-reranker.md` and q17's own gold-set note:
 
-`ce-11-reranker.md`'s "a labelling error largely cancels between arms" **does
-not cover this**: that argument is about symmetric error against a shared label
-set, and this is labelling *absence* in a pool that shifted under one arm. The
-direction of the resulting bias is not knowable without grading it.
+1. **nDCG@10 was a lower bound, not a point estimate** — correct, and it moved
+   **up**: `0.6285 → 0.6378` on the off arm (`+0.0093`). Up in the other two
+   arms as well: `top_k = 10` `0.1083 → 0.1709`, `top_k = 20`
+   `0.6939 → 0.7044`.
 
-The stratum-level conclusion survives — a stratum that scored 0.0745 with the
-arm dead does not reach 0.3142 by mislabelling — but the per-query figures are
-provisional in a stronger sense than the rest of the table, and grading this
-pool is the top follow-up below.
+2. ~~"**`recall@10 = 1.000` is an artifact of `|R|` frozen at 4** by the
+   *pre-fix* pool. Grade one of the five new documents as relevant and `|R|`
+   becomes 5, and recall@10 falls below 1.000 **with no code change at all.**
+   So '0.250 → 1.000' is not the clean sweep it reads as, and should not be
+   quoted as one."~~
+
+   **That mechanism cannot work, and the arithmetic says so without needing the
+   labels.** All four already-relevant nodes sit at ranks 1, 4, 5 and 6 —
+   *inside* the top 10 — and all five ungraded entries sat at ranks 3, 7, 8, 9
+   and 10, also inside it. recall@10 is `|relevant ∩ top-10| / |R|`, so grading
+   any top-10 entry relevant increments the numerator **and** the denominator
+   together: 4/4 → 5/5. It stays exactly 1.000. The only entries that could
+   have lowered it were the ungraded ones at **ranks 11-20**, where relevant
+   would have raised `|R|` without raising the numerator.
+
+   Those ten are graded now, and **all ten are 0**. So the corrected conclusion
+   inverts the struck one, and it is a *stronger* claim than this note
+   originally made: **`recall@10 = 1.000` for q17 is robust, not soft.** It
+   survived the only test that could have broken it — ten chances at ranks
+   11-20 for a relevant node to inflate `|R|`, taken and found empty. The one
+   grade that was added landed at rank 9 and moved 4/4 to 5/5, exactly as the
+   corrected mechanism predicts.
+
+What the struck item overlooked is where the `|R|` denominator *does* bite: the
+**shallower** recalls. With `|R|` 4 → 5 and the new relevant node at rank 9,
+recall@1 goes 0.250 → **0.200** and recall@5 goes 0.750 → **0.600**. Neither is
+a ranking regression — nothing was retrieved differently — and both are
+`1/|R|`-bounded floors rather than precision, per AX-2's *Reading these
+numbers*. They fall purely because the denominator grew.
+
+`ce-11-reranker.md`'s "a labelling error largely cancels between arms" did not
+cover this pool — that argument is about symmetric error against a shared label
+set, and this was labelling *absence* in a pool that had shifted under one arm.
+It is moot now: the pool is fully graded, and the direction turned out to be up
+on nDCG@10 in all three arms.
+
+The stratum-level conclusion was never at risk — a stratum that scored 0.0745
+with the arm dead does not reach 0.3189 by mislabelling — and q17's per-query
+figures are no longer provisional at all.
 
 ### The identifier guardrail
 
@@ -292,9 +360,10 @@ lexical arm, and the measurement says so rather than assuming it.
 `지난주` at the pinned `now` resolves to 2026-07-27..08-02, which contains 2697
 of the corpus's 2718 facts. **On the shipped configuration (reranker off) it
 still scores 0.000 on everything**, and it does at `top_k = 20` too — but not
-at `top_k = 10`, where it is 0.1356 nDCG@10 / 0.1111 MRR. That non-zero value
-is load-bearing in `ce-11-reranker.md`'s `0.1220` temporal-stratum arithmetic,
-so the blanket phrasing would misread that table.
+at `top_k = 10`, where it is 0.1356 nDCG@10 / 0.1111 MRR (unchanged by the
+ratification — q15's labels did not move). That non-zero value is load-bearing
+in `ce-11-reranker.md`'s `0.1533` temporal-stratum arithmetic, so the blanket
+phrasing would misread that table.
 
 **That is a property of a four-day corpus, not a defect in the window logic.**
 The window is correct; there is simply nothing outside it to exclude. The fix
@@ -314,26 +383,30 @@ because neither query exercised the arm. Now that q17 does:
 | temporal stratum (2q), nDCG@10 | off | `top_k = 10` | `top_k = 20` |
 |---|---|---|---|
 | CE-11 as recorded | 0.0745 | 0.3254 | 0.1539 |
-| re-baselined | **0.3142** | **0.1220** | **0.3470** |
+| re-baselined (r1) | 0.3142 | 0.1220 | 0.3470 |
+| **ratified (r2)** | **0.3189** | **0.1533** | **0.3522** |
 
-At `top_k = 10` the reranker now **regresses** the stratum by 0.192 instead of
+At `top_k = 10` the reranker now **regresses** the stratum by 0.166 instead of
 improving it by 0.251. The cross-encoder scores query-document text pairs and
 knows nothing about the date window, so on a query whose answer is selected by
 a date it demotes three of the four relevant nodes below rank 10.
 
-Two honest caveats, in the direction that weakens the finding: the stratum is
-two queries wide and q17 has only four relevant nodes, so this is thin; and
+One honest caveat, in the direction that weakens the finding: the stratum is
+two queries wide and q17 has only five relevant nodes, so this is thin. And
 CE-11's decision does not turn on it, because that decision was settled on
-latency unconditionally and the reranker remains off by default. `ce-11-reranker.md`
-carries the updated tables and the corrected caveat.
+latency unconditionally and the reranker remains off by default.
+`ce-11-reranker.md` carries the updated tables and the corrected caveat. The
+*other* caveat this section used to carry — that q17's labels were mostly
+absent — is retired: the pool is ratified.
 
 ## Follow-ups
 
-* **Grade q17's new pool — highest priority, and a precondition for quoting
-  its per-query numbers.** 15 of its 20 pooled documents have never been
-  graded, 5 of them inside the scored top 10. Until they are, nDCG@10 0.628 is
-  a floor and `recall@10 = 1.000` is an artifact of a stale `|R|`. See the
-  re-baseline section.
+* ~~**Grade q17's new pool — highest priority, and a precondition for quoting
+  its per-query numbers.**~~ **DONE, ratified 2026-08-03** (`fix/q17-labels`).
+  All 20 pooled documents are graded, `|R|` is 5, and the figures above are the
+  re-run. The claim attached to this item — that `recall@10 = 1.000` was an
+  artifact of a stale `|R|` — was itself wrong; see the corrected mechanism in
+  *q17's pool* above.
 * **`temporal_proximity` scores an exact-day hit at 0.0 — a latent defect,
   recorded not fixed.** The kernel is triangular around the window
   **midpoint**, so for a single-day window the midpoint is noon and a fact
