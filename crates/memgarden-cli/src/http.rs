@@ -213,10 +213,17 @@ fn request(
     timeouts: &Timeouts,
 ) -> Result<Response, HttpError> {
     // The one place every request routes through, so the escaping rule is
-    // enforced here rather than in each subcommand. Bank ids and (from C2b)
-    // session ids reach the path from untrusted stdin; `encode_path_segment`
-    // exists and is correct, but nothing *enforced* it, and a raw space or CR
-    // in a path is request splitting, not a 400.
+    // enforced here rather than in each subcommand. **Bank ids reach the path
+    // from untrusted stdin** and do so today: `bank::derive` takes the
+    // payload's `cwd`, so a stdin-controlled string is in the request line of
+    // every `session-start`. `encode_path_segment` exists and is correct, but
+    // nothing *enforced* it, and a raw space or CR in a path is request
+    // splitting, not a 400.
+    //
+    // Session ids are **not** in this set, despite what C2a's version of this
+    // comment predicted: C2b puts `session_id` only inside a JSON body, where
+    // serde escapes it. C4b's `GET /v1/retain/{job_id}` is the next path
+    // segment that comes from outside.
     if path.is_empty() || !path.starts_with('/') || path.bytes().any(|b| b <= 0x20 || b == 0x7f) {
         return Err(HttpError::Url(format!(
             "path must be an escaped absolute path: {path:?}"

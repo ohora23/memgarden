@@ -12,10 +12,20 @@
 //! read-modify-write contention here and no 10,000-entry truncation hack.
 
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// Ceiling on one state file, applied by [`load_all`] as a bounded read.
+///
+/// A real file is ~400 bytes. This is not about a hostile writer so much as
+/// about the *shape* of the failure: `gc` prunes by mtime, so a single
+/// oversized `*.json` — a botched write, a log accidentally renamed in — would
+/// otherwise be re-read in full on **every** session start for
+/// `session_retention_days`. Truncating makes it unparseable, which reads as
+/// absent, which is already the handling for every other unusable file.
+const MAX_STATE_FILE_BYTES: u64 = 64 * 1024;
 
 /// Bumped when the on-disk shape changes incompatibly. A file whose `schema`
 /// is not this value reads as absent, which costs a recovery round trip and
@@ -47,6 +57,22 @@ pub struct SessionState {
     pub schema: u32,
     pub session_id: String,
     pub bank_id: String,
+
+    /// Where Claude Code is appending this session's transcript, copied from
+    /// the `SessionStart` payload.
+    ///
+    /// The live hooks all receive it on stdin and would not need it stored.
+    /// The **detached catch-up child** (C2b) is the caller that does: it wakes
+    /// up with no hook payload at all and has to decide, per session, whether
+    /// `offset < file_size`. Plan §Binding decisions #5 lists the state shape
+    /// without this field, which is a gap rather than a decision — there is no
+    /// other way for catch-up to find the file.
+    ///
+    /// `#[serde(default)]` so a state file written before this field existed
+    /// still loads (as absent, which makes catch-up skip it) instead of
+    /// failing to parse and costing a recovery round trip.
+    #[serde(default)]
+    pub transcript_path: String,
 
     /// Byte position in the transcript file that has been POSTed.
     ///
@@ -94,6 +120,7 @@ impl SessionState {
             schema: SCHEMA,
             session_id: session_id.to_string(),
             bank_id: bank_id.to_string(),
+            transcript_path: String::new(),
             offset: 0,
             chunk: 0,
             turns: 0,
@@ -195,6 +222,52 @@ pub fn load(dir: &Path, session_id: &str) -> Option<SessionState> {
     (state.schema == SCHEMA && state.session_id == session_id).then_some(state)
 }
 
+/// Every state file in `dir` that [`load`] would accept, unordered.
+///
+/// The catch-up child (C2b) is the one caller that does not know which
+/// sessions exist: it is spawned with only the *current* session id and has to
+/// discover the rest. It therefore reads each file and takes the `session_id`
+/// from **inside** it rather than from the filename — sanitization is
+/// many-to-one, so a filename stem is not a session id and
+/// `load(dir, stem)` would silently miss any session whose id needed
+/// sanitizing.
+///
+/// The two conjuncts are `load`'s, for the same two reasons: an unrecognised
+/// `schema` is "start over", and a file whose stored id does not map back to
+/// its own path is a collision between two sessions rather than either of
+/// them.
+pub fn load_all(dir: &Path) -> Vec<SessionState> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension()? != "json" {
+                return None;
+            }
+            // `file_type()` comes from the dirent / an `lstat`, so it does
+            // **not** follow symlinks: a planted `s1.json -> /elsewhere` is
+            // skipped rather than read. `path_for`'s containment check below
+            // is lexical and cannot see through a symlink, so this is the half
+            // that covers it.
+            if !entry.file_type().ok()?.is_file() {
+                return None;
+            }
+            let mut bytes = Vec::new();
+            File::open(&path)
+                .ok()?
+                .take(MAX_STATE_FILE_BYTES)
+                .read_to_end(&mut bytes)
+                .ok()?;
+            let state: SessionState = serde_json::from_slice(&bytes).ok()?;
+            (state.schema == SCHEMA && path_for(dir, &state.session_id) == Some(path))
+                .then_some(state)
+        })
+        .collect()
+}
+
 /// Writes a session's state atomically: temp file then `rename`.
 ///
 /// **No `fsync`.** `rename(2)` publishes the full contents to every reader on
@@ -239,7 +312,11 @@ fn create_temp(dir: &Path, path: &Path) -> std::io::Result<(File, PathBuf)> {
     let mut last = None;
     for attempt in 0..4 {
         let tmp = dir.join(format!(".{stem}.{pid}.{attempt}.tmp"));
-        match File::create_new(&tmp) {
+        // 0600, not umask. The state dir is already 0700 so this is
+        // belt-and-braces — but the daemon chmods `memgarden.db` explicitly
+        // for the same reason, and these files carry transcript paths and
+        // cursors. Observed 0664 before this line.
+        match open_private(&tmp) {
             Ok(f) => return Ok((f, tmp)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 let _ = std::fs::remove_file(&tmp);
@@ -251,6 +328,19 @@ fn create_temp(dir: &Path, path: &Path) -> std::io::Result<(File, PathBuf)> {
     Err(last.unwrap_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free temp path")
     }))
+}
+
+/// `create_new` at mode 0600 — the `File::create_new` this replaces, with the
+/// permission bits made explicit instead of left to the process umask.
+fn open_private(path: &Path) -> std::io::Result<File> {
+    let mut options = File::options();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 /// `create_dir_all` with mode 0700, via the helper the daemon already uses.
@@ -297,7 +387,19 @@ pub fn with_lock<T>(dir: &Path, session_id: &str, f: impl FnOnce() -> T) -> std:
     // opening it afterwards would lock a different inode and the exclusion
     // would silently stop working. `gc` collects these along with the json.
     let lock_path = path.with_extension("lock");
-    let handle = File::create(&lock_path)?;
+    // **Never `File::create`.** That is `O_CREAT|O_WRONLY|O_TRUNC`, which
+    // follows a symlink and *truncates the target*: review planted
+    // `state/sX.lock -> /outside/precious.conf`, ran one `session-start`, and
+    // the file came back 0 bytes. `create_temp` twelve lines above already
+    // refuses exactly this class, with a comment saying why.
+    //
+    // The steady state is that the lock file already exists, so `create_new`
+    // failing is normal, not an error — and the fallback is a **read-only**
+    // open, which cannot truncate anything a symlink points at. `flock(2)`
+    // does not require write access, so the lock still works. No `O_NOFOLLOW`
+    // and therefore no `libc`: this crate's dependency closure is CI-enforced
+    // and a `read(true)` open is already the property that matters.
+    let handle = open_private(&lock_path).or_else(|_| File::open(&lock_path))?;
     let locked = handle.lock().is_ok();
     let out = f();
     if locked {
@@ -347,6 +449,7 @@ mod tests {
 
     fn sample(session_id: &str) -> SessionState {
         SessionState {
+            transcript_path: "/tmp/transcript.jsonl".to_string(),
             offset: 65536,
             chunk: 2,
             turns: 20,
@@ -434,6 +537,74 @@ mod tests {
         });
         std::fs::write(dir.path().join("future.json"), future.to_string()).unwrap();
         assert!(load(dir.path(), "future").is_none());
+    }
+
+    /// A C2a-era file has no `transcript_path`. It must still load — as a
+    /// session catch-up skips, not as a parse failure that costs a recovery
+    /// round trip.
+    #[test]
+    fn a_state_file_written_before_transcript_path_existed_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = serde_json::json!({
+            "schema": SCHEMA,
+            "session_id": "old",
+            "bank_id": "b1",
+            "offset": 4096,
+            "chunk": 1,
+            "turns": 3,
+            "turns_since_retain": 3,
+            "compactions": 0,
+            "pending": null,
+            "transport_failures": 0,
+            "reject_failures": 0,
+            "breaker_open_until_ms": 0,
+            "poisoned_at": null,
+        });
+        std::fs::write(dir.path().join("old.json"), old.to_string()).unwrap();
+        let state = load(dir.path(), "old").expect("an older shape is not a parse failure");
+        assert_eq!(state.offset, 4096);
+        assert_eq!(state.transcript_path, "");
+    }
+
+    /// `load_all` is the catch-up child's only way to find the sessions it did
+    /// not receive on stdin, so it has to accept exactly what `load` accepts —
+    /// **including** ids that needed sanitizing, which the filename cannot
+    /// round-trip.
+    #[test]
+    fn load_all_finds_every_session_load_would_accept_and_no_others() {
+        let dir = tempfile::tempdir().unwrap();
+        store(dir.path(), &sample("s1")).unwrap();
+        store(dir.path(), &SessionState::new("a/b", "bank")).unwrap();
+
+        // Rejected: an unknown schema, a corrupt file, a collision, and the
+        // non-json leftovers `gc` also collects.
+        std::fs::write(dir.path().join("corrupt.json"), b"{\"schema\": 1, tr").unwrap();
+        let mut future = sample("future");
+        future.schema = SCHEMA + 1;
+        std::fs::write(
+            dir.path().join("future.json"),
+            serde_json::to_vec(&future).unwrap(),
+        )
+        .unwrap();
+        // `a_b.json` would be read as the state of `a/b`, whose stored id does
+        // not map back to that path... except it does, so plant the reverse:
+        // a file whose *name* claims a different session than its contents.
+        std::fs::write(
+            dir.path().join("impostor.json"),
+            serde_json::to_vec(&SessionState::new("somebody-else", "bank")).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".s1.999.0.tmp"), b"partial").unwrap();
+
+        let mut ids: Vec<String> = load_all(dir.path())
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a/b".to_string(), "s1".to_string()]);
+
+        // A dir that does not exist yet is empty, not an error.
+        assert!(load_all(&dir.path().join("nope")).is_empty());
     }
 
     #[test]
@@ -599,6 +770,88 @@ mod tests {
         for dir in [&data, &hooks] {
             let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o700, "{dir:?}");
+        }
+    }
+
+    /// The same rule as the temp path, on the **lock** path — which C2a wrote
+    /// with `File::create` and which C2b is the first PR to reach on a real
+    /// hook path. Measured before the fix: the target came back 0 bytes.
+    #[test]
+    fn a_planted_symlink_at_the_lock_path_is_not_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("precious.conf");
+        std::fs::write(&victim, b"do not truncate").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join("s1.lock")).unwrap();
+
+        // The hook still does its work — a lock we cannot take cleanly is
+        // never a reason to drop a turn's state.
+        with_lock(dir.path(), "s1", || {
+            store(dir.path(), &SessionState::new("s1", "b1")).unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(std::fs::read(&victim).unwrap(), b"do not truncate");
+        assert!(load(dir.path(), "s1").is_some());
+    }
+
+    /// `path_for`'s containment check is lexical, so it cannot see through a
+    /// symlink. `file_type()` is the half that can: it comes from an `lstat`.
+    #[test]
+    fn load_all_skips_a_symlinked_state_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let planted = outside.path().join("elsewhere.json");
+        std::fs::write(
+            &planted,
+            serde_json::to_vec(&SessionState::new("outsider", "b1")).unwrap(),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&planted, dir.path().join("outsider.json")).unwrap();
+        store(dir.path(), &SessionState::new("real", "b1")).unwrap();
+
+        let ids: Vec<String> = load_all(dir.path())
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect();
+        assert_eq!(ids, vec!["real".to_string()]);
+    }
+
+    /// `gc` prunes by mtime, so without a ceiling one oversized file is
+    /// re-read in full on every session start for the whole retention window.
+    #[test]
+    fn an_oversized_state_file_is_bounded_rather_than_read_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bloated = serde_json::to_vec(&SessionState::new("bloated", "b1")).unwrap();
+        // Valid JSON that a naive read would parse; truncation makes it not.
+        bloated.pop();
+        bloated.extend(format!(",\"pad\":\"{}\"}}", "x".repeat(200 * 1024)).bytes());
+        assert!(bloated.len() as u64 > MAX_STATE_FILE_BYTES);
+        std::fs::write(dir.path().join("bloated.json"), &bloated).unwrap();
+        store(dir.path(), &SessionState::new("normal", "b1")).unwrap();
+
+        let ids: Vec<String> = load_all(dir.path())
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect();
+        assert_eq!(ids, vec!["normal".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_files_are_created_0600_regardless_of_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        with_lock(dir.path(), "s1", || {
+            store(dir.path(), &SessionState::new("s1", "b1")).unwrap();
+        })
+        .unwrap();
+        for name in ["s1.json", "s1.lock"] {
+            let mode = std::fs::metadata(dir.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "{name}");
         }
     }
 

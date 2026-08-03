@@ -77,16 +77,31 @@ fn every_argv_shape_that_is_not_a_subcommand_exits_zero() {
     }
 }
 
-/// **Coverage note for C2b.** This drives `hook noop`, which never reads
-/// stdin, so it pins the *exit code* and not `hookio` — deleting
-/// `hookio.rs` from the binary's path would not fail it. Repoint it at
-/// `hook session-start` as soon as a subcommand actually parses stdin.
+/// Repointed in C2b, per C2a's own coverage note: this used to drive
+/// `hook noop`, which never reads stdin, so deleting `hookio.rs` from the
+/// binary's path would not have failed it — it pinned the exit code and
+/// nothing else. `hook session-start` parses stdin as its first act, so an
+/// unusable payload now exercises `hookio::parse` and the `None` arm that
+/// returns before any config read.
+///
+/// **No daemon can be involved**, which is why every case here is malformed:
+/// each one returns before the config load, so nothing resolves a
+/// `daemon_url`, and the test cannot accidentally reach a real `memgardend`
+/// on this machine. `tests/session_start.rs` covers the parsing payloads,
+/// against a stub on port 0.
 #[test]
 fn empty_and_malformed_stdin_exit_zero() {
-    for stdin in [&b""[..], b"   ", b"not json", b"{\"session_id\":"] {
-        let out = run(&["hook", "noop"], stdin, &[]);
+    for stdin in [
+        &b""[..],
+        b"   ",
+        b"not json",
+        b"{\"session_id\":",
+        b"[1,2,3]",
+    ] {
+        let out = run(&["hook", "session-start"], stdin, &[]);
         assert_exit_zero(&out, &format!("stdin {stdin:?}"));
         assert!(out.stdout.is_empty());
+        assert!(out.stderr.is_empty(), "stdin {stdin:?}: {:?}", out.stderr);
     }
 }
 

@@ -221,7 +221,8 @@ name = "coding"
 # [hooks] — the Claude Code integration (Phase C).
 #
 # Read by BOTH binaries: `memgarden` (the hook CLI, on every invocation) and
-# `memgardend` (only `session_retention_days`, for the sessions GC).
+# `memgardend` (only `session_retention_days`, for the sessions GC — the CLI
+# applies the same window to its own state files).
 #
 # Nothing in this section does anything until `memgarden hooks install` wires
 # the four events into ~/.claude/settings.json (C5), and even then the default
@@ -272,11 +273,15 @@ max_reject_failures = 10
 poison_retry_secs = 3600
 
 # How many stale sessions the detached catch-up child works through per
-# launch. 0 disables catch-up.
+# launch. 0 disables catch-up — but NOT the child, which also collects the
+# state directory: a knob that means "catch up on fewer sessions" must not
+# also mean "leak one state file per session, forever".
 catchup_max_sessions = 3
 
-# How long a daemon-side `sessions` row outlives its last sighting. Read by
-# memgardend, not by the CLI; collected on the metrics tick.
+# How long a session outlives its last sighting, on BOTH sides: memgardend
+# collects the `sessions` row on the metrics tick, and the detached catch-up
+# child collects the local state file with the same window. One number, so a
+# row and its cache never disagree about whether a session still exists.
 session_retention_days = 90
 
 # Byte ceilings. max_post_bytes must stay at or under the daemon's 32 MB body
