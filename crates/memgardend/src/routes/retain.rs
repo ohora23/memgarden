@@ -16,7 +16,7 @@ use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use memgarden_core::metrics::METRICS;
-use memgarden_store::{banks, documents, metrics_store, retain_jobs};
+use memgarden_store::{banks, documents, metrics_store, retain_jobs, sessions};
 
 use crate::error::{ApiError, join_err};
 use crate::json::ApiJson;
@@ -71,6 +71,29 @@ pub struct RetainRequest {
     /// `disposition.retain_mission` -> `[profile] retain_mission`.
     #[serde(default)]
     pub mission: Option<String>,
+
+    // --- HK-1a session mirror (all three ignored without a `session_id`) ---
+    //
+    // These do not change what is ingested. They keep the `sessions` row in
+    // step with the hook's own state file so the daemon can answer "where is
+    // this transcript up to" after the hook's state dir is wiped, and so
+    // `byte_offset - confirmed_offset` means something. All three are
+    // cumulative **absolutes**, merged with `MAX` — see `store::sessions`.
+    /// Byte position in the transcript file that this request's messages
+    /// carry the hook up to (its `consumed_to`). Becomes the session's
+    /// optimistic cursor.
+    #[serde(default)]
+    pub byte_offset: Option<i64>,
+    /// The hook's cumulative `Stop`-invocation count. Not a per-request
+    /// increment: retain fires on one `Stop` in ten.
+    #[serde(default)]
+    pub turn: Option<i64>,
+    /// The hook's cumulative count of `compact_boundary` markers seen in this
+    /// transcript. Diagnostic only — compaction is counted, never acted on
+    /// (plan §Binding decisions #6). Singular for wire compatibility with the
+    /// plan's payload; the value is the running total, not this delta's count.
+    #[serde(default)]
+    pub compaction: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -258,6 +281,12 @@ fn prepare(
     let cfg = &state.cfg.retain;
     let cwd = body.cwd.as_deref().unwrap_or("");
     let Some(plan) = crate::retain::plan_ingest(&body.messages, cwd, body.is_initial, cfg) else {
+        // `skipped` is an accept: the delta emptied out under role filtering
+        // or fell under the 10-character floor, so the hook advances its
+        // cursor and so do we. Both cursors, because there is nothing in
+        // flight and nothing to lose — leaving `confirmed_offset` behind
+        // would open a gap that never closes and read as lost work.
+        mirror_session(state, bank_id, body, 0, Confirm::Yes)?;
         return Ok(Prepared::Skipped);
     };
 
@@ -281,6 +310,10 @@ fn prepare(
         // received.
         let doc_key_log: String = doc_key.chars().take(128).collect();
         tracing::debug!(bank_id, doc_key = ?doc_key_log, "retain skipped: identical content hash");
+        // `unchanged` can only be true because an earlier job stamped the
+        // content hash on a clean run, so these bytes are ingested — durable,
+        // not in flight. Same reasoning as the `Skipped` arm above.
+        mirror_session(state, bank_id, body, plan.message_count, Confirm::Yes)?;
         return Ok(Prepared::Duplicate {
             plan,
             document_id: upsert.id,
@@ -326,6 +359,11 @@ fn prepare(
         Some(&detail),
     )?;
 
+    // The optimistic half of the mirror. `confirmed_offset` stays put: a
+    // queued job is not an ingested one, and the worker advances the durable
+    // cursor itself when the run comes out clean (`retain/mod.rs`).
+    mirror_session(state, bank_id, body, plan.message_count, Confirm::No)?;
+
     // Every tag source goes through `sanitize_tags` together, not just the
     // caller-supplied ones (review MEDIUM): `session_id` is raw request
     // input and a `file:` path is transcript-derived, so both can carry
@@ -355,11 +393,68 @@ fn prepare(
         context: body.context.clone(),
         tags,
         content_hash: plan.content_hash.clone(),
+        byte_offset: body.byte_offset,
     };
     Ok(Prepared::Queued {
         plan,
         task: Box::new(task),
     })
+}
+
+/// Whether this outcome also settles the durable cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Confirm {
+    /// Ingestion for these bytes is a settled fact *now* — `skipped` (there
+    /// was nothing to ingest) and `duplicate` (a clean earlier job already
+    /// did). Both cursors advance together.
+    Yes,
+    /// A job was queued. `202` is not `ingested`; only the worker's clean-run
+    /// block may advance `confirmed_offset`.
+    No,
+}
+
+/// Mirrors the request into the `sessions` row, inside the caller's existing
+/// `spawn_blocking` — no extra round trip and no extra blocking hop.
+///
+/// A request without a `session_id` has no session to mirror and is a no-op:
+/// `POST …/retain` is a public endpoint, not only the hook's.
+///
+/// This function writes exactly the fields the *request path* owns
+/// (`byte_offset`, `turns`, `compactions`, `cwd`, and the two daemon-side
+/// counters). It never touches `source`, `end_reason`, `ended_at` or
+/// `chunk_index` — those belong to `routes/sessions.rs` — and it advances
+/// `confirmed_offset` only where the argument says ingestion is already
+/// settled. `retain_jobs` keeps every per-request detail; `sessions.retains`
+/// is only the count, joinable back on `session_id`.
+fn mirror_session(
+    state: &AppState,
+    bank_id: &str,
+    body: &RetainRequest,
+    messages_sent: usize,
+    confirm: Confirm,
+) -> Result<(), ApiError> {
+    let Some(session_id) = body.session_id.as_deref().filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    sessions::upsert(
+        &state.db,
+        bank_id,
+        &sessions::SessionUpdate {
+            session_id,
+            cwd: body.cwd.as_deref().filter(|c| !c.is_empty()),
+            turns: body.turn,
+            byte_offset: body.byte_offset,
+            confirmed_offset: match confirm {
+                Confirm::Yes => body.byte_offset,
+                Confirm::No => None,
+            },
+            compactions: body.compaction,
+            retains_delta: 1,
+            messages_sent_delta: i64::try_from(messages_sent).unwrap_or(i64::MAX),
+            ..Default::default()
+        },
+    )?;
+    Ok(())
 }
 
 /// Mission precedence: request -> the bank's `disposition.retain_mission` ->

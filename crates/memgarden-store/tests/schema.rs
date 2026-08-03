@@ -1122,7 +1122,7 @@ fn fresh_database_has_the_0004_consolidation_schema() {
     let conn = db.read().unwrap();
 
     // The `LATEST_VERSION` pin lives with the newest migration's test — see
-    // `fresh_database_has_the_0006_mental_model_schema`.
+    // `fresh_database_has_the_0007_sessions_schema`.
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
@@ -1231,8 +1231,9 @@ fn migrate_upgrades_a_v3_database_in_place() {
 // --- 0005 (AX-1): embedding_model, vector-space versioning ---------------
 
 /// A fresh database has 0005's column, and the write paths stamp the
-/// producer. (The `LATEST_VERSION` pin moved to 0006's test — the convention
-/// AX-1 set when it took it off 0004's.)
+/// producer. (The `LATEST_VERSION` pin moved to 0007's test — the convention
+/// AX-1 set when it took it off 0004's: the single absolute lives with the
+/// newest migration and every other test asserts the derived constant.)
 #[test]
 fn fresh_database_has_the_0005_embedding_model_column() {
     let db = Db::open_memory().unwrap();
@@ -1507,11 +1508,12 @@ fn fresh_database_has_the_0006_mental_model_schema() {
     let db = Db::open_memory().unwrap();
     let conn = db.read().unwrap();
 
-    assert_eq!(memgarden_store::LATEST_VERSION, 6);
+    // The `LATEST_VERSION` pin moved on to 0007's test — see
+    // `fresh_database_has_the_0007_sessions_schema`.
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, memgarden_store::LATEST_VERSION);
 
     for table in ["mental_models", "vec_mental_models"] {
         let n: i64 = conn
@@ -1608,7 +1610,7 @@ fn migrate_upgrades_a_v5_database_in_place() {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, memgarden_store::LATEST_VERSION);
         let nodes_n: i64 = conn
             .query_row("SELECT count(*) FROM memory_nodes", [], |r| r.get(0))
             .unwrap();
@@ -1633,4 +1635,138 @@ fn migrate_upgrades_a_v5_database_in_place() {
     )
     .unwrap();
     assert_eq!(mm::knn(&db, "legacy", &vector, 5).unwrap().len(), 1);
+}
+
+// --- 0007 (HK-1a): Claude Code session and turn state --------------------
+
+/// A fresh database lands on v7 with the `sessions` table in place, and the
+/// three DDL choices that are easy to lose in a later edit — `STRICT`,
+/// `WITHOUT ROWID`, and the `last_seen_at DESC` index — are each pinned by
+/// something that fails if the clause is deleted.
+///
+/// This test carries the single **absolute** `LATEST_VERSION` pin; every
+/// other migration test asserts the derived constant.
+#[test]
+fn fresh_database_has_the_0007_sessions_schema() {
+    let db = Db::open_memory().unwrap();
+    let conn = db.read().unwrap();
+
+    assert_eq!(memgarden_store::LATEST_VERSION, 7);
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 7);
+
+    let n: i64 = conn
+        .query_row("SELECT count(*) FROM sessions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0, "sessions exists and is empty");
+
+    // WITHOUT ROWID: the table has no rowid to select. Asserting the DDL
+    // text would pass on a table that merely mentions the words.
+    assert!(
+        conn.query_row("SELECT rowid FROM sessions LIMIT 1", [], |_| Ok(()))
+            .is_err(),
+        "sessions must be WITHOUT ROWID"
+    );
+
+    // The index the dashboard list order and `sessions::gc` both ride on.
+    let idx: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'idx_sessions_last_seen'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(idx, 1);
+    drop(conn);
+
+    banks::create(&db, "b1", None, None).unwrap();
+
+    // STRICT: an INTEGER column refuses text SQLite would otherwise coerce.
+    let loose = db.write(|tx| {
+        tx.execute(
+            "INSERT INTO sessions (bank_id, session_id, turns, started_at, last_seen_at)
+             VALUES ('b1', 's1', 'not a number', 0, 0)",
+            [],
+        )
+        .map_err(store_err)?;
+        Ok(())
+    });
+    assert!(loose.is_err(), "sessions must be STRICT");
+
+    // The FK to banks is real.
+    let bad_bank = db.write(|tx| {
+        tx.execute(
+            "INSERT INTO sessions (bank_id, session_id, started_at, last_seen_at)
+             VALUES ('nope', 's1', 0, 0)",
+            [],
+        )
+        .map_err(store_err)?;
+        Ok(())
+    });
+    assert!(bad_bank.is_err(), "bank_id must reference a real bank");
+}
+
+/// The v6-upgrade mirror of the v1/v2/v3/v4/v5 tests: a **populated** v6
+/// database comes out at v7 with its rows intact and `sessions` usable.
+#[test]
+fn migrate_upgrades_a_v6_database_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v6.db");
+
+    {
+        // 0001's `CREATE VIRTUAL TABLE vec_nodes USING vec0` needs the
+        // process-global auto-extension `Db::open` registers.
+        drop(Db::open_memory().unwrap());
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in [
+            include_str!("../migrations/0001_init.sql"),
+            include_str!("../migrations/0002_retain_jobs.sql"),
+            include_str!("../migrations/0003_entities_graph.sql"),
+            include_str!("../migrations/0004_consolidation.sql"),
+            include_str!("../migrations/0005_embedding_model.sql"),
+            include_str!("../migrations/0006_mental_models.sql"),
+        ] {
+            conn.execute_batch(sql).unwrap();
+        }
+        for v in [1, 2, 3, 4, 5, 6] {
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, 0)",
+                rusqlite::params![v],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 6).unwrap();
+        conn.execute(
+            "INSERT INTO banks (bank_id, created_at, updated_at) VALUES ('legacy', 0, 0)",
+            [],
+        )
+        .unwrap();
+    }
+
+    let db = Db::open(&path).unwrap();
+    {
+        let conn = db.read().unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, memgarden_store::LATEST_VERSION);
+    }
+
+    // And the new table works against the pre-existing bank.
+    use memgarden_store::sessions::{self, SessionUpdate};
+    let row = sessions::upsert(
+        &db,
+        "legacy",
+        &SessionUpdate {
+            session_id: "after-the-upgrade",
+            byte_offset: Some(42),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(row.byte_offset, 42);
+    assert_eq!(sessions::list(&db, "legacy", 10, false).unwrap().len(), 1);
 }

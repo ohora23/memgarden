@@ -10,6 +10,7 @@ pub mod models;
 pub mod nodes;
 pub mod retain_jobs;
 pub mod search;
+pub mod sessions;
 pub mod vecblob;
 
 pub use migrate::LATEST_VERSION;

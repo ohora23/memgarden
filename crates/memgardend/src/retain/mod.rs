@@ -174,6 +174,11 @@ pub struct RetainTask {
     /// meant a partially-failed job made every re-POST of the same
     /// transcript a permanent "duplicate", i.e. silent data loss.
     pub content_hash: String,
+    /// HK-1a: the transcript byte position these messages carry the hook up
+    /// to, as the request reported it. Written to `sessions.confirmed_offset`
+    /// on a clean run — same place, and for the same reason, as the content
+    /// hash. `None` when the caller is not the hook.
+    pub byte_offset: Option<i64>,
 }
 
 /// Total transcript bytes currently sitting in the retain queue.
@@ -355,21 +360,44 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
     // that failed or skipped a chunk leaves the document hash-less, and
     // re-POSTing the same transcript starts a fresh job instead of being
     // dismissed as a duplicate.
+    //
+    // HK-1a rides along on exactly the same condition: `sessions.
+    // confirmed_offset` is the client-visible form of the same claim, so it
+    // advances here and nowhere else on this path. A job that failed a chunk
+    // leaves the durable cursor behind the optimistic one, and that gap is
+    // what tells the hook (and the dashboard) there is work to re-send. Both
+    // writes share one `spawn_blocking`: two small transactions, one hop off
+    // the reactor.
     if clean {
         let db = state.db.clone();
         let document_id = task.document_id;
         let hash = task.content_hash.clone();
+        let bank_id = task.bank_id.clone();
+        let session_id = task.session_id.clone();
+        let byte_offset = task.byte_offset;
         let stored = tokio::task::spawn_blocking(move || {
-            documents::set_content_hash(&db, document_id, &hash)
+            documents::set_content_hash(&db, document_id, &hash)?;
+            if let (Some(session_id), Some(byte_offset)) = (session_id, byte_offset) {
+                memgarden_store::sessions::upsert(
+                    &db,
+                    &bank_id,
+                    &memgarden_store::sessions::SessionUpdate {
+                        session_id: &session_id,
+                        confirmed_offset: Some(byte_offset),
+                        ..Default::default()
+                    },
+                )?;
+            }
+            Ok::<(), memgarden_core::Error>(())
         })
         .await;
         match stored {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                tracing::warn!(job_id = %task.job_id, error = %e, "failed to record document content hash")
+                tracing::warn!(job_id = %task.job_id, error = %e, "failed to record clean-run completion")
             }
             Err(e) => {
-                tracing::warn!(job_id = %task.job_id, error = %e, "content hash task panicked")
+                tracing::warn!(job_id = %task.job_id, error = %e, "completion task panicked")
             }
         }
     }
@@ -819,6 +847,7 @@ mod tests {
             context: Some("claude-code".to_string()),
             tags: vec![],
             content_hash: "hash".to_string(),
+            byte_offset: None,
         }
     }
 
