@@ -7,6 +7,7 @@
 //! correct handling is "exit 0".
 
 pub mod catchup;
+pub mod recall;
 pub mod session_start;
 
 use std::io::Write;
@@ -16,6 +17,20 @@ use std::process::{Command, Stdio};
 use memgarden_core::config::{Config, HooksConfig};
 
 use crate::http::Timeouts;
+
+/// legacy/daemon: `memgarden_store::sessions::MAX_SESSION_ID_BYTES` — the bound
+/// `store::sessions::upsert` enforces, mirrored rather than imported because
+/// `memgarden-store` is exactly what this crate's dependency budget keeps out
+/// (`Cargo.toml`, CI-enforced).
+///
+/// Checked client-side because `session_id` arrives on untrusted stdin, which
+/// `hookio` bounds at 8 MB: without this, an 8 MB id would be written into a
+/// state file, POSTed as a body the daemon rejects, and passed as an argv
+/// element that blows `ARG_MAX`. Claude Code sends 36-character uuids.
+///
+/// It lives here rather than in one subcommand because C3 is the second caller
+/// and C4b is the third.
+pub const MAX_SESSION_ID_BYTES: usize = 200;
 
 /// Loads the config and hands it back **only when the hooks are on**.
 ///

@@ -352,7 +352,11 @@ fn open_private(path: &Path) -> std::io::Result<File> {
 /// treatment for exactly that reason: `ensure_data_dir` only chmods its
 /// argument, so calling it on `<data>/hooks` alone would still leave `<data>`
 /// itself world-readable when the hook is what created it.
-fn ensure_dir(dir: &Path) -> std::io::Result<()> {
+///
+/// Public because C3 writes two non-state files into the same directory
+/// (`shadow-recall.jsonl`, `last_recall.json`) and must not be the caller that
+/// creates it at 0755.
+pub fn ensure_dir(dir: &Path) -> std::io::Result<()> {
     if let Some(parent) = dir.parent()
         && !parent.as_os_str().is_empty()
         && !parent.exists()

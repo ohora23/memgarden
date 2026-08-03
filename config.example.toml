@@ -257,6 +257,12 @@ retain_timeout_ms = 5000
 # Retain fires every N Stop hooks (legacy lib/config.py:34 retainEveryNTurns).
 retain_every_n_turns = 10
 
+# Ceiling on the recall query, in CHARACTERS — legacy's unit (recall.py:167),
+# and the daemon's for its 5-character minimum. Capped at 2048 because a char
+# is at most 4 UTF-8 bytes and the daemon refuses a query over 8 KB: any larger
+# value could 400 on every prompt from a config that reads as fine.
+recall_max_query_chars = 800
+
 # Circuit breaker, on transport failures only (connection refused, timeout,
 # unparseable body). A merely-down daemon lives here and can never poison a
 # session: after this many consecutive failures the hook stops connecting for

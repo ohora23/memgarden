@@ -82,6 +82,17 @@ pub struct HooksConfig {
     pub retain_timeout_ms: u64,
     /// legacy: `lib/config.py:34` `retainEveryNTurns`.
     pub retain_every_n_turns: u64,
+    /// Ceiling on the recall query, in **characters** (`recall.py:167`,
+    /// `lib/config.py:19` `recallMaxQueryChars`).
+    ///
+    /// Characters rather than bytes because that is what legacy slices and
+    /// what the daemon's `MIN_QUERY_CHARS` counts — and the two units diverge
+    /// violently on the Korean this repo is measured against. The upper bound
+    /// in `validate` is arithmetic, not taste: a char is at most 4 UTF-8
+    /// bytes, so `2048` is the largest value that cannot produce a query over
+    /// the daemon's `MAX_QUERY_BYTES` (8 KB, `routes/recall.rs`) — above it a
+    /// hook could 400 on every prompt with a perfectly valid config.
+    pub recall_max_query_chars: usize,
     /// Consecutive transport failures before the circuit breaker opens.
     pub breaker_failures: u32,
     /// How long it stays open. A hung daemon then costs
@@ -145,6 +156,15 @@ pub struct HooksConfig {
 /// only to bound `[hooks] max_post_bytes`. A hook that posts more than the
 /// server accepts cannot succeed, so this is a config error, not a runtime one.
 pub const DAEMON_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+
+/// Ceiling on `[hooks] recall_max_query_chars`, derived rather than chosen:
+/// the daemon refuses a query over 8 KB (`routes/recall.rs` `MAX_QUERY_BYTES`)
+/// and a `char` is at most 4 UTF-8 bytes, so this is the largest character
+/// budget that cannot produce a 400. Same shape as `DAEMON_MAX_BODY_BYTES`
+/// above — a client cap that must stay inside a server cap — with a unit
+/// conversion in the middle, which is the part that would be easy to get
+/// wrong twice.
+pub const MAX_RECALL_QUERY_CHARS: usize = 8 * 1024 / 4;
 
 /// `[reranker]` — the embedded ms-marco cross-encoder (CE-11).
 ///
@@ -466,6 +486,8 @@ impl Config {
                 retain_timeout_ms: 5000,
                 // legacy: lib/config.py:34 retainEveryNTurns.
                 retain_every_n_turns: 10,
+                // legacy: lib/config.py:19 recallMaxQueryChars.
+                recall_max_query_chars: 800,
                 breaker_failures: 3,
                 breaker_cooldown_secs: 60,
                 max_reject_failures: 10,
@@ -733,6 +755,9 @@ pub fn from_parts(
             }
             if let Some(v) = hooks.retain_every_n_turns {
                 cfg.hooks.retain_every_n_turns = v;
+            }
+            if let Some(v) = hooks.recall_max_query_chars {
+                cfg.hooks.recall_max_query_chars = v;
             }
             if let Some(v) = hooks.breaker_failures {
                 cfg.hooks.breaker_failures = v;
@@ -1076,6 +1101,17 @@ pub fn from_parts(
             cfg.hooks.session_retention_days
         )));
     }
+    // Bounded above for the same shape of reason, one layer down: the value is
+    // a **character** count and the daemon's limit is a **byte** count. A char
+    // is at most 4 UTF-8 bytes, so anything over `MAX_QUERY_BYTES / 4` can
+    // produce a query the daemon 400s — on every prompt, from a config that
+    // looks fine. Below it, a 400 for length is unreachable by construction.
+    if !(1..=MAX_RECALL_QUERY_CHARS).contains(&cfg.hooks.recall_max_query_chars) {
+        return Err(Error::Config(format!(
+            "hooks.recall_max_query_chars must be 1..={MAX_RECALL_QUERY_CHARS}: {}",
+            cfg.hooks.recall_max_query_chars
+        )));
+    }
 
     Ok(cfg)
 }
@@ -1122,6 +1158,7 @@ struct TomlHooks {
     recall_timeout_ms: Option<u64>,
     retain_timeout_ms: Option<u64>,
     retain_every_n_turns: Option<u64>,
+    recall_max_query_chars: Option<usize>,
     breaker_failures: Option<u32>,
     breaker_cooldown_secs: Option<u64>,
     max_reject_failures: Option<u32>,
@@ -1306,6 +1343,7 @@ mod tests {
                 recall_timeout_ms: 400,
                 retain_timeout_ms: 5000,
                 retain_every_n_turns: 10,
+                recall_max_query_chars: 800,
                 breaker_failures: 3,
                 breaker_cooldown_secs: 60,
                 max_reject_failures: 10,
@@ -1438,6 +1476,14 @@ mod tests {
                 "[hooks]\nmax_post_bytes = 33554433",
                 "over the daemon limit",
             ),
+            ("[hooks]\nrecall_max_query_chars = 0", "empty query"),
+            // 2049 chars of 4-byte UTF-8 is 8196 bytes, past the daemon's
+            // 8 KB MAX_QUERY_BYTES — a 400 on every prompt. The unit
+            // conversion is the whole reason this bound is not just "big".
+            (
+                "[hooks]\nrecall_max_query_chars = 2049",
+                "over the daemon query limit",
+            ),
         ];
         for (toml_str, what) in cases {
             assert!(
@@ -1449,6 +1495,7 @@ mod tests {
         for ok in [
             "[hooks]\nmax_post_bytes = 33554432",
             "[hooks]\nsession_retention_days = 36500",
+            "[hooks]\nrecall_max_query_chars = 2048",
             // 0 is this knob's documented "disable catch-up", not an error.
             "[hooks]\ncatchup_max_sessions = 0",
         ] {

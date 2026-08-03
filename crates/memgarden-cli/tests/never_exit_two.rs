@@ -69,7 +69,10 @@ fn every_argv_shape_that_is_not_a_subcommand_exits_zero() {
         // The two shapes `clap` would have exited 2 on.
         vec!["--help"],
         vec!["hook", "--nonexistent-flag"],
-        vec!["hook", "recall"], // valid in C3, unknown today
+        // A real subcommand since C3, given empty stdin: it returns at
+        // `hookio::parse` before any config read, so this row asserts the
+        // *event* hook's silent-zero rather than an unknown-subcommand arm.
+        vec!["hook", "recall"],
     ] {
         let out = run(&args, b"", &[]);
         assert_exit_zero(&out, &format!("{args:?}"));
