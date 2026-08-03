@@ -39,12 +39,25 @@ pub const MAX_HEAD_BYTES: usize = 16 * 1024;
 /// magnitude of headroom and still bounds a `Content-Length` that lies.
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
+/// The response header carrying the daemon's identity token
+/// (`memgardend::token::TOKEN_HEADER`, mirrored rather than imported —
+/// `memgardend` is not in this crate's dependency budget).
+pub const TOKEN_HEADER: &str = "x-memgarden-token";
+
 #[derive(Debug)]
 pub enum HttpError {
     /// `daemon_url` is not a loopback `http://host:port`. A config fault, not
     /// a transport one — the caller must not count it as a transport failure
     /// and open the circuit breaker over it.
     Url(String),
+    /// `<data>/daemon.token` could not be read, so we cannot tell `memgardend`
+    /// apart from anything else listening on the port.
+    ///
+    /// Deliberately **not** a `Url` variant: a caller that treated it as a
+    /// config fault would move no counter, the breaker would never open, and
+    /// every prompt for the rest of the session would pay a full round trip to
+    /// learn the same thing. It is transport-class.
+    Token(String),
     /// `connect()` failed. ECONNREFUSED (daemon down) lands here.
     Connect(std::io::Error),
     /// A socket timeout elapsed. Split out from `Io` because it is the one
@@ -60,6 +73,7 @@ impl std::fmt::Display for HttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HttpError::Url(m) => write!(f, "bad daemon url: {m}"),
+            HttpError::Token(m) => write!(f, "daemon token unavailable: {m}"),
             HttpError::Connect(e) => write!(f, "connect failed: {e}"),
             HttpError::Timeout => write!(f, "timed out"),
             HttpError::Io(e) => write!(f, "io error: {e}"),
@@ -103,6 +117,16 @@ impl Timeouts {
 pub struct Target {
     pub addr: SocketAddr,
     pub host_header: String,
+    /// The token every response from this target must carry, when the caller
+    /// has one. `None` skips the check — which is what the in-process
+    /// transport tests and the benchmark stub want, and which is safe because
+    /// the only production constructor is `cmd::target`, and that one fails
+    /// rather than returning `None`.
+    ///
+    /// It is **never sent**. See `memgardend::token` for why the secret
+    /// travels one way: a request that carried it would hand it to the
+    /// impostor this check exists to catch, which could then echo it back.
+    pub token: Option<String>,
 }
 
 impl Target {
@@ -144,8 +168,27 @@ impl Target {
             // Sent verbatim, port included. `check_host` strips the port and
             // matches the host part, so all three spellings pass.
             host_header: authority.to_string(),
+            token: None,
         })
     }
+
+    /// [`Target::parse`] plus the token every response must carry.
+    pub fn parse_verified(base_url: &str, token: String) -> Result<Target, HttpError> {
+        Ok(Target {
+            token: Some(token),
+            ..Target::parse(base_url)?
+        })
+    }
+}
+
+/// Compares two secrets without leaking their common prefix through timing.
+///
+/// Four lines rather than `subtle`: this crate's dependency closure is
+/// CI-enforced, and the comparison is a fixed-length hex string. The length
+/// itself is not secret, so an early return on a length mismatch is fine.
+fn tokens_match(expected: &str, presented: &str) -> bool {
+    let (a, b) = (expected.as_bytes(), presented.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 fn split_authority(authority: &str) -> Result<(&str, u16), HttpError> {
@@ -279,6 +322,7 @@ fn request(
         &mut &stream,
         &|left| stream.set_read_timeout(Some(left)),
         Instant::now() + timeouts.io,
+        target.token.as_deref(),
     )
 }
 
@@ -302,6 +346,7 @@ fn read_response(
     stream: &mut impl Read,
     rearm: &dyn Fn(Duration) -> std::io::Result<()>,
     deadline: Instant,
+    expect_token: Option<&str>,
 ) -> Result<Response, HttpError> {
     // `Some(ZERO)` is rejected by `set_read_timeout`, and a zero budget has
     // already elapsed anyway.
@@ -333,7 +378,9 @@ fn read_response(
         buf.extend_from_slice(&chunk[..n]);
     };
 
-    let (status, content_length) = parse_head(&buf[..head_end])?;
+    // Checked on the **head**, before a single body byte is read: if this is
+    // not memgardend, the cheapest thing to do with its body is not read it.
+    let (status, content_length) = parse_head(&buf[..head_end], expect_token)?;
     let mut body = buf.split_off(head_end + 4);
     body.reserve(content_length.saturating_sub(body.len()));
     while body.len() < content_length {
@@ -359,8 +406,9 @@ fn find_head_end(buf: &[u8]) -> Option<usize> {
 }
 
 /// Returns `(status, content_length)`, or an error for anything we refuse to
-/// guess at.
-fn parse_head(head: &[u8]) -> Result<(u16, usize), HttpError> {
+/// guess at — including a response that does not prove it came from
+/// `memgardend` when the caller gave us a token to check against.
+fn parse_head(head: &[u8], expect_token: Option<&str>) -> Result<(u16, usize), HttpError> {
     let head = std::str::from_utf8(head)
         .map_err(|_| HttpError::Protocol("response head is not utf-8".to_string()))?;
     let mut lines = head.split("\r\n");
@@ -378,11 +426,15 @@ fn parse_head(head: &[u8]) -> Result<(u16, usize), HttpError> {
         .ok_or_else(|| HttpError::Protocol(format!("no status code in {status_line:?}")))?;
 
     let mut content_length = None;
+    let mut presented_token = None;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
         let value = value.trim();
+        if name.eq_ignore_ascii_case(TOKEN_HEADER) {
+            presented_token = Some(value);
+        }
         if name.eq_ignore_ascii_case("transfer-encoding") {
             // See the module comment: axum sets Content-Length and never
             // chunks, so this is evidence of a different server, a proxy, or a
@@ -412,6 +464,21 @@ fn parse_head(head: &[u8]) -> Result<(u16, usize), HttpError> {
             }
             content_length = Some(n);
         }
+    }
+    // **Is this memgardend?** `Target::parse` and the daemon's `check_host`
+    // both only answer "is this loopback". 9100 is unprivileged and nothing
+    // sets `SO_REUSEPORT`, so any local uid can hold it across a restart of
+    // ours and answer 200 with an `injected_text` that reaches the model
+    // verbatim — demonstrated against C3, which is the first PR where a
+    // daemon-supplied byte reaches stdout at all. A response that cannot
+    // produce the token from our 0600 `<data>/daemon.token` is not a bad
+    // response, it is a different server.
+    if let Some(expected) = expect_token
+        && !presented_token.is_some_and(|p| tokens_match(expected, p))
+    {
+        return Err(HttpError::Protocol(
+            "response did not carry this daemon's identity token; refusing to read it".to_string(),
+        ));
     }
     // No length and no chunking leaves "read until close" as the only reading,
     // which is exactly the ambiguity this client refuses to have.
@@ -473,6 +540,51 @@ mod tests {
         }
     }
 
+    /// The compare must not accept a prefix, a near miss or a different
+    /// length. It is `fold`-based rather than `==` so the loop does not exit
+    /// on the first differing byte and leak the common prefix through timing.
+    #[test]
+    fn the_token_compare_accepts_only_an_exact_match() {
+        let token = "0123456789abcdef0123456789abcdef";
+        assert!(tokens_match(token, token));
+        assert!(!tokens_match(token, ""));
+        assert!(!tokens_match(token, "0123456789abcdef"));
+        assert!(!tokens_match(token, "0123456789abcdef0123456789abcde0"));
+        assert!(!tokens_match(token, &format!("{token}x")));
+        // Case matters: the daemon writes lowercase hex and nothing normalizes.
+        assert!(!tokens_match(token, &token.to_uppercase()));
+    }
+
+    /// A response that cannot produce the token is refused **on the head**,
+    /// before its body is read — an impostor's bytes are not worth reading.
+    #[test]
+    fn a_response_without_this_daemons_token_is_refused() {
+        let token = "0123456789abcdef";
+        let with = format!("HTTP/1.1 200 OK\r\nx-memgarden-token: {token}\r\ncontent-length: 2");
+        assert_eq!(parse_head(with.as_bytes(), Some(token)).unwrap(), (200, 2));
+        // Header name matching is case-insensitive on the wire, like the rest.
+        let upper = format!("HTTP/1.1 200 OK\r\nX-Memgarden-Token: {token}\r\ncontent-length: 2");
+        assert_eq!(parse_head(upper.as_bytes(), Some(token)).unwrap(), (200, 2));
+
+        for hostile in [
+            "HTTP/1.1 200 OK\r\ncontent-length: 2",
+            "HTTP/1.1 200 OK\r\nx-memgarden-token: \r\ncontent-length: 2",
+            "HTTP/1.1 200 OK\r\nx-memgarden-token: 0123456789abcdee\r\ncontent-length: 2",
+        ] {
+            let err = parse_head(hostile.as_bytes(), Some(token)).unwrap_err();
+            assert!(
+                matches!(err, HttpError::Protocol(_)),
+                "{hostile:?} -> {err}"
+            );
+        }
+        // …and with no token to check against, the header is simply ignored:
+        // that is what the in-process transport tests and the bench stub need.
+        assert_eq!(
+            parse_head(b"HTTP/1.1 200 OK\r\ncontent-length: 2", None).unwrap(),
+            (200, 2)
+        );
+    }
+
     #[test]
     fn encodes_the_two_live_bank_ids() {
         assert_eq!(
@@ -491,7 +603,7 @@ mod tests {
     }
 
     fn head(raw: &str) -> Result<(u16, usize), HttpError> {
-        parse_head(raw.as_bytes())
+        parse_head(raw.as_bytes(), None)
     }
 
     #[test]
@@ -537,6 +649,7 @@ mod tests {
             stream,
             &|_| Ok(()),
             Instant::now() + Duration::from_secs(60),
+            None,
         )
     }
 
@@ -585,7 +698,7 @@ mod tests {
             }
         }
         let past = Instant::now() - Duration::from_secs(1);
-        let err = read_response(&mut Endless, &|_| Ok(()), past).unwrap_err();
+        let err = read_response(&mut Endless, &|_| Ok(()), past, None).unwrap_err();
         assert!(matches!(err, HttpError::Timeout), "{err}");
     }
 

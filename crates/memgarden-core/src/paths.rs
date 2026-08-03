@@ -7,6 +7,7 @@ const DB_FILE: &str = "memgarden.db";
 const CONFIG_FILE: &str = "config.toml";
 const MODELS_SUBDIR: &str = "models";
 const HOOKS_SUBDIR: &str = "hooks";
+const TOKEN_FILE: &str = "daemon.token";
 
 /// Pure resolution of the data directory from explicit env values.
 /// `$XDG_DATA_HOME/memgarden` if set (non-empty), else `$HOME/.local/share/memgarden`.
@@ -59,6 +60,18 @@ pub fn hooks_state_dir_from(xdg_data_home: Option<&str>, home: Option<&str>) -> 
     Ok(data_dir_from(xdg_data_home, home)?.join(HOOKS_SUBDIR))
 }
 
+/// Pure resolution of the daemon's identity token: `<data_dir>/daemon.token`.
+///
+/// Read by **both** binaries and resolved the same way on both sides —
+/// `memgardend` creates it at startup and stamps its value on every response,
+/// and the hook CLI refuses a response that does not carry it. It is
+/// deliberately not next to `db_path` and not under `state_dir`: both of those
+/// are independently configurable, and a token the two binaries disagree about
+/// the location of is a token that authenticates nothing.
+pub fn daemon_token_path_from(xdg_data_home: Option<&str>, home: Option<&str>) -> Result<PathBuf> {
+    Ok(data_dir_from(xdg_data_home, home)?.join(TOKEN_FILE))
+}
+
 fn non_empty(v: Option<&str>) -> Option<&str> {
     v.filter(|s| !s.is_empty())
 }
@@ -98,6 +111,14 @@ pub fn models_dir() -> Result<PathBuf> {
 /// Thin wrapper reading the real process environment.
 pub fn hooks_state_dir() -> Result<PathBuf> {
     hooks_state_dir_from(
+        std::env::var("XDG_DATA_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+/// Thin wrapper reading the real process environment.
+pub fn daemon_token_path() -> Result<PathBuf> {
+    daemon_token_path_from(
         std::env::var("XDG_DATA_HOME").ok().as_deref(),
         std::env::var("HOME").ok().as_deref(),
     )

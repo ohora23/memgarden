@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Ceiling on one state file, applied by [`load_all`] as a bounded read.
+/// Ceiling on one state file, applied by [`load`] and [`load_all`] as a
+/// bounded read.
 ///
 /// A real file is ~400 bytes. This is not about a hostile writer so much as
 /// about the *shape* of the failure: `gc` prunes by mtime, so a single
@@ -212,7 +213,18 @@ pub fn path_for(dir: &Path, session_id: &str) -> Option<PathBuf> {
 /// into a recovery from the daemon rather than a full re-ingest.
 pub fn load(dir: &Path, session_id: &str) -> Option<SessionState> {
     let path = path_for(dir, session_id)?;
-    let bytes = std::fs::read(path).ok()?;
+    // Bounded for the same reason `load_all` is, and more urgently: C3 calls
+    // this on **every prompt**, where `load_all` runs twice a session. `gc`
+    // prunes by mtime only, so without the cap one oversized `<sid>.json` — a
+    // botched write, a log renamed in — is re-read in full on every turn for
+    // the whole retention window. Truncating makes it unparseable, which reads
+    // as absent, which is already the handling for every unusable file.
+    let mut bytes = Vec::new();
+    File::open(&path)
+        .ok()?
+        .take(MAX_STATE_FILE_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
     let state: SessionState = serde_json::from_slice(&bytes).ok()?;
     // The `session_id` conjunct is not belt-and-braces: sanitization is
     // **many-to-one**, so `a/b` and `a_b` share one file. Without this check

@@ -45,6 +45,29 @@ pub async fn check_host(req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
+/// Stamps this daemon's identity token on every response.
+///
+/// This is what lets the hook tell `memgardend` apart from anything else that
+/// managed to bind 127.0.0.1:9100 — see `token.rs` for why the secret travels
+/// in this direction and only this direction. Applied to every route,
+/// including the unmeasured ones, because `hooks status` (C5) reads `/healthz`
+/// and has the same question.
+///
+/// `None` when `token::init` was never called, which is every in-process test:
+/// no header, and the hook only enforces the check when it has a token of its
+/// own to compare against.
+pub async fn stamp_token(req: Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    if let Some(token) = crate::token::current()
+        && let Ok(value) = axum::http::HeaderValue::from_str(token)
+    {
+        response
+            .headers_mut()
+            .insert(crate::token::TOKEN_HEADER, value);
+    }
+    response
+}
+
 /// Strips a trailing `:port` from a `Host` header value. Handles the
 /// bracketed IPv6 form (`[::1]:9100` -> `::1`) separately since IPv6
 /// addresses contain colons themselves.

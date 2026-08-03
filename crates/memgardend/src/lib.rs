@@ -16,6 +16,7 @@ pub mod retain;
 pub mod routes;
 pub mod state;
 pub mod temporal;
+pub mod token;
 
 /// Resolves when either Ctrl+C or SIGTERM is received. Each call installs
 /// its own listener, so the server and the metrics snapshot task can each

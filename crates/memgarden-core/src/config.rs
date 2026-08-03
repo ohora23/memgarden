@@ -157,6 +157,25 @@ pub struct HooksConfig {
 /// server accepts cannot succeed, so this is a config error, not a runtime one.
 pub const DAEMON_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 
+/// Ceiling on `[hooks] max_inject_bytes`, mirroring the hook client's
+/// `http::MAX_RESPONSE_BYTES`.
+///
+/// The unit needs saying, because two reviewers read it two ways:
+/// `max_inject_bytes` bounds the **un-escaped** `injected_text` — the thing
+/// that reaches the model's context, which is what the name refers to — and
+/// **not** the serialized `additionalContext` line, which JSON escaping
+/// inflates (measured **6.0×** on a worst case: 65,536 raw → 393,299 bytes on
+/// the wire). Bounding the raw value is correct; bounding the line would bound
+/// the wrong thing.
+///
+/// That inflation is exactly why the knob needs an upper bound as well as a
+/// lower one. Without this, `max_inject_bytes = 8388608` is accepted and
+/// produces a ~48 MB single line that Claude Code must buffer and parse. The
+/// response body cannot exceed `MAX_RESPONSE_BYTES` anyway, so anything above
+/// it is unreachable config — the same shape as `max_post_bytes` against
+/// `DAEMON_MAX_BODY_BYTES`.
+pub const MAX_INJECT_BYTES_CEILING: usize = 8 * 1024 * 1024;
+
 /// Ceiling on `[hooks] recall_max_query_chars`, derived rather than chosen:
 /// the daemon refuses a query over 8 KB (`routes/recall.rs` `MAX_QUERY_BYTES`)
 /// and a `char` is at most 4 UTF-8 bytes, so this is the largest character
@@ -1106,6 +1125,13 @@ pub fn from_parts(
     // is at most 4 UTF-8 bytes, so anything over `MAX_QUERY_BYTES / 4` can
     // produce a query the daemon 400s — on every prompt, from a config that
     // looks fine. Below it, a 400 for length is unreachable by construction.
+    if cfg.hooks.max_inject_bytes > MAX_INJECT_BYTES_CEILING {
+        return Err(Error::Config(format!(
+            "hooks.max_inject_bytes must be <= {MAX_INJECT_BYTES_CEILING} (the hook client's \
+             response-body cap; JSON escaping inflates what reaches the wire by up to 6x): {}",
+            cfg.hooks.max_inject_bytes
+        )));
+    }
     if !(1..=MAX_RECALL_QUERY_CHARS).contains(&cfg.hooks.recall_max_query_chars) {
         return Err(Error::Config(format!(
             "hooks.recall_max_query_chars must be 1..={MAX_RECALL_QUERY_CHARS}: {}",
@@ -1477,6 +1503,12 @@ mod tests {
                 "over the daemon limit",
             ),
             ("[hooks]\nrecall_max_query_chars = 0", "empty query"),
+            // 8 MB + 1 of raw injection is ~48 MB on the wire after escaping,
+            // and cannot arrive anyway: the client's response cap is 8 MB.
+            (
+                "[hooks]\nmax_inject_bytes = 8388609",
+                "over the response cap",
+            ),
             // 2049 chars of 4-byte UTF-8 is 8196 bytes, past the daemon's
             // 8 KB MAX_QUERY_BYTES — a 400 on every prompt. The unit
             // conversion is the whole reason this bound is not just "big".
@@ -1496,6 +1528,7 @@ mod tests {
             "[hooks]\nmax_post_bytes = 33554432",
             "[hooks]\nsession_retention_days = 36500",
             "[hooks]\nrecall_max_query_chars = 2048",
+            "[hooks]\nmax_inject_bytes = 8388608",
             // 0 is this knob's documented "disable catch-up", not an error.
             "[hooks]\ncatchup_max_sessions = 0",
         ] {

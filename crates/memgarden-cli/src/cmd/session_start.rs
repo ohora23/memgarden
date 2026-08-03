@@ -24,7 +24,7 @@
 use memgarden_core::config::Config;
 use serde::Deserialize;
 
-use crate::http::{self, Target};
+use crate::http;
 use crate::state::{self, SessionState};
 use crate::{bank, hookio};
 
@@ -155,12 +155,18 @@ pub fn run() {
 /// state and costs a retry path; at once per session that is not a trade worth
 /// the branch.
 fn mirror(cfg: &Config, bank_id: &str, input: &hookio::HookInput) -> Mirrored {
-    let Ok(target) = Target::parse(&cfg.hooks.daemon_url) else {
-        super::debug(
-            &cfg.hooks,
-            &format!("session_start: bad daemon_url {:?}", cfg.hooks.daemon_url),
-        );
-        return Mirrored::Config;
+    let target = match super::target(&cfg.hooks) {
+        Ok(t) => t,
+        Err(http::HttpError::Url(m)) => {
+            super::debug(&cfg.hooks, &format!("session_start: {m}"));
+            return Mirrored::Config;
+        }
+        // An unreadable `<data>/daemon.token` is transport-class, not config —
+        // see `cmd::target`.
+        Err(e) => {
+            super::debug(&cfg.hooks, &format!("session_start: {e}"));
+            return Mirrored::Transport;
+        }
     };
     let timeouts = super::interactive_timeouts(&cfg.hooks);
 

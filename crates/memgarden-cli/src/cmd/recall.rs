@@ -32,7 +32,7 @@ use memgarden_core::config::{Config, HooksConfig};
 use memgarden_core::now_ms;
 use serde::Deserialize;
 
-use crate::http::{self, Target};
+use crate::http;
 use crate::state::{self, SessionState};
 use crate::{bank, hookio};
 
@@ -57,9 +57,21 @@ const SHADOW_LOG: &str = "shadow-recall.jsonl";
 
 /// The counterpart of legacy's `LAST_RECALL_STATE` (`recall.py:261-269`): the
 /// file you read when someone asks *why did it inject that*, or — more often —
-/// *why did it inject nothing*. Overwritten every invocation that got as far
-/// as talking to the daemon.
-const LAST_RECALL: &str = "last_recall.json";
+/// *why did it inject nothing*. Replaced every invocation that got as far as
+/// talking to the daemon.
+///
+/// **`.jsonl`, not `.json`, and that is the collision guard.** `state::path_for`
+/// always appends `.json`, so a session whose id happened to be `last_recall`
+/// produced a state file at exactly this path: the two writers clobbered each
+/// other and that session's breaker could never open — a down daemon costing it
+/// a fresh connect on every prompt, forever. The invariant is now one sentence:
+/// **the state dir's `.json` namespace belongs to sessions; MemGarden's own
+/// files are `.jsonl`.** It is provable rather than a convention, because
+/// `path_for` cannot emit any other extension. `gc` (which collects `.json`,
+/// `.lock`, `.tmp`) and `load_all` (`.json`) both skip these for the same
+/// reason. The content really is one JSON object and a newline, so the
+/// extension is honest.
+const LAST_RECALL: &str = "last_recall.jsonl";
 
 /// What the daemon's `RecallOutcome` is allowed to tell this hook.
 ///
@@ -183,8 +195,10 @@ pub fn run() {
 
     let query = truncate_chars(prompt, cfg.hooks.recall_max_query_chars);
     let outcome = fetch(&cfg, &bank_id, query);
-    record(&cfg, dir, &input.session_id, &bank_id, &outcome, now);
-    emit(&cfg, &input, query, &bank_id, &outcome, st.as_ref(), now);
+    // `record` hands back what it settled on, because the diagnostic must
+    // report the counters **as of the end of this invocation** — see `emit`.
+    let after = record(&cfg, dir, &input.session_id, &bank_id, &outcome, now);
+    emit(&cfg, &input, query, &bank_id, &outcome, after.as_ref(), now);
 }
 
 /// The prompt to recall on, trimmed, or `None` when there is nothing worth
@@ -246,12 +260,20 @@ fn cooldown_ms(cfg: &HooksConfig) -> i64 {
 /// injection to 100 tokens and invalidated the AC-1 A/B against a fork that
 /// sends `low` **and** 1024.
 fn fetch(cfg: &Config, bank_id: &str, query: &str) -> Outcome {
-    let Ok(target) = Target::parse(&cfg.hooks.daemon_url) else {
-        super::debug(
-            &cfg.hooks,
-            &format!("recall: bad daemon_url {:?}", cfg.hooks.daemon_url),
-        );
-        return Outcome::Config;
+    let target = match super::target(&cfg.hooks) {
+        Ok(t) => t,
+        // A config fault: it must not move `transport_failures`.
+        Err(http::HttpError::Url(m)) => {
+            super::debug(&cfg.hooks, &format!("recall: {m}"));
+            return Outcome::Config;
+        }
+        // No token means we cannot tell `memgardend` apart from whatever else
+        // is on the port, so there is nothing safe to ask. Transport-class, so
+        // three of them gate the socket instead of retrying forever.
+        Err(e) => {
+            super::debug(&cfg.hooks, &format!("recall: {e}"));
+            return Outcome::Transport;
+        }
     };
     let body = serde_json::json!({
         "query": query,
@@ -297,9 +319,16 @@ fn fetch(cfg: &Config, bank_id: &str, query: &str) -> Outcome {
 /// something actually changed**.
 ///
 /// The steady state — a healthy daemon, counters already zero — therefore does
-/// no state I/O at all, which matters here in a way it did not for
+/// no state *file write*, which matters here in a way it did not for
 /// `session-start`: this runs on every prompt, and a temp-create + write +
-/// rename + lock open per prompt would be pure cost for a no-op write.
+/// `rename` per prompt would be pure cost for a write that changes nothing.
+///
+/// It is **not** "no state I/O": `with_lock` runs unconditionally, so the lock
+/// file is still opened and flocked, and the state file is still read inside
+/// it. The `rename` is the part the C2b argument was about and the part that
+/// is avoided. Moving the lock inside the `st != baseline` branch would save
+/// the rest and lose the re-read-under-lock, which is the thing that makes the
+/// counter update correct at all.
 ///
 /// The comparison is against a **baseline**, not against the loaded `Option`.
 /// Comparing against `None` would make a healthy recall on a session with no
@@ -314,8 +343,8 @@ fn record(
     bank_id: &str,
     outcome: &Outcome,
     now_ms: i64,
-) {
-    let _ = state::with_lock(dir, session_id, || {
+) -> Option<SessionState> {
+    state::with_lock(dir, session_id, || {
         // Re-read inside the lock: `run` loaded a snapshot before a round trip
         // that can take `recall_timeout_ms`, and an `async: true` Stop's retain
         // may have moved the cursor in between.
@@ -344,7 +373,9 @@ fn record(
         {
             super::debug(&cfg.hooks, &format!("recall: state write failed: {e}"));
         }
-    });
+        st
+    })
+    .ok()
 }
 
 /// Everything that leaves this process: stdout, the shadow log, and the
@@ -359,7 +390,7 @@ fn emit(
     query: &str,
     bank_id: &str,
     outcome: &Outcome,
-    before: Option<&SessionState>,
+    after: Option<&SessionState>,
     now_ms: i64,
 ) {
     let mut status = outcome.label();
@@ -434,9 +465,14 @@ fn emit(
         "injected_bytes": injected.map_or(0, str::len),
         "injected_text": injected,
         // The two numbers that answer "why is it injecting nothing *now*",
-        // read before this invocation's own update.
-        "transport_failures": before.map_or(0, |s| s.transport_failures),
-        "breaker_open_until_ms": before.map_or(0, |s| s.breaker_open_until_ms),
+        // **after** this invocation's own update — which is what the field
+        // names already say and what the first version got wrong. Reading the
+        // pre-update snapshot meant the invocation that *opened* the breaker
+        // reported `transport_failures: 2` and `breaker_open_until_ms: 0`, and
+        // then nothing rewrote the file for the whole cooldown: the diagnostic
+        // was wrong for exactly the sixty seconds someone would be reading it.
+        "transport_failures": after.map_or(0, |s| s.transport_failures),
+        "breaker_open_until_ms": after.map_or(0, |s| s.breaker_open_until_ms),
     });
     if let Err(e) = write_diagnostic(dir, &diagnostic.to_string()) {
         super::debug(
@@ -473,7 +509,18 @@ fn append_shadow(
         // history is between one and two times `shadow_log_max_bytes`. A
         // numbered ladder if an AC-1 run ever needs more than 64 MB of
         // history, which is ~40k prompts.
-        let _ = std::fs::rename(&path, path.with_extension("jsonl.1"));
+        //
+        // Reported rather than discarded: a rename that keeps failing means
+        // `shadow_log_max_bytes` has silently stopped being a bound, and a
+        // log that grows without one is the failure this line exists to
+        // prevent. It is still not fatal — appending to an oversized log beats
+        // losing the AC-1 sample.
+        if let Err(e) = std::fs::rename(&path, path.with_extension("jsonl.1")) {
+            super::debug(
+                &cfg.hooks,
+                &format!("recall: shadow log rotation failed, the cap is not holding: {e}"),
+            );
+        }
     }
     let line = serde_json::json!({
         "ts": now_ms,
@@ -485,19 +532,51 @@ fn append_shadow(
         "injected_text": injected_text,
     })
     .to_string();
-    let mut file = open_regular(&path, true)?;
+    let mut file = open_appending(&path)?;
     file.write_all(line.as_bytes())?;
     file.write_all(b"\n")
 }
 
+/// Replaces `last_recall.jsonl` atomically: temp file, then `rename`.
+///
+/// Truncate-then-write was the obvious spelling and the wrong one **for this
+/// file specifically**: its entire purpose is to be readable when things are
+/// going wrong, and a truncating writer leaves a window where a concurrent
+/// reader sees it empty and a crash leaves unparseable JSON behind forever.
+/// `rename(2)` publishes whole contents or nothing.
+///
+/// No `fsync`, for `state::store`'s reason: the page cache is coherent, so the
+/// only thing a sync would buy is power-cut survival, which a diagnostic does
+/// not need.
 fn write_diagnostic(dir: &Path, body: &str) -> std::io::Result<()> {
     state::ensure_dir(dir)?;
-    let mut file = open_regular(&dir.join(LAST_RECALL), false)?;
-    file.write_all(body.as_bytes())
+    let path = dir.join(LAST_RECALL);
+    // Per process, so two of our own hooks cannot share one temp file. `.tmp`
+    // is what `state::gc` already collects, so a crash between create and
+    // rename leaves nothing permanent.
+    let tmp = dir.join(format!(".{LAST_RECALL}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    // `create_new`, so a symlink planted at the temp path is not followed —
+    // the same rule `state::create_temp` follows.
+    let mut options = File::options();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let written = options
+        .open(&tmp)?
+        .write_all(body.as_bytes())
+        .and_then(|()| std::fs::rename(&tmp, &path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
-/// Opens a file under the state dir for writing **without ever following a
-/// symlink planted at that path**, at 0600.
+/// Opens the shadow log for **appending** without ever following a symlink
+/// planted at that path, at 0600.
 ///
 /// `File::create` is `O_CREAT|O_WRONLY|O_TRUNC`: it follows a symlink and
 /// truncates the target, which C2b measured on the lock file against a planted
@@ -509,17 +588,18 @@ fn write_diagnostic(dir: &Path, body: &str) -> std::io::Result<()> {
 /// symlink, fifo, directory — is refused; an absent path is `create_new`, which
 /// fails rather than following a link planted between the two syscalls.
 ///
+/// `mode(0o600)` only applies on the `create_new` branch, because that is the
+/// only branch that creates an inode — an existing file keeps whatever
+/// permissions it has. Correct here (we created it), and worth stating,
+/// because the call reads like it enforces a mode and does not.
+///
 /// // ponytail: `O_NOFOLLOW` on the open is the airtight version and needs
 /// // `libc`, which this crate's CI-enforced dependency closure refuses. The
 /// // residual race needs write access to a 0700 directory, at which point the
 /// // attacker can write the state files directly.
-fn open_regular(path: &Path, append: bool) -> std::io::Result<File> {
+fn open_appending(path: &Path) -> std::io::Result<File> {
     let mut options = File::options();
-    if append {
-        options.append(true);
-    } else {
-        options.write(true).truncate(true);
-    }
+    options.append(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -649,30 +729,84 @@ mod tests {
     }
 
     /// The rule the whole file exists to keep: nothing under the state dir is
-    /// opened through a symlink. Both spellings — the truncating one and the
-    /// appending one — because `append` not truncating is not the property
-    /// that matters.
+    /// written through a symlink. `append` not truncating is not the property
+    /// that matters — writing into somebody else's file is.
     #[cfg(unix)]
     #[test]
-    fn a_planted_symlink_is_refused_by_both_open_modes() {
+    fn a_planted_symlink_is_refused_by_both_writers() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let victim = dir.path().join("precious.conf");
         std::fs::write(&victim, b"do not touch").unwrap();
-        for (name, append) in [("trunc", false), ("append", true)] {
-            let link = dir.path().join(name);
-            std::os::unix::fs::symlink(&victim, &link).unwrap();
-            assert!(open_regular(&link, append).is_err(), "{name}");
-        }
+
+        let link = dir.path().join("planted.jsonl");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        assert!(open_appending(&link).is_err());
+
+        // ...and the diagnostic's temp path, the other inode C3 creates. Here
+        // the link is *unlinked* rather than refused — `remove_file` never
+        // follows a symlink, so it destroys the link and not the target, and
+        // `create_new` then covers the window in which someone re-plants it.
+        // Either way the target is never written through.
+        let tmp = dir
+            .path()
+            .join(format!(".{LAST_RECALL}.{}.tmp", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &tmp).unwrap();
+        write_diagnostic(dir.path(), "{}").unwrap();
         assert_eq!(std::fs::read(&victim).unwrap(), b"do not touch");
 
-        // A file we created is opened normally, at 0600.
-        use std::os::unix::fs::PermissionsExt;
-        let real = dir.path().join("real.json");
-        open_regular(&real, false)
+        // Both files land at 0600.
+        open_appending(&dir.path().join(SHADOW_LOG))
             .unwrap()
-            .write_all(b"{}")
+            .write_all(b"{}\n")
             .unwrap();
-        let mode = std::fs::metadata(&real).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        for name in [SHADOW_LOG, LAST_RECALL] {
+            let mode = std::fs::metadata(dir.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "{name}");
+        }
+    }
+
+    /// A crash mid-write must not leave a diagnostic nobody can parse, in the
+    /// file whose whole job is being readable when things are going wrong.
+    #[test]
+    fn the_diagnostic_is_replaced_atomically_and_leaves_no_temp_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        write_diagnostic(dir.path(), r#"{"status":"first"}"#).unwrap();
+        write_diagnostic(dir.path(), r#"{"status":"second"}"#).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join(LAST_RECALL)).unwrap();
+        assert_eq!(raw, r#"{"status":"second"}"#);
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    /// The collision the `.jsonl` extension exists to make impossible: a
+    /// session whose id is `last_recall` used to land on exactly the
+    /// diagnostic's path, so the two clobbered each other and that session's
+    /// breaker could never persist -- a down daemon costing it a fresh connect
+    /// on every prompt, forever.
+    #[test]
+    fn a_session_named_after_an_internal_file_cannot_collide_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        for hostile in ["last_recall", "shadow-recall", "last_recall.jsonl"] {
+            let state_path = state::path_for(dir.path(), hostile).unwrap();
+            assert_ne!(state_path, dir.path().join(LAST_RECALL), "{hostile}");
+            assert_ne!(state_path, dir.path().join(SHADOW_LOG), "{hostile}");
+        }
+        // Belt and braces on the rule itself: `path_for` cannot emit any
+        // extension but `.json`, which is what makes the above provable rather
+        // than a convention someone has to remember.
+        assert_eq!(
+            state::path_for(dir.path(), "x").unwrap().extension(),
+            Some(std::ffi::OsStr::new("json"))
+        );
     }
 }

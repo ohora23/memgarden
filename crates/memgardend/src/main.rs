@@ -18,6 +18,11 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("{warning}");
     }
 
+    // Before the listener binds, so no response can go out unstamped. A hook
+    // refuses an unstamped response, which is how it tells this daemon apart
+    // from anything else that managed to grab the port (see `token.rs`).
+    memgardend::token::init(&memgarden_core::paths::daemon_token_path()?)?;
+
     let db = Arc::new(open_db_secured(&cfg.db_path)?);
     let cfg = Arc::new(cfg);
     let started_at_ms = memgarden_core::now_ms();
