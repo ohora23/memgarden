@@ -48,6 +48,22 @@ pub struct SessionState {
     pub session_id: String,
     pub bank_id: String,
 
+    /// Where Claude Code is appending this session's transcript, copied from
+    /// the `SessionStart` payload.
+    ///
+    /// The live hooks all receive it on stdin and would not need it stored.
+    /// The **detached catch-up child** (C2b) is the caller that does: it wakes
+    /// up with no hook payload at all and has to decide, per session, whether
+    /// `offset < file_size`. Plan §Binding decisions #5 lists the state shape
+    /// without this field, which is a gap rather than a decision — there is no
+    /// other way for catch-up to find the file.
+    ///
+    /// `#[serde(default)]` so a state file written before this field existed
+    /// still loads (as absent, which makes catch-up skip it) instead of
+    /// failing to parse and costing a recovery round trip.
+    #[serde(default)]
+    pub transcript_path: String,
+
     /// Byte position in the transcript file that has been POSTed.
     ///
     /// **Recovery seeds this from the mirror's `confirmed_offset`, never from
@@ -94,6 +110,7 @@ impl SessionState {
             schema: SCHEMA,
             session_id: session_id.to_string(),
             bank_id: bank_id.to_string(),
+            transcript_path: String::new(),
             offset: 0,
             chunk: 0,
             turns: 0,
@@ -193,6 +210,38 @@ pub fn load(dir: &Path, session_id: &str) -> Option<SessionState> {
     // skips its transcript. With it, a collision reads as absent and C2b
     // recovers from the daemon — the same path a wiped state dir takes.
     (state.schema == SCHEMA && state.session_id == session_id).then_some(state)
+}
+
+/// Every state file in `dir` that [`load`] would accept, unordered.
+///
+/// The catch-up child (C2b) is the one caller that does not know which
+/// sessions exist: it is spawned with only the *current* session id and has to
+/// discover the rest. It therefore reads each file and takes the `session_id`
+/// from **inside** it rather than from the filename — sanitization is
+/// many-to-one, so a filename stem is not a session id and
+/// `load(dir, stem)` would silently miss any session whose id needed
+/// sanitizing.
+///
+/// The two conjuncts are `load`'s, for the same two reasons: an unrecognised
+/// `schema` is "start over", and a file whose stored id does not map back to
+/// its own path is a collision between two sessions rather than either of
+/// them.
+pub fn load_all(dir: &Path) -> Vec<SessionState> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension()? != "json" {
+                return None;
+            }
+            let state: SessionState = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+            (state.schema == SCHEMA && path_for(dir, &state.session_id) == Some(path))
+                .then_some(state)
+        })
+        .collect()
 }
 
 /// Writes a session's state atomically: temp file then `rename`.
@@ -347,6 +396,7 @@ mod tests {
 
     fn sample(session_id: &str) -> SessionState {
         SessionState {
+            transcript_path: "/tmp/transcript.jsonl".to_string(),
             offset: 65536,
             chunk: 2,
             turns: 20,
@@ -434,6 +484,74 @@ mod tests {
         });
         std::fs::write(dir.path().join("future.json"), future.to_string()).unwrap();
         assert!(load(dir.path(), "future").is_none());
+    }
+
+    /// A C2a-era file has no `transcript_path`. It must still load — as a
+    /// session catch-up skips, not as a parse failure that costs a recovery
+    /// round trip.
+    #[test]
+    fn a_state_file_written_before_transcript_path_existed_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = serde_json::json!({
+            "schema": SCHEMA,
+            "session_id": "old",
+            "bank_id": "b1",
+            "offset": 4096,
+            "chunk": 1,
+            "turns": 3,
+            "turns_since_retain": 3,
+            "compactions": 0,
+            "pending": null,
+            "transport_failures": 0,
+            "reject_failures": 0,
+            "breaker_open_until_ms": 0,
+            "poisoned_at": null,
+        });
+        std::fs::write(dir.path().join("old.json"), old.to_string()).unwrap();
+        let state = load(dir.path(), "old").expect("an older shape is not a parse failure");
+        assert_eq!(state.offset, 4096);
+        assert_eq!(state.transcript_path, "");
+    }
+
+    /// `load_all` is the catch-up child's only way to find the sessions it did
+    /// not receive on stdin, so it has to accept exactly what `load` accepts —
+    /// **including** ids that needed sanitizing, which the filename cannot
+    /// round-trip.
+    #[test]
+    fn load_all_finds_every_session_load_would_accept_and_no_others() {
+        let dir = tempfile::tempdir().unwrap();
+        store(dir.path(), &sample("s1")).unwrap();
+        store(dir.path(), &SessionState::new("a/b", "bank")).unwrap();
+
+        // Rejected: an unknown schema, a corrupt file, a collision, and the
+        // non-json leftovers `gc` also collects.
+        std::fs::write(dir.path().join("corrupt.json"), b"{\"schema\": 1, tr").unwrap();
+        let mut future = sample("future");
+        future.schema = SCHEMA + 1;
+        std::fs::write(
+            dir.path().join("future.json"),
+            serde_json::to_vec(&future).unwrap(),
+        )
+        .unwrap();
+        // `a_b.json` would be read as the state of `a/b`, whose stored id does
+        // not map back to that path... except it does, so plant the reverse:
+        // a file whose *name* claims a different session than its contents.
+        std::fs::write(
+            dir.path().join("impostor.json"),
+            serde_json::to_vec(&SessionState::new("somebody-else", "bank")).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".s1.999.0.tmp"), b"partial").unwrap();
+
+        let mut ids: Vec<String> = load_all(dir.path())
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a/b".to_string(), "s1".to_string()]);
+
+        // A dir that does not exist yet is empty, not an error.
+        assert!(load_all(&dir.path().join("nope")).is_empty());
     }
 
     #[test]

@@ -94,10 +94,16 @@ pub struct HooksConfig {
     /// retries this often, and any success clears it.
     pub poison_retry_secs: u64,
     /// How many stale sessions the detached `hook catchup` child (C2b) works
-    /// through per launch. `0` disables catch-up.
+    /// through per launch. `0` disables catch-up **selection** but not the
+    /// child, which also collects the state directory: a knob meaning "catch
+    /// up on fewer sessions" must not also mean "leak one state file per
+    /// session, forever".
     pub catchup_max_sessions: usize,
-    /// How long a daemon-side `sessions` row outlives its last sighting.
-    /// Consumed by `memgardend`'s metrics tick, not by the CLI.
+    /// How long a session outlives its last sighting, on **both** sides:
+    /// `memgardend`'s metrics tick collects the `sessions` row, and the
+    /// detached catch-up child collects the local state file with the same
+    /// window. One number, so a row and its cache never disagree about
+    /// whether a session still exists.
     pub session_retention_days: u64,
     /// Ceiling on a retain POST body. Must stay at or under the daemon's
     /// `MAX_RETAIN_BODY_BYTES` (32MB, `routes/retain.rs:36`), which is

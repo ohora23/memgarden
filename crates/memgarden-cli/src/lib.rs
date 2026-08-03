@@ -31,12 +31,17 @@
 //!
 //! # What is here, and what is not
 //!
-//! C2a ships the foundation and **no user-facing hook**: `hook noop` only.
-//! That is deliberate sequencing — the measuring instrument lands first, so
+//! C2a shipped the foundation and **no user-facing hook**: `hook noop` only.
+//! That was deliberate sequencing — the measuring instrument lands first, so
 //! every later Phase C PR reports a delta against an established baseline
 //! (`src/bin/hook_bench.rs`) instead of against a number from yesterday.
+//!
+//! C2b adds the first subcommand that does work: `hook session-start`, and the
+//! detached `hook catchup` child it spawns (`src/cmd/`). `recall` (C3), the
+//! transcript reader (C4a) and `retain`/`session-end` (C4b) follow.
 
 pub mod bank;
+pub mod cmd;
 pub mod hookio;
 pub mod http;
 pub mod state;
@@ -63,6 +68,15 @@ pub fn dispatch(args: &[String]) {
         // same binary, the same dynamic-link and page-cache state, parsing
         // argv and exiting. Arm A minus this is the subcommand's own work.
         (Some("hook"), Some("noop")) => {}
+
+        // `SessionStart`. Emits nothing on stdout by design — see
+        // `cmd::session_start`.
+        (Some("hook"), Some("session-start")) => cmd::session_start::run(),
+
+        // Internal: the detached child `session-start` spawns. Reachable by
+        // name so it can be run by hand with `--dry-run`, which is the only
+        // way to observe a process whose three streams are `/dev/null`.
+        (Some("hook"), Some("catchup")) => cmd::catchup::run(args),
 
         // Test-only. Reachable by name but not documented in `hooks status` or
         // the installer, because its entire job is to prove that a panic
