@@ -178,6 +178,13 @@ declares an exception.
 
 Not filtered, matching legacy (`retain.py:56-63` has no such check).
 
+**Counts in this note are per-run.** The live transcript is *this session's*
+and grows while the work is in progress, so figures taken at different moments
+do not sum — 3,493 + 4,671 is quoted as 8,169 below because the two halves were
+read minutes apart. The substance does not move; the arithmetic is not meant to.
+This PR's own finding #6 is that the plan's counts went stale, and replacing one
+stale number with three unreconciled ones would be the same defect.
+
 **Measured, this PR:** `isSidechain` is present as a key on **all 3,493**
 user+assistant entries of the live transcript and is `false` on all 3,493. (The
 plan's census says 0 of 3,198; the file has grown since — 6,460 lines now, not
@@ -222,9 +229,44 @@ stays a decision.
 
 ~24 MB of `serde_json::Value` is meaningfully more than 24 MB of RSS — a `Value`
 tree costs several times its serialized size. This is bounded and it only
-happens on the initial retain of an oversize transcript. `RawValue` would fix
-this and the serialization cost in the same change; the re-entry criterion is
-the same one.
+happens on the initial retain of an oversize transcript. `RawValue` would fix this and the serialization cost in the same
+change, but it is the *second* rung: the `message` object is already **moved**
+out of the parsed entry rather than cloned (`entry.as_object_mut().remove(…)`),
+which cost three lines, needed no dependency change, and measured −20.7 % on
+the static incident transcript. Reach for the `serde_json` `raw_value` feature
+only after that.
+
+### A mid-line `from_offset` silently drops one record — and C4b's guard is load-bearing
+
+Seeking into the middle of a line reads from there to the next `\n` and discards
+the fragment as unparseable, so one record vanishes without a trace. That cannot
+happen from a cursor this reader produced: `consumed_to` is always a line
+boundary.
+
+It can happen if the transcript is **rewritten**. C4b's `size < offset` guard
+(§Binding decisions #6) catches the shrinking case, which is the one that
+occurs. It does **not** catch a rewrite to equal-or-greater length: `size >=
+offset` then holds while the offset points into the middle of unrelated content.
+No code change here — the reader cannot tell, and a content check is a bigger
+mechanism than the risk — but C4b's reviewer should know that guard is doing
+real work rather than being defensive boilerplate.
+
+### One line is bounded at `MAX_LINE_BYTES`, and a line at the cap stalls that session
+
+`read_until` on an unbounded reader allocates until it finds a `\n`, so a file
+containing none would allocate the whole file — on the 106.9 MB path, an
+OOM-killed hook, which is a *loud* failure in the one process whose contract is
+that it cannot fail loudly. `MAX_LINE_BYTES` is 32 MiB: a 24× margin over the
+largest real entry measured (1.35 MB), and small enough that the allocation is
+uninteresting.
+
+The trade is explicit. A line that reaches the cap has no trailing `\n`, so it
+takes the partial-record path: the read stops and the cursor does not move.
+A transcript containing a genuine >32 MiB line therefore **stalls at that line
+forever** rather than crashing. That is the right direction — a stalled session
+retains nothing new, an OOM-killed hook is a visible failure on every `Stop` —
+but it is a stall, not a recovery, and nothing here detects it. `hooks status`
+(C5) reporting a cursor that has not moved in N turns is where it would surface.
 
 ### `consumed_to` advances over lines we skipped
 
@@ -267,24 +309,42 @@ exists.
 ## Fixtures are real
 
 `crates/memgarden-cli/tests/fixtures/transcript-redacted.jsonl` — 95 lines,
-110,626 bytes, sliced out of the live transcript around a compaction boundary.
+155,346 bytes, sliced out of the live transcript around a compaction boundary.
 
 * **All 13 entry types** from the census are present.
 * 35 user+assistant messages, 1 `compact_boundary`.
-* Redacted: free text, absolute paths (including `file-history-snapshot`'s map
-  **keys**, which is where the first pass leaked), uuids, git branch, cwd.
-* Preserved: entry types, key sets, content-block nesting, `toolUseResult` at
-  the entry level, and one multi-byte Korean string.
+* Redacted: free text, uuids, git branch, cwd, and **path-shaped map keys** —
+  `file-history-snapshot` keys its map by filename, and the first pass caught
+  only the absolute ones, leaving five relative names (`memcompare.py`,
+  `memdash.py`, `memdash_web.py`, `memdash_web.html`, `README.md`) behind. The
+  repository is private so nothing was exposed; the defect was that the pass
+  *claimed* a scope it had not achieved. The rule now matches `/` or a source
+  extension.
+* Redacted **into Korean**, not ASCII. The first pass replaced free text with a
+  constant ASCII phrase, which stripped every multi-byte character out of the
+  file except the one string it deliberately kept — silently removing the
+  torn-encoding coverage the replay test's own doc comment claimed. Multi-byte
+  bytes now span 223–155,325, i.e. the whole file.
+* Preserved: entry types, key sets, content-block nesting, and `toolUseResult`
+  at the entry level.
 
 The plan is explicit about why this is not synthetic, and it was right for a
 reason narrower than "realism": a synthetic fixture is a file you wrote, and a
 file you wrote does not have the property that it is **being appended to**.
 `a_file_replayed_through_a_growing_writer_loses_and_duplicates_nothing`
 replays it into a growing file in 7,919-byte chunks — a prime, so cuts land
-mid-line and repeatedly mid-UTF-8 — and asserts the accumulated messages equal
-the whole-file read exactly. It also asserts that **at least 10 of those reads
-stopped short of EOF**, so a chunking that stopped exercising the invariant
-fails loudly instead of passing vacuously.
+mid-line and mid-UTF-8 — and asserts the accumulated messages equal the
+whole-file read exactly.
+
+**Both properties of the chunking are asserted, not claimed**, and that is a
+correction: review measured the previous fixture and found **0 of 13 cuts
+landed inside a multi-byte character** while this note and the test's doc
+comment both said otherwise. The test now checks it (`mid_utf8 >= 1`; 4 of 19
+today) alongside the existing check that **at least 10 reads stopped short of
+EOF**, so a fixture or chunk size that stops exercising either invariant fails
+loudly instead of passing vacuously. The narrow mid-UTF-8 case still has its
+own unit test — `a_line_cut_mid_utf8_character_is_not_consumed_and_survives_completion`
+— which is the authoritative one and is **not** made redundant by this.
 
 `splitting_at_any_line_boundary_reconstructs_the_whole_delta` does the other
 half: for every one of the 95 legal cursor positions, the tail read from that
@@ -304,44 +364,56 @@ MEMGARDEN_LIVE_TRANSCRIPT=<path> \
   cargo test --release -p memgarden-cli --test transcript -- --ignored --nocapture
 ```
 
-**Live transcript, 21,473,373 B**
+**Live transcript, 21,629,276 B** — this session's, and it grows between runs;
+every count below is per-run.
 
 | from_offset | delta bytes | body bytes | messages | compactions | truncated | wall | of which serialize |
 |---|---|---|---|---|---|---|---|
-| 0 (full file) | 21,473,373 | 10,191,413 | 3,493 | 2 | false | **41.28 ms** | 9.91 ms |
-| size − 200 KB | 204,800 | 93,919 | 28 | 0 | false | **0.38 ms** | 0.05 ms |
+| 0 (full file) | 21,629,276 | 10,278,812 | 3,520 | 2 | false | **32.86 ms** | 6.60 ms |
+| size − 200 KB | 204,800 | 109,203 | 29 | 0 | false | **0.32 ms** | 0.04 ms |
 | size (caught up) | 0 | 2 | 0 | 0 | false | **0.00 ms** | 0.00 ms |
 
-**Incident transcript, 106,910,771 B**
+**Incident transcript, 106,910,771 B** — static, so this is the file any
+before/after comparison uses. Three consecutive runs: 64.56 / 64.07 / 64.32 ms,
+byte-identical outputs.
 
 | from_offset | delta bytes | body bytes | messages | compactions | truncated | wall | of which serialize |
 |---|---|---|---|---|---|---|---|
-| 0 (full file) | 106,910,771 | 25,159,211 | 2,457 | 4 | **true** | **81.12 ms** | 13.86 ms |
-| size − 200 KB | 204,800 | 75,033 | 32 | 1 | false | **0.50 ms** | 0.04 ms |
+| 0 (full file) | 106,910,771 | 25,159,211 | 2,457 | 4 | **true** | **64.32 ms** | 12.83 ms |
+| size − 200 KB | 204,800 | 75,033 | 32 | 1 | false | **0.46 ms** | 0.04 ms |
 | size (caught up) | 0 | 2 | 0 | 0 | false | **0.00 ms** | 0.00 ms |
 
 ### Against the plan's reference points
 
 | | plan | measured | why |
 |---|---|---|---|
-| 200 KB tail-seek | 0.45 ms | **0.38 / 0.50 ms** | agrees |
-| 19.7 MB full parse | 21.0 ms | **41.28 ms** at 21.4 MB | see below |
-| 106.9 MB full parse | 123.5 ms | **81.12 ms** | see below |
+| 200 KB tail-seek | 0.45 ms | **0.32 / 0.46 ms** | agrees |
+| 19.7 MB full parse | 21.0 ms | **32.86 ms** at 21.6 MB | see below |
+| 106.9 MB full parse | 123.5 ms | **64.32 ms** | see below |
 
-The full-file row is **~2× the plan's reference**, and the attribution is
-measured rather than argued: **9.91 ms of the 41.28 ms is the sizing
-serialization** (timed separately in the same test, over exactly the kept
-messages), and the remainder is the per-message `Value` clone out of the parsed
-entry. The plan's 21 ms was a parse-only prototype that produced no size
-accounting and cloned nothing. This is a real regression against that number,
-it is confined to the initial retain — which §C4b already declares the
-exception and runs under `async: true` — and the `RawValue` upgrade path above
-recovers most of it if it ever matters. The steady-state row that actually
-runs thousands of times is 0.38 ms.
+The full-file row is above the plan's reference and **one of the two components
+is measured, the other is not**. Measured: **6.60 ms of the 32.86 ms is the
+sizing serialization**, timed separately in the same test over exactly the kept
+messages. The residual is *not* accounted for — it was originally attributed to
+the per-message `Value` clone, and review isolated that by replacing the clone
+with a move (`entry.as_object_mut().remove("message")`, now in the code): on the
+static incident transcript that measured **81.12 → 64.32 ms (−20.7 %)**, so the
+clone was worth ~17 ms of a ~60 ms gap and **the rest of the residual remains
+unexplained**. The plan's 21 ms was a parse-only prototype that produced no size
+accounting and moved nothing.
 
-The 106.9 MB row is *faster* than the plan's 123.5 ms for the opposite reason:
-we never build a list of all 4,671 messages. 96 % of the file's lines are
-skipped types, and the window holds at most 24 MB.
+It is confined to the initial retain — which §C4b already declares the exception
+and runs under `async: true`. The steady-state row that actually runs thousands
+of times is **0.32 ms**.
+
+The 106.9 MB row is *faster* than the plan's 123.5 ms, and the reason is the
+window, not the skipping: **4,671 of that file's 7,338 lines (63.7 %) are
+user+assistant** — only 36.3 % are skipped types. What we avoid is holding
+them: the window pops from the front as it goes and retains 2,457, so the full
+message list is never materialized. An earlier revision of this note said
+"96 % of the file's lines are skipped types", which is false and backwards by
+2.6×; it is corrected here because a future reader optimizing this path would
+reason from it.
 
 ### Manual verification, and why it is not `hook retain --dry-run`
 
@@ -368,6 +440,15 @@ The three survivors, each named rather than counted:
 | `consumed_to += read` → `reader.stream_position()` | **equivalent.** `BufReader::stream_position` returns the logical position (underlying minus buffered remainder), which is `from_offset + Σ read` at that point by construction. |
 | `from_slice(line).ok()?` → `.unwrap_or(Value::Null)` | **equivalent.** `Value::Null.as_object()` is `None`, so the following `?` still returns. The mutation does not do what its label claims. |
 | `READ_BUFFER_BYTES` 1 MiB → 1 B | **predicted, and correct to survive.** The buffer is a syscall-count decision; the only test that could catch it would assert syscall counts, which is a change detector, not a test. |
+
+A fourth was written and then discarded as equivalent, and it is the more
+interesting one: flagging the `system` arm as *keep the message* is
+unobservable, because the keep path is now `entry.as_object_mut().remove(
+"message")` and **0 of the fixture's non-user/assistant entries carry a
+`message` key at all**. The move-out refactor taken for LOW-1 made a whole
+class of misclassification unreachable as a side effect. The mutation that
+does express the intent — emit the boundary as the *whole entry* — is caught
+by three tests.
 
 The useful finding is the same shape as C3's: **the survivors that mattered were
 ones nobody predicted.**

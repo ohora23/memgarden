@@ -2,9 +2,11 @@
 //!
 //! `tests/fixtures/transcript-redacted.jsonl` is a 95-line slice of the live
 //! 21 MB transcript this project is being developed in, sliced around a
-//! compaction boundary. Free text, absolute paths and uuids are replaced;
-//! entry types, key sets, content-block nesting and one multi-byte Korean
-//! string are not. The plan is explicit about why a synthetic fixture would
+//! compaction boundary. Free text, path-shaped map keys and uuids are
+//! replaced — with Korean, so multi-byte characters stay spread across the
+//! whole file rather than only where the source happened to have them.
+//! Entry types, key sets and content-block nesting are not touched. The plan
+//! is explicit about why a synthetic fixture would
 //! not do: it would not have the property that actually matters, which is
 //! that the file is **append-only** and is being appended to while we read.
 //!
@@ -30,6 +32,9 @@ const CAP: usize = 24 * 1024 * 1024;
 const FIXTURE_LINES: usize = 95;
 const FIXTURE_MESSAGES: usize = 35;
 const FIXTURE_COMPACTIONS: u64 = 1;
+/// Replay chunk size: a prime, so cuts land mid-line and — asserted below —
+/// inside a multi-byte character.
+const CHUNK: usize = 7_919;
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/transcript-redacted.jsonl")
@@ -120,13 +125,8 @@ fn splitting_at_any_line_boundary_reconstructs_the_whole_delta() {
     let whole = read_delta(&fixture(), 0, CAP);
 
     for cut in line_boundaries(&bytes) {
-        let head = read_delta(&fixture(), 0, CAP);
-        // A head read stops nowhere by itself, so bound it the way a real
-        // caller does: read the head from 0 and the tail from `cut`, and
-        // check the tail is exactly the whole minus the head-up-to-`cut`.
         let tail = read_delta(&fixture(), cut, CAP);
         assert_eq!(tail.consumed_to, whole.consumed_to, "cut={cut}");
-        assert_eq!(head.messages, whole.messages);
 
         let head_msgs = messages_before(&bytes, cut);
         assert_eq!(
@@ -164,10 +164,24 @@ fn messages_before(bytes: &[u8], cut: u64) -> usize {
 /// that consumed a partial line would drop the record it cut; one that
 /// re-read a consumed line would duplicate it. Only the exact sequence
 /// passes.
+///
+/// Both properties of the chunking are **asserted, not claimed**: review
+/// caught an earlier revision whose prose said "mid-UTF-8" while the
+/// redaction had stripped every multi-byte character out of the reachable
+/// range, so 0 of 13 cuts actually landed inside one.
 #[test]
 fn a_file_replayed_through_a_growing_writer_loses_and_duplicates_nothing() {
     let bytes = fixture_bytes();
     let whole = read_delta(&fixture(), 0, CAP);
+
+    let cuts: Vec<usize> = (CHUNK..bytes.len()).step_by(CHUNK).collect();
+    let mid_utf8 = cuts.iter().filter(|c| (bytes[**c] & 0xC0) == 0x80).count();
+    assert!(
+        mid_utf8 >= 1,
+        "{mid_utf8} of {} chunk cuts land inside a multi-byte character — \
+         the fixture no longer exercises a torn encoding",
+        cuts.len()
+    );
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("growing.jsonl");
@@ -178,7 +192,7 @@ fn a_file_replayed_through_a_growing_writer_loses_and_duplicates_nothing() {
     let mut offset = 0u64;
     let mut reads_that_stopped_short = 0;
 
-    for chunk in bytes.chunks(7_919) {
+    for chunk in bytes.chunks(CHUNK) {
         let mut f = OpenOptions::new().append(true).open(&path).unwrap();
         f.write_all(chunk).unwrap();
         drop(f);

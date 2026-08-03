@@ -48,18 +48,24 @@
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use serde_json::Value;
 
 /// `BufReader` capacity. One page would make a 100 MB transcript ~25,000
 /// `read` syscalls; 1 MiB makes it ~100. Measured whole-file reads with this
-/// buffer: 21 ms for 19.7 MB, 124 ms for 106.9 MB.
+/// buffer: 32.9 ms for 21.6 MB, 64.3 ms for 106.9 MB.
 pub const READ_BUFFER_BYTES: usize = 1024 * 1024;
 
+/// Ceiling on one line. The largest real entry measured across both live
+/// transcripts is 1.35 MB, so 32 MiB is a 24× margin over anything Claude
+/// Code writes and still an allocation the machine will not notice. It exists
+/// for the hostile case — a file with no `\n` at all — not the ordinary one.
+pub const MAX_LINE_BYTES: u64 = 32 * 1024 * 1024;
+
 /// What one `read_delta` call found.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Delta {
     /// The `message` objects, in file order, ready to post.
     pub messages: Vec<Value>,
@@ -138,7 +144,17 @@ pub fn read_delta(path: &Path, from_offset: u64, max_post_bytes: usize) -> Delta
 
     loop {
         line.clear();
-        let Ok(read) = reader.read_until(b'\n', &mut line) else {
+        // Bounded: `read_until` on an unbounded reader will happily allocate
+        // the whole file if it contains no `\n`, and on the 106.9 MB path
+        // that is an OOM-killed hook — a *loud* failure in the one process
+        // whose contract is that it cannot fail loudly (§Binding decisions
+        // #2). A line at the limit has no trailing `\n`, so it takes the
+        // partial-record path below: the read stops and the cursor does not
+        // move. See the design note's §Known limits for what that means.
+        let Ok(read) = (&mut reader)
+            .take(MAX_LINE_BYTES)
+            .read_until(b'\n', &mut line)
+        else {
             // A mid-file read error. Keep what we have; the bytes we did not
             // read stay unconsumed and the next call retries from there.
             break;
@@ -158,12 +174,14 @@ pub fn read_delta(path: &Path, from_offset: u64, max_post_bytes: usize) -> Delta
 
         // `to_vec` rather than a counting writer: same serialization work,
         // zero extra code, and one short-lived allocation per message that
-        // malloc does not notice. Serializing to measure costs ~2x the read
-        // on the initial full-transcript pass and nothing measurable on a
-        // steady-state 200 KB delta — see the design note's measurements.
-        // ponytail: measure by serializing; switch to `RawValue` (borrowed
-        // from `line`, zero re-encode) if the initial pass ever needs the
-        // ~40 ms back.
+        // malloc does not notice. Measured at 9.9 ms of a 32.6 ms
+        // full-transcript read, and nothing on a steady-state 200 KB delta —
+        // see the design note.
+        // ponytail: measure by serializing; the next rung is `RawValue`
+        // borrowed from `line` (zero re-encode, and it also retires the
+        // transient-RSS limit in the design note), which needs `serde_json`'s
+        // `raw_value` feature — take it only if the initial pass needs the
+        // ~10 ms back.
         let size = serde_json::to_vec(&message).map_or(0, |v| v.len()) + 1;
         total += size;
         window.push_back((size, message));
@@ -194,35 +212,53 @@ pub fn read_delta(path: &Path, from_offset: u64, max_post_bytes: usize) -> Delta
 /// rather than half-read, which is the direction a memory system should fail
 /// in.
 fn classify(line: &[u8], compactions: &mut u64) -> Option<Value> {
-    let entry: Value = serde_json::from_slice(line).ok()?;
-    let object = entry.as_object()?;
+    let mut entry: Value = serde_json::from_slice(line).ok()?;
 
-    match object.get("type").and_then(Value::as_str) {
-        Some("user" | "assistant") => {
-            let message = object.get("message")?;
-            // `retain.py:56-63`: a dict with a truthy `role`. `Value::get`
-            // returns `None` for a string index into a non-object, so the
-            // `isinstance(msg, dict)` half is free.
-            let role = message.get("role").and_then(Value::as_str)?;
-            (!role.is_empty()).then(|| message.clone())
-        }
-        Some("system") => {
-            if object.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
-                *compactions += 1;
+    // Decide under a borrow, then act after it ends, so what comes out is
+    // **moved** out of `entry` rather than cloned. `entry` is dropped on the
+    // next line either way, and review isolated the clone: removing it
+    // measured 81.12 -> 64.32 ms (-20.7 %) on the static 106.9 MB transcript.
+    let (take_message, take_entry) = {
+        let object = entry.as_object()?;
+        match object.get("type").and_then(Value::as_str) {
+            Some("user" | "assistant") => (
+                // `retain.py:56-63`: a dict with a truthy `role`.
+                // `Value::get` returns `None` for a string index into a
+                // non-object, so the `isinstance(msg, dict)` half is free.
+                object
+                    .get("message")
+                    .and_then(|m| m.get("role"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|role| !role.is_empty()),
+                false,
+            ),
+            Some("system") => {
+                if object.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
+                    *compactions += 1;
+                }
+                (false, false)
             }
-            None
+            Some(_) => (false, false),
+            // No `type` at all: the flat `{role, content}` shape
+            // (`retain.py:64-65`). Legacy reaches this branch from an `elif`,
+            // so it would also accept a *typed* entry carrying top-level
+            // `role` and `content`; we do not. Measured: 0 such entries in
+            // 13,831 lines across both live transcripts, so this is a shape
+            // that does not occur rather than a behaviour that changed.
+            None => (
+                false,
+                object.contains_key("role") && object.contains_key("content"),
+            ),
         }
-        Some(_) => None,
-        // No `type` at all: the flat `{role, content}` shape
-        // (`retain.py:64-65`). Legacy reaches this branch from an `elif`, so
-        // it would also accept a *typed* entry carrying top-level `role` and
-        // `content`; we do not. Measured: 0 such entries in 6,460 lines of
-        // the live transcript, so this is a shape that does not occur rather
-        // than a behaviour that changed.
-        None => {
-            (object.contains_key("role") && object.contains_key("content")).then(|| entry.clone())
-        }
+    };
+
+    if take_entry {
+        return Some(entry);
     }
+    if !take_message {
+        return None;
+    }
+    entry.as_object_mut()?.remove("message")
 }
 
 #[cfg(test)]
