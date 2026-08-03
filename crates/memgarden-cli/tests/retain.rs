@@ -58,11 +58,21 @@ impl Stub {
     }
     /// Every retain body, in order. The retain path is the only one that
     /// carries `messages`, so this is a filter rather than an index.
+    ///
+    /// Uses `maybe_body`, not `body`: a `GET` has no body at all, and once the
+    /// mirror-recovery `GET` joined the request stream a strict parse here
+    /// panicked on it.
     fn retains(&self) -> Vec<serde_json::Value> {
         (0..self.requests().len())
-            .map(|n| self.body(n))
+            .filter_map(|n| self.maybe_body(n))
             .filter(|b| b.get("messages").is_some())
             .collect()
+    }
+
+    fn maybe_body(&self, n: usize) -> Option<serde_json::Value> {
+        let raw = self.requests()[n].clone();
+        let (_, body) = raw.split_once("\r\n\r\n")?;
+        serde_json::from_str(body).ok()
     }
 }
 
@@ -153,12 +163,19 @@ fn settled(status: &str) -> String {
 }
 
 fn job(status: &str) -> String {
+    job_with_failures(status, 0)
+}
+
+/// The shape the manual verification actually produced: `done`, with a chunk
+/// the extractor could not parse. The daemon fails a job only when *nothing*
+/// was written, but it withholds the content hash on any `chunks_failed > 0`.
+fn job_with_failures(status: &str, chunks_failed: i64) -> String {
     json_reply(
         "200 OK",
         &serde_json::json!({
             "job_id": "j1", "bank_id": "b", "document_id": 7, "session_id": "s1",
-            "status": status, "chunks_total": 4, "chunks_done": 4,
-            "chunks_skipped": 0, "chunks_failed": 0, "facts_written": 12,
+            "status": status, "chunks_total": 4, "chunks_done": 4 - chunks_failed,
+            "chunks_skipped": 0, "chunks_failed": chunks_failed, "facts_written": 12,
             "error": null, "detail": null, "created_at": 1, "updated_at": 2,
         })
         .to_string(),
@@ -1489,4 +1506,207 @@ fn an_absent_cwd_is_null_on_the_wire() {
     );
     assert_silent(&out, "forced retain with no end reason");
     assert_eq!(s2.body(1)["end_reason"], serde_json::Value::Null);
+}
+
+// ------------------------------------------- found in review, round 3
+
+/// **The central trade, tested.** A job that came back `done` with a failed
+/// chunk settles the `pending` record and leaves the cursor advanced — the
+/// bytes are not re-sent — and the gap it opens is *counted*, not only logged.
+///
+/// `[hooks] debug` defaults to `false`, so a stderr line alone means the
+/// default install records nothing about a permanent gap. `unconfirmed_bytes`
+/// is what makes the shadow run able to evaluate the re-entry criterion that
+/// decides whether this trade was right, since the daemon-side
+/// `inflight_bytes` is only a lower bound.
+#[test]
+fn a_done_job_with_a_failed_chunk_settles_but_records_the_gap() {
+    let f = fixture("debug = true");
+    let s = stub(|_, request| match route(request) {
+        "job" => job_with_failures("done", 1),
+        _ => accepted("j2"),
+    });
+    let size = f.append_turns(3);
+    f.write_state(&state_file(
+        "s1",
+        serde_json::json!({
+            "offset": size, "chunk": 1, "turns_since_retain": 10,
+            "pending": {"job_id": "j1", "offset_from": 0, "offset_to": size,
+                        "chunk_before": 0, "compactions_before": 0},
+        }),
+    ));
+
+    let out = f.run(&["hook", "retain"], &f.payload("s1"), &s.url);
+    assert_silent(&out, "done with a failed chunk");
+
+    let st = f.state("s1");
+    // Settled: the record is cleared and the cursor does NOT roll back.
+    assert_eq!(st["pending"], serde_json::Value::Null);
+    assert_eq!(st["offset"], size, "a partial failure must not re-send");
+    assert_eq!(st["chunk"], 1);
+    // …and the gap is on the books, in bytes.
+    assert_eq!(st["unconfirmed_bytes"], size);
+    // The mutant that deletes the whole arm passes every assertion above
+    // except this one and the line below.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1 failed chunk(s)") && stderr.contains("confirmed_offset stays behind"),
+        "the gap was not named: {stderr}"
+    );
+
+    // A clean `done` moves neither: this is the half that keeps the mutant
+    // turning `Done(n)` into an unconditional count from surviving.
+    let f2 = fixture("");
+    let s2 = stub(|_, request| match route(request) {
+        "job" => job("done"),
+        _ => accepted("j2"),
+    });
+    let size2 = f2.append_turns(3);
+    f2.write_state(&state_file(
+        "s1",
+        serde_json::json!({
+            "offset": size2, "chunk": 1, "turns_since_retain": 10,
+            "pending": {"job_id": "j1", "offset_from": 0, "offset_to": size2,
+                        "chunk_before": 0, "compactions_before": 0},
+        }),
+    ));
+    f2.stop("s1", &s2.url);
+    assert_eq!(f2.state("s1")["unconfirmed_bytes"], 0);
+    assert_eq!(f2.state("s1")["pending"], serde_json::Value::Null);
+}
+
+/// A mutant that turns `Done(n > 0)` into `Failed` would roll back and
+/// re-send, which is the trade the design note argues *against* — and which
+/// wedges a session forever on a deterministically bad chunk. Pinned as its
+/// own assertion because it is a behaviour choice, not an oversight.
+#[test]
+fn a_done_job_with_a_failed_chunk_does_not_roll_back() {
+    let f = fixture("");
+    let s = stub(|_, request| match route(request) {
+        "job" => job_with_failures("done", 3),
+        _ => accepted("j2"),
+    });
+    let size = f.append_turns(3);
+    f.write_state(&state_file(
+        "s1",
+        serde_json::json!({
+            "offset": size, "chunk": 2, "turns_since_retain": 10,
+            "pending": {"job_id": "j1", "offset_from": 0, "offset_to": size,
+                        "chunk_before": 0, "compactions_before": 0},
+        }),
+    ));
+
+    f.stop("s1", &s.url);
+    // Exactly one request: the reconcile. No re-send.
+    assert_eq!(s.lines(), vec!["GET /v1/retain/j1"]);
+    assert_eq!(
+        f.state("s1")["chunk"],
+        2,
+        "a rollback would have restored 0"
+    );
+}
+
+/// **`--force` does not override an unsettled `pending`.** The design note
+/// names this twice as the shape most likely to cost a session's tail, and
+/// nothing pinned it: a `SessionEnd` arriving while a job is still running
+/// retains nothing, because stacking a second unconfirmed job on an
+/// unconfirmed cursor is what makes `confirmed_offset` unable to say which
+/// bytes are missing.
+#[test]
+fn force_does_not_stack_a_second_job_on_an_unsettled_one() {
+    let f = fixture("");
+    let s = stub(|_, request| match route(request) {
+        "job" => job("running"),
+        _ => accepted("j2"),
+    });
+    let size = f.append_turns(2);
+    f.append_turns(2);
+    f.write_state(&state_file(
+        "s1",
+        serde_json::json!({
+            "offset": size, "chunk": 1,
+            "transcript_path": f.transcript.to_string_lossy(),
+            "pending": {"job_id": "j1", "offset_from": 0, "offset_to": size,
+                        "chunk_before": 0, "compactions_before": 0},
+        }),
+    ));
+
+    let out = f.run(
+        &[
+            "hook",
+            "retain",
+            "--force",
+            "--session",
+            "s1",
+            "--end-reason",
+            "clear",
+        ],
+        b"",
+        &s.url,
+    );
+    assert_silent(&out, "forced retain over an unsettled job");
+    // The reconcile, and then the end-reason update — but **no retain POST**.
+    assert_eq!(
+        s.lines(),
+        vec![
+            "GET /v1/retain/j1",
+            "POST /v1/banks/claude-code%3A%3Ademo-project/sessions",
+        ]
+    );
+    assert_eq!(f.state("s1")["pending"]["job_id"], "j1");
+    assert_eq!(f.state("s1")["offset"], size);
+}
+
+/// **Retain recovers from the daemon's mirror when its state file is gone.**
+///
+/// §Failure posture says the wiped-state-dir case is covered because
+/// `session-start` prefers the mirror — but `session-start` does not fire
+/// mid-session and `retain` is the hook that does. Without this the whole
+/// transcript is re-sent under chunk 0's bare `document_id`, and the daemon
+/// rebuilds `documents.metadata` from scratch, overwriting the real chunk 0's
+/// provenance. C1 added `RetainRequest::chunk` naming exactly this scenario.
+#[test]
+fn a_mid_session_state_wipe_resumes_from_the_mirror_rather_than_re_ingesting() {
+    let f = fixture("");
+    let s = stub(|_, request| {
+        if request.starts_with("GET /v1/banks/") {
+            // The real `SessionResponse`, carrying **both** cursors. The
+            // optimistic one is 90,000 and must not be the one used.
+            json_reply(
+                "200 OK",
+                &serde_json::json!({
+                    "bank_id": "claude-code::demo-project", "session_id": "s1",
+                    "byte_offset": 90000, "confirmed_offset": 0, "inflight_bytes": 90000,
+                    "chunk_index": 4, "turns": 40,
+                })
+                .to_string(),
+            )
+        } else {
+            accepted("j1")
+        }
+    });
+    let size = f.append_turns(3);
+    // No state file at all: the mid-session wipe.
+    let out = f.run(&["hook", "retain"], &f.payload("s1"), &s.url);
+    assert_silent(&out, "state wipe, gated turn");
+    // The recovery happens on the first `Stop`, before the gate matters.
+    assert_eq!(f.state("s1")["chunk"], 4, "the chunk index came back");
+
+    // Ten turns later the retain goes out under the RECOVERED chunk, not
+    // under chunk 0's bare document id.
+    let mut st = f.state("s1");
+    st["turns_since_retain"] = serde_json::json!(10);
+    f.write_state(&st);
+    f.stop("s1", &s.url);
+    let body = &s.retains()[0];
+    assert_eq!(
+        body["document_id"], "s1-c4",
+        "chunk 0's provenance was not overwritten"
+    );
+    assert_eq!(body["chunk"], 4);
+    // And the cursor came from `confirmed_offset` (0), never `byte_offset`
+    // (90,000) — which would have skipped the whole transcript.
+    assert_eq!(body["is_initial"], true);
+    assert_eq!(body["messages"].as_array().unwrap().len(), 3);
+    assert_eq!(f.state("s1")["offset"], size);
 }

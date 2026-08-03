@@ -207,10 +207,6 @@ pub fn run(args: &[String]) {
         let mut st = match state::load(dir, &session_id) {
             Some(st) => st,
             None => {
-                // §Failure posture: a missing or corrupt state file is
-                // "start over" — offset 0, `is_initial = true`, and the
-                // daemon's backfill cap bounds the payload.
-                //
                 // The forced child has no payload, so it has no `cwd` to
                 // derive a bank from and nothing to start over *as*. Its
                 // session is one `session-start` never recorded, which the
@@ -219,7 +215,31 @@ pub fn run(args: &[String]) {
                 let input = input.as_ref()?;
                 let project_dir = std::env::var("CLAUDE_PROJECT_DIR").ok();
                 let derived = bank::derive(&cfg.hooks, input.project_dir(project_dir.as_deref()));
-                SessionState::new(&session_id, &derived)
+                // **Ask the mirror before starting over.** §Failure posture
+                // says a missing state file is "offset 0, `is_initial = true`,
+                // and let the backfill cap bound it", and adds that
+                // `session-start` covers the wiped-state-dir case by
+                // preferring the mirror. That is true only of a wipe *between*
+                // sessions: `session-start` does not fire mid-session, and
+                // this hook is the one that does. Starting over here re-sends
+                // the whole transcript under chunk 0's bare `document_id`,
+                // and `routes/retain.rs` rebuilds `documents.metadata` from
+                // scratch — overwriting the real chunk 0's `message_count`
+                // and `files_modified`. C1 added `RetainRequest::chunk` for
+                // exactly this scenario; this is the call that makes it reach.
+                //
+                // One extra loopback GET, and only on the path where the
+                // alternative is re-ingesting an entire session.
+                match super::recover(&cfg.hooks, &derived, &session_id) {
+                    Some(mirror) => {
+                        super::debug(
+                            &cfg.hooks,
+                            "retain: state file absent, recovered from mirror",
+                        );
+                        mirror.into_state(&session_id, &derived)
+                    }
+                    None => SessionState::new(&session_id, &derived),
+                }
             }
         };
 
@@ -301,7 +321,7 @@ pub fn advance(cfg: &Config, st: &mut SessionState, force: bool, now_ms: i64) {
     //
     // Costs nothing on 9 of every 10 `Stop`s, because `pending` is `None`
     // except in the window between an accept and its settlement.
-    if !reconcile(cfg, st) {
+    if !reconcile(cfg, st, now_ms) {
         return;
     }
 
@@ -323,6 +343,11 @@ pub fn advance(cfg: &Config, st: &mut SessionState, force: bool, now_ms: i64) {
         st.offset = 0;
     }
     if size <= st.offset {
+        // Restart the cadence, for the empty-delta branch's reason below and
+        // with the same effect: a session whose transcript has stopped growing
+        // otherwise passes the gate on every subsequent `Stop` and re-`stat`s
+        // it. Divergence #7 argues for this and named only its sibling.
+        st.turns_since_retain = 0;
         return;
     }
 
@@ -333,17 +358,16 @@ pub fn advance(cfg: &Config, st: &mut SessionState, force: bool, now_ms: i64) {
         from,
         cfg.hooks.max_post_bytes,
     );
-    // Counted before the send decision, because the lines have been read
-    // either way and `compactions` is cumulative on the wire. It is a lower
-    // bound by construction: a rollback re-counts the boundaries in the
-    // re-sent delta, which is why the daemon merges the column with `MAX`.
-    st.compactions = st.compactions.saturating_add(delta.compactions);
-
+    // `compactions` is accumulated **only where the cursor advances** — the
+    // empty-delta branch below and `accept`. Adding it here, before the send
+    // decision, made every rejected POST inflate a counter that is supposed to
+    // count boundaries in the transcript rather than attempts to send them.
     if delta.messages.is_empty() {
         // We consumed only lines the reader skips. **Advance anyway**: not
         // advancing re-scans them on every retain turn for the rest of the
         // session, and the daemon would answer `skipped` if we sent them.
         st.offset = delta.consumed_to;
+        st.compactions = st.compactions.saturating_add(delta.compactions);
         // And restart the cadence, which the plan does not say and which is
         // what keeps "one delta read per `retain_every_n_turns` `Stop`s" true.
         // Leaving it high makes every subsequent `Stop` pass the gate and
@@ -355,7 +379,7 @@ pub fn advance(cfg: &Config, st: &mut SessionState, force: bool, now_ms: i64) {
 
     // ---- 6. The POST, and the accept table.
     let outcome = post_delta(cfg, st, &delta, from, now_ms);
-    apply(cfg, st, &outcome, from, delta.consumed_to, now_ms);
+    apply(cfg, st, &outcome, &delta, from, now_ms);
 }
 
 /// Settles `pending`. Returns whether the caller may proceed to a new POST.
@@ -363,7 +387,7 @@ pub fn advance(cfg: &Config, st: &mut SessionState, force: bool, now_ms: i64) {
 /// Not proceeding is the point of three of the five arms: stacking a second
 /// unconfirmed job on an unconfirmed cursor is exactly what makes
 /// `confirmed_offset` unable to describe which bytes are missing.
-fn reconcile(cfg: &Config, st: &mut SessionState) -> bool {
+fn reconcile(cfg: &Config, st: &mut SessionState, now_ms: i64) -> bool {
     let Some(pending) = st.pending.clone() else {
         return true;
     };
@@ -373,8 +397,18 @@ fn reconcile(cfg: &Config, st: &mut SessionState) -> bool {
                 // The daemon wrote *some* facts and withheld the content
                 // hash, so `confirmed_offset` stays where it is — permanently,
                 // because this arm is what clears the only record that could
-                // re-send. Said out loud rather than left as an unexplained
-                // number on a dashboard.
+                // re-send.
+                //
+                // **Counted, not only logged.** `[hooks] debug` defaults to
+                // `false`, so a stderr line alone means the default install
+                // records nothing — and the re-entry criterion for this whole
+                // trade ("a shadow run where the gap grows monotonically") is
+                // then unmeasurable, because the daemon-side `inflight_bytes`
+                // is a lower bound. `hooks status` (C5) reads state files, so
+                // this total needs no endpoint and no schema.
+                st.unconfirmed_bytes = st
+                    .unconfirmed_bytes
+                    .saturating_add(pending.offset_to.saturating_sub(pending.offset_from));
                 super::debug(
                     &cfg.hooks,
                     &format!(
@@ -403,6 +437,7 @@ fn reconcile(cfg: &Config, st: &mut SessionState) -> bool {
             );
             st.offset = pending.offset_from;
             st.chunk = pending.chunk_before;
+            st.compactions = pending.compactions_before;
             st.pending = None;
             // Proceeds to the **turn gate**, not straight to a re-send. A
             // rolled-back delta that re-POSTed immediately would, under the
@@ -418,7 +453,12 @@ fn reconcile(cfg: &Config, st: &mut SessionState) -> bool {
             // A round trip that failed is a transport failure like any other:
             // without this, a down daemon during reconciliation would never
             // open the breaker and every `Stop` would pay a fresh connect.
-            count_transport_failure(cfg, st, now_ms());
+            // `now_ms` is threaded from `run`, not re-read. One invocation
+            // must not evaluate its breaker window against one clock and stamp
+            // it with another: under lock contention the two readings can be
+            // seconds apart, which is a cooldown that starts before the
+            // failure that opened it.
+            count_transport_failure(cfg, st, now_ms);
             false
         }
     }
@@ -530,7 +570,13 @@ fn post_delta(cfg: &Config, st: &SessionState, delta: &Delta, from: u64, now_ms:
         // Plural, and cumulative. Plan §C4b spells this `compaction` and omits
         // `chunk` entirely; the daemon's `RetainRequest` has neither of those
         // shapes, and a field name it does not recognise is silently dropped.
-        "compactions": st.compactions,
+        //
+        // `st.compactions + delta.compactions`, because this number has to
+        // describe the same point in the file that `byte_offset` does: the
+        // running total **as of `consumed_to`**. The state itself only takes
+        // the addition in `accept`, so a rejected POST leaves the counter
+        // where the cursor is.
+        "compactions": st.compactions.saturating_add(delta.compactions),
         "metadata": {
             // The delta's span in the transcript, which is what pairs with
             // `truncated`: the two together say "we covered these bytes, and
@@ -642,26 +688,28 @@ fn apply(
     cfg: &Config,
     st: &mut SessionState,
     outcome: &Outcome,
+    delta: &Delta,
     from: u64,
-    consumed_to: u64,
     now_ms: i64,
 ) {
     match outcome {
         Outcome::Accepted(job_id) => {
-            // `chunk_before` is captured **before** the increment: it is what
-            // a `failed` job rolls back to, and rolling back to the
-            // incremented value would change the `document_id` on the re-send.
+            // `chunk_before` and `compactions_before` are captured **before**
+            // `accept` moves either: they are what a `failed` job rolls back
+            // to, and rolling back to the moved values would change the
+            // `document_id` on the re-send and double-count its boundaries.
             st.pending = Some(Pending {
                 job_id: job_id.clone(),
                 offset_from: from,
-                offset_to: consumed_to,
+                offset_to: delta.consumed_to,
                 chunk_before: st.chunk,
+                compactions_before: st.compactions,
             });
-            accept(st, consumed_to);
+            accept(st, delta);
         }
         Outcome::Settled => {
             st.pending = None;
-            accept(st, consumed_to);
+            accept(st, delta);
         }
         // The cursor stays put and nothing is counted: see the variant.
         Outcome::Unreconcilable => {}
@@ -687,8 +735,9 @@ fn apply(
 /// `skipped`. Not incrementing on those would make the next delta reuse this
 /// one's `document_id`, which is the provenance overwrite §Binding decisions
 /// #7 exists to prevent — and the daemon has already committed a row under it.
-fn accept(st: &mut SessionState, consumed_to: u64) {
-    st.offset = consumed_to;
+fn accept(st: &mut SessionState, delta: &Delta) {
+    st.offset = delta.consumed_to;
+    st.compactions = st.compactions.saturating_add(delta.compactions);
     st.chunk = st.chunk.saturating_add(1);
     st.turns_since_retain = 0;
     // Any answer at all clears the breaker; an *accepted* answer also clears
@@ -912,11 +961,22 @@ mod tests {
         st.reject_failures = 9;
         st.breaker_open_until_ms = 12_345;
         st.poisoned_at = Some(678);
+        st.compactions = 5;
 
-        accept(&mut st, 4096);
+        let delta = Delta {
+            messages: vec![serde_json::json!({"role": "user"})],
+            consumed_to: 4096,
+            compactions: 2,
+            truncated: false,
+        };
+        accept(&mut st, &delta);
 
         assert_eq!(st.offset, 4096);
         assert_eq!(st.chunk, 4);
+        // Boundaries are added **here**, where the cursor advances — not
+        // before the send decision, which made every rejected POST inflate a
+        // count of things in the transcript.
+        assert_eq!(st.compactions, 7);
         assert_eq!(st.turns_since_retain, 0);
         assert_eq!(st.transport_failures, 0);
         assert_eq!(st.reject_failures, 0);

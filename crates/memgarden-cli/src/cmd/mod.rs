@@ -18,7 +18,7 @@ use std::process::{Command, Stdio};
 
 use memgarden_core::config::{Config, HooksConfig};
 
-use crate::http::{HttpError, Target, Timeouts};
+use crate::http::{self, HttpError, Target, Timeouts};
 use crate::state::SessionState;
 
 /// legacy/daemon: `memgarden_store::sessions::MAX_SESSION_ID_BYTES` — the bound
@@ -178,6 +178,82 @@ pub fn target(cfg: &HooksConfig) -> Result<Target, HttpError> {
         return Err(HttpError::Token(format!("{} is empty", path.display())));
     }
     Target::parse_verified(&cfg.daemon_url, token.to_string())
+}
+
+/// What the daemon's `sessions` mirror is allowed to tell recovery.
+///
+/// **`byte_offset` is deliberately not a field**, and that is the whole point
+/// of this struct existing rather than reusing `SessionResponse`. That one
+/// carries both cursors; seeding `offset` from the optimistic one skips
+/// exactly the bytes the dual cursor exists to protect, because it is what
+/// some hook *POSTed* — already ahead of reality after a failed job or a
+/// byte-budget 429. C2a's `SessionState::recovered` names its parameter
+/// `confirmed_offset` to make the right thing the easy thing; **a field that
+/// is never deserialized cannot be misused at all**, so the wrong cursor is
+/// not merely discouraged here, it is not present.
+///
+/// Both fields are `i64` and clamped rather than `u64`: a negative would make
+/// the *whole* struct fail to parse, silently dropping `chunk_index` too, and
+/// falling back to a full re-ingest over a value the daemon cannot produce.
+///
+/// They are numbers, so `#[serde(default)]` is enough here — but see
+/// `hookio`'s module docs for the rule that is **not** obvious and that C4b
+/// got wrong once: a daemon field that can be `null` must be `Option<T>`,
+/// because `default` covers an absent key and not an explicit null.
+///
+/// It lives here rather than in `session_start` because C4b is the second
+/// caller — see [`recover`].
+#[derive(Debug, serde::Deserialize)]
+pub struct Mirror {
+    #[serde(default)]
+    pub confirmed_offset: i64,
+    #[serde(default)]
+    pub chunk_index: i64,
+}
+
+impl Mirror {
+    /// The mirror as a fresh `SessionState`, always through the constructor
+    /// that takes only the durable cursor.
+    pub fn into_state(&self, session_id: &str, bank_id: &str) -> SessionState {
+        SessionState::recovered(
+            session_id,
+            bank_id,
+            self.confirmed_offset.max(0) as u64,
+            self.chunk_index.max(0) as u64,
+        )
+    }
+}
+
+/// `GET /v1/banks/{bank}/sessions/{sid}` — the wiped-state-dir recovery.
+///
+/// `session-start` gets the same shape back from its upsert and does not need
+/// this. **`retain` does**, and that is not symmetry for its own sake: a state
+/// dir wiped *mid-session* is a case `session-start` cannot cover, because it
+/// does not fire mid-session and `retain` is the hook that does. §Failure
+/// posture says the case is handled by `session-start` preferring the mirror;
+/// that is true only of a wipe between sessions.
+///
+/// Without it, retain re-ingests the whole transcript under **chunk 0's bare
+/// `document_id`**, and `routes/retain.rs` rebuilds `documents.metadata` from
+/// scratch — overwriting the real chunk 0's `message_count`/`files_modified`.
+/// The daemon's own `RetainRequest::chunk` doc names this exact scenario as
+/// the reason C1 added the column, so without this call C1 built a column for
+/// a recovery nothing performed.
+///
+/// `None` for anything at all — no daemon, a 404, an unreadable body — and the
+/// caller starts from zero, which is what it would have done anyway.
+pub fn recover(cfg: &HooksConfig, bank_id: &str, session_id: &str) -> Option<Mirror> {
+    let target = target(cfg).ok()?;
+    let path = format!(
+        "/v1/banks/{}/sessions/{}",
+        http::encode_path_segment(bank_id),
+        http::encode_path_segment(session_id)
+    );
+    let response = http::get(&target, &path, &interactive_timeouts(cfg)).ok()?;
+    response
+        .is_success()
+        .then(|| serde_json::from_slice(&response.body).ok())
+        .flatten()
 }
 
 /// Spawns a child that outlives us, wired to `/dev/null` on all three streams.

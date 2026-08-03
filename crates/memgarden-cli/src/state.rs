@@ -51,6 +51,16 @@ pub struct Pending {
     pub offset_from: u64,
     pub offset_to: u64,
     pub chunk_before: u64,
+    /// What `compactions` was before this delta's boundaries were added, so a
+    /// rollback restores it and the re-send's re-count lands on the same
+    /// total. Without it the counter is an **upper** bound that inflates once
+    /// per rollback.
+    ///
+    /// `#[serde(default)]` so a `pending` written before this field existed
+    /// reconciles as a rollback to 0 rather than failing to parse and costing
+    /// the whole state file.
+    #[serde(default)]
+    pub compactions_before: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,10 +120,35 @@ pub struct SessionState {
     /// `[hooks] retain_every_n_turns`.
     pub turns_since_retain: u64,
     /// `compact_boundary` lines seen. Counted and reported, never acted on
-    /// (plan §Binding decisions #6). A lower bound, not an exact count: a
-    /// rollback-and-resend re-counts the boundaries in the re-sent delta.
+    /// (plan §Binding decisions #6).
+    ///
+    /// **Exact**, and it takes two things to keep it that way: it is
+    /// accumulated only where the cursor actually advances (so a failed POST
+    /// does not inflate it), and `Pending::compactions_before` restores it on
+    /// a rollback (so a re-send's re-count is not added twice). C4b's first
+    /// version accumulated before the send decision and called the result a
+    /// lower bound; it was an upper one.
     pub compactions: u64,
     pub pending: Option<Pending>,
+
+    /// Bytes the daemon accepted, settled, and then declined to confirm.
+    ///
+    /// A retain job can finish `done` with `chunks_failed > 0`: the worker
+    /// wrote *some* facts, so the job did not fail, but it withheld the
+    /// content hash and therefore did not advance `sessions.confirmed_offset`
+    /// (`retain/mod.rs`'s `clean`). That gap is permanent — the `pending`
+    /// record that could have re-sent is cleared by the same `done` — and the
+    /// daemon-side number that would have shown it, `inflight_bytes`, is only
+    /// a lower bound, because a later clean job's confirm writes straight over
+    /// an earlier job's gap.
+    ///
+    /// So the hook keeps its own running total. `hooks status` (C5) reads
+    /// state files already, so this needs no endpoint and no schema — and it
+    /// is what makes the shadow run able to evaluate the re-entry criterion
+    /// that decides whether C4b's trade was right. See
+    /// `docs/design/c4b-hook-retain.md` §Known limits.
+    #[serde(default)]
+    pub unconfirmed_bytes: u64,
 
     /// Connection refused, timeout, unparseable body. Drives the circuit
     /// breaker. A merely-down daemon lives here and can never poison a
@@ -146,6 +181,7 @@ impl SessionState {
             turns_since_retain: 0,
             compactions: 0,
             pending: None,
+            unconfirmed_bytes: 0,
             transport_failures: 0,
             reject_failures: 0,
             breaker_open_until_ms: 0,
@@ -409,6 +445,45 @@ pub fn ensure_dir(dir: &Path) -> std::io::Result<()> {
 /// unlocked, because the alternative is dropping a turn's state to protect
 /// against a race with ourselves.
 pub fn with_lock<T>(dir: &Path, session_id: &str, f: impl FnOnce() -> T) -> std::io::Result<T> {
+    locked(dir, session_id, false, f)
+}
+
+/// [`with_lock`], except that a lock **held by another MemGarden process is
+/// not waited for** — `f` runs unlocked instead.
+///
+/// This exists because C4b made the hold time unbounded-ish. `retain` holds
+/// this lock across the reconcile `GET`, the retain `POST` and, on a 404, a
+/// bank-create plus a second `POST` — up to ~10.8 s of configured client
+/// budget. `recall` derives the **same** lock path and runs on every
+/// `UserPromptSubmit`, so a blocking acquire puts a retain's network time
+/// directly onto the interactive path. Measured before this call existed:
+/// `recall: acquired after 1.949767098s`.
+///
+/// Two things make waiting the wrong answer rather than merely a slow one:
+/// C3's circuit breaker is checked **inside** the lock, so it cannot cheapen a
+/// caller that is blocked on acquisition; and `hook_bench` measures one hook in
+/// isolation, so the stall is invisible to the very instrument the phase is
+/// measured with.
+///
+/// **Skipping the wait is not a new degradation.** [`with_lock`] already runs
+/// `f` unlocked when `lock()` errors, and C3's `record` already re-reads state
+/// inside the lock precisely because the value may have moved. The cost of
+/// losing the race here is one recall's counter update — the same thing
+/// `with_lock`'s existing fallback risks — against an unbounded interactive
+/// stall.
+///
+/// // ponytail: no retry. One `try_lock`, then proceed. A short bounded
+/// // spin if a counter update ever turns out to matter more than a prompt.
+pub fn with_try_lock<T>(dir: &Path, session_id: &str, f: impl FnOnce() -> T) -> std::io::Result<T> {
+    locked(dir, session_id, true, f)
+}
+
+fn locked<T>(
+    dir: &Path,
+    session_id: &str,
+    try_only: bool,
+    f: impl FnOnce() -> T,
+) -> std::io::Result<T> {
     let path = path_for(dir, session_id).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -434,9 +509,13 @@ pub fn with_lock<T>(dir: &Path, session_id: &str, f: impl FnOnce() -> T) -> std:
     // and therefore no `libc`: this crate's dependency closure is CI-enforced
     // and a `read(true)` open is already the property that matters.
     let handle = open_private(&lock_path).or_else(|_| File::open(&lock_path))?;
-    let locked = handle.lock().is_ok();
+    let held = if try_only {
+        handle.try_lock().is_ok()
+    } else {
+        handle.lock().is_ok()
+    };
     let out = f();
-    if locked {
+    if held {
         let _ = handle.unlock();
     }
     Ok(out)
@@ -495,7 +574,9 @@ mod tests {
                 offset_from: 4096,
                 offset_to: 65536,
                 chunk_before: 1,
+                compactions_before: 0,
             }),
+            unconfirmed_bytes: 8192,
             transport_failures: 1,
             reject_failures: 2,
             breaker_open_until_ms: 1234,
@@ -599,10 +680,11 @@ mod tests {
         let state = load(dir.path(), "old").expect("an older shape is not a parse failure");
         assert_eq!(state.offset, 4096);
         assert_eq!(state.transcript_path, "");
-        // The C4b-era field takes the same treatment: absent reads as empty,
-        // which is what `none_if_empty` turns into a `null` the daemon
-        // leaves alone.
+        // The C4b-era fields take the same treatment: absent reads as the
+        // zero value rather than as a parse failure that costs a recovery
+        // round trip.
         assert_eq!(state.cwd, "");
+        assert_eq!(state.unconfirmed_bytes, 0);
     }
 
     /// `load_all` is the catch-up child's only way to find the sessions it did
@@ -729,6 +811,64 @@ mod tests {
         store(&path, &SessionState::new("s1", "b1")).unwrap();
         assert_eq!(load(&path, "s1").unwrap().turns, 0);
         held.unlock().unwrap();
+    }
+
+    /// **The C4b regression guard.** `retain` holds this lock across up to
+    /// ~10.8 s of configured network budget, and `recall` derives the same
+    /// path on every prompt. `with_lock` waits for it; `with_try_lock` must
+    /// not.
+    ///
+    /// Both halves are asserted, because a `try_lock` that silently waited and
+    /// a `lock` that silently did not are the same one-word mutation.
+    #[test]
+    fn a_try_lock_does_not_wait_for_a_held_lock_but_a_plain_one_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        // A holder that keeps the lock for a distinguishable 400 ms — long
+        // enough that a blocking acquire cannot be mistaken for a fast one,
+        // short enough not to slow the suite.
+        let hold = std::time::Duration::from_millis(400);
+
+        std::thread::scope(|scope| {
+            let holder = scope.spawn({
+                let path = path.clone();
+                move || {
+                    with_lock(&path, "s1", || std::thread::sleep(hold)).unwrap();
+                }
+            });
+            // Give the holder time to actually acquire before racing it.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            let started = std::time::Instant::now();
+            let ran = with_try_lock(&path, "s1", || true).unwrap();
+            let waited = started.elapsed();
+            assert!(ran, "`f` must run whether or not the lock was taken");
+            assert!(
+                waited < std::time::Duration::from_millis(200),
+                "with_try_lock waited {waited:?} for a held lock"
+            );
+            holder.join().unwrap();
+        });
+
+        // The other half: a plain `with_lock` against the same holder DOES
+        // wait, which is what `retain` still relies on.
+        std::thread::scope(|scope| {
+            let holder = scope.spawn({
+                let path = path.clone();
+                move || {
+                    with_lock(&path, "s1", || std::thread::sleep(hold)).unwrap();
+                }
+            });
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let started = std::time::Instant::now();
+            with_lock(&path, "s1", || {}).unwrap();
+            let waited = started.elapsed();
+            assert!(
+                waited >= std::time::Duration::from_millis(200),
+                "with_lock returned after {waited:?}; it is not excluding anything"
+            );
+            holder.join().unwrap();
+        });
     }
 
     #[test]

@@ -22,41 +22,12 @@
 //! catch-up.
 
 use memgarden_core::config::Config;
-use serde::Deserialize;
 
 use crate::http;
 use crate::state::{self, SessionState};
 use crate::{bank, hookio};
 
-use super::MAX_SESSION_ID_BYTES;
-
-/// What the daemon's `sessions` mirror is allowed to tell recovery.
-///
-/// **`byte_offset` is deliberately not a field**, and that is the whole point
-/// of this struct existing rather than reusing the response shape.
-/// `SessionResponse` (C1) carries both cursors; seeding `offset` from the
-/// optimistic one skips exactly the bytes the dual cursor exists to protect,
-/// because it is what some hook *POSTed* — already ahead of reality after a
-/// failed job or the byte-budget 429, where the mirror advanced and the hook
-/// deliberately did not.
-///
-/// C2a's `SessionState::recovered` names its parameter `confirmed_offset` to
-/// make the right thing the easy thing, and C2a's own review recorded that
-/// this is not enough: every `SessionState` field is `pub`, so C2b could still
-/// assign `offset` directly. **A field that is never deserialized cannot be
-/// misused**, so the wrong cursor is not merely discouraged here — it is not
-/// present. serde ignores unknown fields, so it never reaches this process.
-///
-/// Both fields are `i64` and clamped rather than `u64`: a negative would make
-/// the *whole* struct fail to parse, silently dropping `chunk_index` too, and
-/// falling back to a full re-ingest over a value the daemon cannot produce.
-#[derive(Debug, Deserialize)]
-struct Mirror {
-    #[serde(default)]
-    confirmed_offset: i64,
-    #[serde(default)]
-    chunk_index: i64,
-}
+use super::{MAX_SESSION_ID_BYTES, Mirror};
 
 /// What the round trip to the daemon told us, split by what each outcome is
 /// allowed to move (§Failure posture).
@@ -106,12 +77,7 @@ pub fn run() {
             // construction behind anything unresolved, so there is no in-flight
             // job to reconcile and re-sending from it is at-least-once: the
             // daemon's `doc_key` content hash answers `duplicate`.
-            Mirrored::Ok(m) => SessionState::recovered(
-                &input.session_id,
-                &bank_id,
-                m.confirmed_offset.max(0) as u64,
-                m.chunk_index.max(0) as u64,
-            ),
+            Mirrored::Ok(m) => m.into_state(&input.session_id, &bank_id),
             _ => SessionState::new(&input.session_id, &bank_id),
         });
         // Refreshed on every start, including a `resume`: Claude Code has been

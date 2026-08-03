@@ -304,7 +304,7 @@ fn fetch(cfg: &Config, bank_id: &str, query: &str) -> Outcome {
 /// `session-start`: this runs on every prompt, and a temp-create + write +
 /// `rename` per prompt would be pure cost for a write that changes nothing.
 ///
-/// It is **not** "no state I/O": `with_lock` runs unconditionally, so the lock
+/// It is **not** "no state I/O": `with_try_lock` runs unconditionally, so the lock
 /// file is still opened and flocked, and the state file is still read inside
 /// it. The `rename` is the part the C2b argument was about and the part that
 /// is avoided. Moving the lock inside the `st != baseline` branch would save
@@ -325,7 +325,20 @@ fn record(
     outcome: &Outcome,
     now_ms: i64,
 ) -> Option<SessionState> {
-    state::with_lock(dir, session_id, || {
+    // **`with_try_lock`, not `with_lock`.** C4b's `retain` holds this same
+    // lock across its reconcile `GET` and its retain `POST` — up to ~10.8 s of
+    // configured budget — and this function runs on **every**
+    // `UserPromptSubmit`. Blocking here puts a retain's network time straight
+    // onto the interactive path. Worse, C3's breaker is checked *inside* the
+    // lock, so none of the machinery that makes a hung daemon cheap can help a
+    // caller stuck on acquisition, and `hook_bench` measures one hook at a
+    // time so it cannot see the stall at all.
+    //
+    // Losing the race costs this recall's counter update. `with_lock` already
+    // runs `f` unlocked when the lock errors, so this is the same accepted
+    // degradation rather than a new one — and the re-read below is what makes
+    // it safe either way.
+    state::with_try_lock(dir, session_id, || {
         // Re-read inside the lock: `run` loaded a snapshot before a round trip
         // that can take `recall_timeout_ms`, and an `async: true` Stop's retain
         // may have moved the cursor in between.
