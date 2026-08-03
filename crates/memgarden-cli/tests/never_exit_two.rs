@@ -22,12 +22,12 @@ fn run(args: &[&str], stdin: &[u8], env: &[(&str, &str)]) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn memgarden");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(stdin)
-        .expect("write stdin");
+    // Best-effort, and it has to be: `hook noop` never reads stdin, so it can
+    // exit before we finish writing and hand us EPIPE. That is the subject
+    // under test behaving correctly — a hook that exits without draining its
+    // input — and a `.expect()` here made CI fail on a race in the *harness*.
+    // The exit code is the assertion; the write is only a fixture.
+    let _ = child.stdin.take().expect("stdin").write_all(stdin);
     child.wait_with_output().expect("wait")
 }
 
