@@ -18,6 +18,7 @@ The name is the design. Memory here is not a bucket you throw things into; it is
 - **Honest about its own value.** Every retain records what the input caps saved (**−75.3% measured** on a real session) into a benefit ledger. Metrics collection costs **88ns per request** — 0.00025% of the latency budget — so measuring the system can never distort what it measures.
 - **Korean works properly.** CJK has no word boundaries, so a naive full-text index silently returns nothing. The FTS layer is built for it (unicode61 + prefix indexing + prefix-suffixed terms) and a guard test fails the build if that ever regresses.
 - **Bounded everywhere it touches untrusted input.** Transcripts, tool payloads, entity names, prompt sizes, and queue depth all have caps with tests — because in the previous system each of those, uncapped, produced a real incident.
+- **Recall quality is measured, not asserted.** A committed 2,718-fact corpus and 20 graded gold queries produce recall@k / MRR / nDCG, so a ranking change reports a delta instead of a feeling. It has already paid for itself: the embedded reranker looked like a +0.077 nDCG win until a temporal bug was fixed, after which the same measurement showed **+0.008 with recall@10 going negative** — which is why it ships off.
 - **Reviewed like it matters.** Every change lands as a PR through a three-way review (functional / security / code) with adversarial re-verification: fixes are confirmed by mutation-testing them, and a ported algorithm was differentially fuzzed against its Python original across 4,000 cases.
 
 ## Why rebuild
@@ -32,13 +33,13 @@ The legacy stack (hindsight daemon + embedded Postgres + Python hooks) works, bu
 ## Architecture
 
 ```
-Claude Code hooks (Phase C: Rust subcommands, <10ms)
+Claude Code hooks (Rust subcommands, measured 0.24ms — budget 10ms)
         │ raw transcript / query
         ▼
 memgardend (axum, :9100) ──────────── web UI (dashboard + graph viewer, Phase E)
  ├─ retain: caps → chunk → Ollama extraction → facts + entities + links
  ├─ recall: FTS5 BM25 + sqlite-vec KNN → RRF fusion → token budget
- ├─ consolidate / reflect (Phase B tail)
+ ├─ consolidate / reflect / reranker (off by default — see below)
  ├─ in-binary embeddings (fastembed, bge-small 384-dim, CPU)
  └─ metrics: lock-free atomics (19.4ns/op) + benefit ledger
         ▼
@@ -61,8 +62,8 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 | Phase | Scope | State |
 |---|---|---|
 | A — Foundation | workspace/CI, SQLite schema, REST skeleton, metrics plumbing (CE-1..3, MX-1) | ✅ merged |
-| B — Core pipeline | embeddings CE-4 ✅ · Ollama extraction CE-5a ✅ · retain ingest CE-5b ✅ · hybrid recall CE-6 ✅ · entities/graph CE-7 ✅ · temporal CE-8 🔄 · consolidation CE-9 · reflect CE-10 · reranker CE-11 | 🔄 in progress |
-| C — Hooks | 4 Rust hook subcommands, global settings switch | ⏳ |
+| B — Core pipeline | embeddings CE-4 · Ollama extraction CE-5a · retain ingest CE-5b · hybrid recall CE-6 · entities/graph CE-7 · temporal CE-8 · consolidation CE-9 · reflect CE-10 · reranker CE-11, plus vector-space tagging AX-1 and the recall-quality harness AX-2 | ✅ merged |
+| C — Hooks | session/turn state ✅ · CLI foundation + hook-latency harness ✅ · session-start · recall · retain · install & cutover switch | 🔄 in progress |
 | D — Migration | Postgres → SQLite exporter, lossless-verification script | ⏳ |
 | E — UI & metrics | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views | ⏳ |
 | F — Cutover | quality-parity A/B + performance gates + lossless migration → legacy shutdown | ⏳ |
@@ -76,6 +77,8 @@ cargo test --workspace                       # full suite (unit + API + schema)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p memgardend                      # daemon on 127.0.0.1:9100
 cargo test -p memgardend -- --ignored        # live tests (need Ollama running)
+cargo run -p memgarden-cli --bin hook_bench  # hook latency, interleaved-paired
+./scripts/hook-budget.sh                     # binary size, ldd set, dependency closure
 ```
 
 Configuration: `config.example.toml` → `~/.config/memgarden/config.toml`, env overrides `MEMGARDEN_*`. The daemon creates its data dir `0700` and speaks plain HTTP on loopback with a Host-header guard — it is a single-user local tool by design.
@@ -85,6 +88,8 @@ Configuration: `config.example.toml` → `~/.config/memgarden/config.toml`, env 
 - `crates/memgarden-core` — types, config, lock-free metrics
 - `crates/memgarden-store` — SQLite layer (migrations, vec/FTS, banks/nodes/search/ledger)
 - `crates/memgardend` — the daemon (routes, Ollama client, extraction, retain pipeline, embed worker)
+- `crates/memgarden-cli` — the `memgarden` hook binary (loopback HTTP, session state, bank derivation); dependency-closure-checked in CI, because a hook pays for its binary on every invocation
+- `gold/` — the frozen recall-quality corpus, graded queries, and the results ledger
 - `docs/PRD.md` — the deep-interview product spec this repo executes
 - `docs/design/` — one design note per merged PR (mirrored to my Obsidian vault)
 
