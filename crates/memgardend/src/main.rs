@@ -74,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
     let metrics_task_handle = tokio::spawn(metrics_task::run(
         db.clone(),
         cfg.metrics_snapshot_interval_secs,
+        cfg.hooks.session_retention_days,
     ));
     // Spawned *after* the listener binds (decision #1): a first-run model
     // download must not delay the port bind.

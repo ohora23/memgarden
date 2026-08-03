@@ -10,19 +10,6 @@ use memgarden_core::error::Result;
 use memgarden_core::metrics::METRICS;
 use memgarden_store::{Db, metrics_store, sessions};
 
-/// How long a `sessions` row outlives its last sighting.
-///
-/// // ponytail: a constant, not config, and it rides the metrics timer
-/// // rather than owning one. Two ceilings, both deliberate:
-/// //  * C2a adds `[hooks] session_retention_days` for the CLI and this
-/// //    becomes `cfg.hooks.session_retention_days`; landing half of that
-/// //    section here would only collide with C2a. 90 is what C2a defaults to.
-/// //  * `[metrics] snapshot_interval_secs = 0` disables the whole task, and
-/// //    therefore this GC too — sessions then accumulate forever. Acceptable
-/// //    while the coupling is one line and one process; the upgrade path is
-/// //    its own interval, not a second timer bolted to the same tick.
-pub const SESSION_RETENTION_DAYS: i64 = 90;
-
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Serializes the current METRICS snapshot, inserts it as a row, and expires
@@ -34,12 +21,22 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 /// indexed `DELETE` and there is already a timer running: unbounded session
 /// accumulation is what pushed legacy into its 10,000-entry truncation hack
 /// (`state.py:111-114`), and a slower, simpler answer is enough to prevent it.
-pub fn tick(db: &Db) -> Result<()> {
+///
+/// `session_retention_days` is `[hooks] session_retention_days` (C2a). It is
+/// a parameter rather than the constant C1 shipped so that the number the CLI
+/// documents and the number that reaches this `DELETE` cannot drift apart.
+///
+/// // ponytail: the GC rides the metrics timer rather than owning one, so
+/// // `[metrics] snapshot_interval_secs = 0` disables it too and sessions then
+/// // accumulate forever. Acceptable while the coupling is one line and one
+/// // process; the upgrade path is its own interval, not a second timer bolted
+/// // to the same tick.
+pub fn tick(db: &Db, session_retention_days: u64) -> Result<()> {
     let payload = serde_json::to_string(&METRICS.snapshot())
         .map_err(|e| memgarden_core::Error::Storage(e.to_string()))?;
     metrics_store::insert_snapshot(db, &payload)?;
 
-    let cutoff = memgarden_core::now_ms() - SESSION_RETENTION_DAYS * DAY_MS;
+    let cutoff = memgarden_core::now_ms() - session_retention_days as i64 * DAY_MS;
     let dropped = sessions::gc(db, cutoff)?;
     if dropped > 0 {
         tracing::info!(dropped, cutoff, "expired stale session rows");
@@ -52,8 +49,8 @@ pub fn tick(db: &Db) -> Result<()> {
 /// take the daemon down.
 ///
 /// `interval_secs == 0` disables the task, and with it the session GC. See
-/// `SESSION_RETENTION_DAYS`.
-pub async fn run(db: Arc<Db>, interval_secs: u64) {
+/// `tick`.
+pub async fn run(db: Arc<Db>, interval_secs: u64, session_retention_days: u64) {
     if interval_secs == 0 {
         return;
     }
@@ -68,7 +65,7 @@ pub async fn run(db: Arc<Db>, interval_secs: u64) {
         tokio::select! {
             _ = ticker.tick() => {
                 let db = db.clone();
-                match tokio::task::spawn_blocking(move || tick(&db)).await {
+                match tokio::task::spawn_blocking(move || tick(&db, session_retention_days)).await {
                     Ok(Ok(())) => {}
                     // `tick` does the snapshot AND the session GC, so the message
                     // names the tick rather than guessing which half failed.

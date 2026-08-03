@@ -90,7 +90,7 @@ async fn snapshot_task_writes_row() {
     };
 
     let before = count_rows();
-    metrics_task::tick(&db).unwrap();
+    metrics_task::tick(&db, 90).unwrap();
     assert_eq!(count_rows(), before + 1);
 }
 

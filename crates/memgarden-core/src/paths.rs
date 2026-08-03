@@ -6,6 +6,7 @@ const APP_DIR: &str = "memgarden";
 const DB_FILE: &str = "memgarden.db";
 const CONFIG_FILE: &str = "config.toml";
 const MODELS_SUBDIR: &str = "models";
+const HOOKS_SUBDIR: &str = "hooks";
 
 /// Pure resolution of the data directory from explicit env values.
 /// `$XDG_DATA_HOME/memgarden` if set (non-empty), else `$HOME/.local/share/memgarden`.
@@ -50,6 +51,14 @@ pub fn models_dir_from(xdg_data_home: Option<&str>, home: Option<&str>) -> Resul
     Ok(data_dir_from(xdg_data_home, home)?.join(MODELS_SUBDIR))
 }
 
+/// Pure resolution of the hook state dir: `<data_dir>/hooks` (C2a). The
+/// per-session cache files of plan §Binding decisions #5 live directly under
+/// it as `<session_id>.json`; there is no second `sessions/` level, because
+/// nothing else is ever written here.
+pub fn hooks_state_dir_from(xdg_data_home: Option<&str>, home: Option<&str>) -> Result<PathBuf> {
+    Ok(data_dir_from(xdg_data_home, home)?.join(HOOKS_SUBDIR))
+}
+
 fn non_empty(v: Option<&str>) -> Option<&str> {
     v.filter(|s| !s.is_empty())
 }
@@ -81,6 +90,14 @@ pub fn default_db_path() -> Result<PathBuf> {
 /// Thin wrapper reading the real process environment.
 pub fn models_dir() -> Result<PathBuf> {
     models_dir_from(
+        std::env::var("XDG_DATA_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+/// Thin wrapper reading the real process environment.
+pub fn hooks_state_dir() -> Result<PathBuf> {
+    hooks_state_dir_from(
         std::env::var("XDG_DATA_HOME").ok().as_deref(),
         std::env::var("HOME").ok().as_deref(),
     )
@@ -154,6 +171,12 @@ mod tests {
     fn models_dir_is_data_dir_plus_subdir() {
         let p = models_dir_from(Some("/x/data"), Some("/home/u")).unwrap();
         assert_eq!(p, PathBuf::from("/x/data/memgarden/models"));
+    }
+
+    #[test]
+    fn hooks_state_dir_is_data_dir_plus_subdir() {
+        let p = hooks_state_dir_from(Some("/x/data"), Some("/home/u")).unwrap();
+        assert_eq!(p, PathBuf::from("/x/data/memgarden/hooks"));
     }
 
     #[test]
