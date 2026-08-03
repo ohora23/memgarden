@@ -380,6 +380,26 @@ chunk" the wrong trade. The fix then is not in this hook: it is a per-chunk
 byte range in `retain_jobs`, so a re-send can carry the failed chunk alone.
 That is a C1-shaped change, not a C4b one.
 
+### A later clean job confirms straight over an earlier job's gap
+
+Read from the source rather than observed, because both jobs in the run above
+failed a chunk. The worker's clean-run block writes
+`confirmed_offset = task.byte_offset` unconditionally, and `store::sessions`
+merges it with `MAX`. So a clean job covering 1008399..2163159 sets the durable
+cursor to 2,163,159 **even if an earlier job left 0..1008399 unsettled**.
+
+This is the defect C1's review already fixed once, on the other path:
+`confirm_if_settled` exists precisely because "a duplicate at offset 1500 says
+nothing about bytes 900..1500 that some other job was supposed to carry". The
+identical argument applies to the clean-run confirm and no guard was added
+there.
+
+Consequence: `inflight_bytes` is a **lower bound** on unsettled bytes, not a
+measurement of them, which weakens the exact number §Open questions 6 tells the
+runbook to watch. It is a C1 change (`retain/mod.rs`'s `clean` block wants the
+same `confirm_if_settled` treatment), out of scope here, and flagged rather
+than fixed in a PR that does not touch the store.
+
 ### The rollback window is one job wide
 
 A session with a `pending` job whose daemon then dies mid-run keeps that
@@ -500,12 +520,171 @@ them is invalid at any percentile (C3).
 
 A real `memgardend` (schema 7, embedding ready, Ollama `qwen3-14b-nothink`
 ready) on a throwaway port **9142** against a throwaway database. 9077 (legacy
-hindsight) and 9090 (memdash) were never bound. The transcript is three growing
-slices of a real Claude Code transcript — 400, 800 and 1,200 lines of
-`e622d119-…jsonl`, copied out; the live file itself was only ever read.
+hindsight) and 9090 (memdash) were never bound, and the user's own Ollama on
+11434 was never stopped. The transcript is three growing slices of a real
+Claude Code transcript — 400, 800 and 1,200 lines of `e622d119-…jsonl`, copied
+out; the live file itself was only ever read.
 
-See the PR body for the full session transcript.
+### Three rounds against a growing file
+
+```
+### round 1 — 400 real lines, 1,008,399 bytes
+  state    : offset=1008399 chunk=1 turns=10 tsr=0 pending=019fc9a6 (0..1008399, chunk_before=0)
+  sessions : byte_offset=1008399 confirmed_offset=0 inflight=1008399 chunk=0 turns=10 retains=1 messages_sent=35
+  job 019fc9a6: running chunks 0/4 failed=0 facts=0
+  documents: 1 | doc_keys: ['verify-session-1']
+```
+
+The dual cursor, doing the only thing it exists for: **`inflight=1,008,399`
+while the job is in flight.** The optimistic cursor has moved, the durable one
+has not, and the difference is exactly the bytes whose fate is unknown.
+
+```
+  job 019fc9a6: done chunks 3/4 failed=1 facts=34
+      error=failed to parse ollama response as JSON after retries:
+            expected `,` or `}` at line 1 column 4369
+
+### round 2 — 800 real lines, 2,163,159 bytes
+  state    : offset=2163159 chunk=2 turns=20 tsr=0 pending=019fc9af (1008399..2163159, chunk_before=1)
+  sessions : byte_offset=2163159 confirmed_offset=0 inflight=2163159 chunk=1 turns=20 retains=2 messages_sent=67
+  documents: 2 | doc_keys: ['verify-session-1', 'verify-session-1-c1']
+
+### round 3 — 1,200 real lines, 2,900,135 bytes
+  state    : offset=2900135 chunk=3 turns=30 tsr=0 pending=019fc9b2 (2163159..2900135, chunk_before=2)
+  sessions : byte_offset=2900135 confirmed_offset=0 inflight=2900135 chunk=2 turns=30 retains=3 messages_sent=101
+  documents: 3 | doc_keys: ['verify-session-1', 'verify-session-1-c1', 'verify-session-1-c2']
+```
+
+Round 2 proves the reconcile: it found job 1 `done`, cleared `pending`, and
+posted the next delta from `1008399` under `-c1`. The `document_id` ladder is
+visible in `doc_keys` — bare, `-c1`, `-c2`, one document per accepted delta,
+which is the provenance §Binding decisions #7 is about.
+
+**The cursors did not converge**, and that is the finding above rather than a
+failure of the run: both jobs hit `chunks_failed=1` on a truncated model reply,
+so the daemon withheld both content hashes.
+
+### The forced failure, and the rollback
+
+Extraction was forced to fail by repointing **this throwaway daemon's**
+`[ollama] base_url` at a dead port and restarting it — which also exercised
+`retain_jobs::fail_stale`. The user's Ollama was not stopped; the blast radius
+is one temp directory.
+
+```
+closed out retain jobs orphaned by a restart count=1
+  job 019fc9b2: failed chunks 3/35 failed=0 facts=5
+      error=daemon restarted before the job finished
+
+### Stop 31 — the reconcile finds a failed job
+memgarden: retain: job 019fc9b2-6273-7ce2-87df-6214addd5085 failed, rolling back to 2163159
+  state    : offset=2163159 chunk=2 turns=31 tsr=1 pending=none
+
+### Stops 32-40 — the gate; the rolled-back delta waits for it
+  state    : offset=2900135 chunk=3 turns=40 tsr=0 pending=019fc9b5 (2163159..2900135, chunk_before=2)
+  sessions : byte_offset=2900135 confirmed_offset=0 chunk=2 turns=40 retains=4 messages_sent=135
+  job 019fc9b5: running chunks 0/35 failed=0 facts=0
+  documents: 3 | doc_keys: ['verify-session-1', 'verify-session-1-c1', 'verify-session-1-c2']
+```
+
+This is the whole PR in eleven lines:
+
+* `offset` went **backwards**, 2,900,135 → 2,163,159, and `chunk` 3 → 2.
+* The re-send carries the **same byte range** and the **same `document_id`** —
+  `documents` stays at **3**, no fourth row, `chunk_before=2` restored.
+* `messages_sent` 101 → 135: the same 34 messages, sent again.
+* It waited for the turn gate rather than re-POSTing on the spot (§Diverged
+  from the plan 9).
+
+Without `pending`, `offset` would have stayed at 2,900,135 and those 736,976
+bytes would have been gone — the daemon's `fail_stale` marking the job
+`failed` would have had no reader.
+
+### The ledger
+
+```
+retain_cap_saving: raw=367118 capped=48010 saved=319108 ratio=0.8692  ->  -86.9%
+```
+
+**−86.9 %**, inside the **−55 % / −87 %** band from
+`/home/user/z_Setup/bank-b/docs/measurement.md` and next to that
+file's "Build session, 1,193 msgs → −87 %" row. Over the whole 5,793,165-byte
+real transcript, one forced retain.
+
+It took a second run to get it, and the reason is worth recording: with
+`[profile] name` unset — the **code** default, though `config.example.toml`
+ships `"coding"` — `include_tool_calls` is `false`, tool content is dropped in
+normalization before token counting, `saved_tokens` is 0 and
+`insert_ledger` is never called. **A default-profile install produces no
+`retain_cap_saving` rows at all**, which the example config already says in
+prose and which is easy to read as a bug in this hook when it is not one.
 
 ## Mutation evidence
 
-See the PR body.
+35 mutations, two rounds. Each reverted after its run.
+
+| # | mutation | caught by |
+|---|---|---|
+| 1 | rollback keeps the advanced offset | `a_missing_job_row_rolls_back_rather_than_wedging_the_session` |
+| 2 | rollback keeps the incremented chunk | `a_failed_job_rolls_the_cursor_back_and_the_same_bytes_are_re_sent` |
+| 3 | `chunk_before` captured after the increment | `an_accepted_retain_advances_the_cursor_and_records_the_job` |
+| 5 | `skipped` is not an accept | `duplicate_and_skipped_both_advance_without_a_pending_job` |
+| 6 | `duplicate` is not an accept | `duplicate_and_skipped_both_advance_without_a_pending_job` |
+| 7 | the breaker is not checked | `the_breaker_skips_the_socket_inside_its_window_and_not_beyond_it` |
+| 8 | poisoning is not checked | `ten_rejections_poison_and_the_retry_is_hourly_rather_than_per_turn` |
+| 9 | the breaker window has no upper bound | `cmd::tests::the_breaker_is_open_only_inside_a_window_it_could_have_written` |
+| 10 | a future `poisoned_at` throttles | `catchup::tests::a_poisoned_at_in_the_future_does_not_throttle_a_session_out_of_existence` |
+| 11 | `--force` does not bypass the gate | `catchup_posts_each_selected_session_and_re_checks_under_the_lock` |
+| 12 | the gate is off by one | `the_turn_gate_retains_on_the_tenth_stop_and_connects_on_no_other` |
+| 13 | `is_initial` is always false | `an_accepted_retain_advances_the_cursor_and_records_the_job` (5 tests) |
+| 14 | `document_id` has no suffix | `a_compaction_is_counted_and_never_drives_the_chunk` |
+| 15 | chunk 0 is suffixed too | `a_failed_job_rolls_the_cursor_back_and_the_same_bytes_are_re_sent` |
+| 16 | `429` poisons | `a_429_never_poisons_however_many_times_it_arrives` |
+| 17 | `503` counts a transport failure | `a_503_moves_no_counter_at_all` |
+| 19 | poisoning is off by one | `ten_rejections_poison_and_the_retry_is_hourly_rather_than_per_turn` |
+| 20 | an accept does not clear poisoning | `retain::tests::an_accept_advances_the_chunk_and_clears_every_failure_state` |
+| 21 | a shrunken transcript does not reset | `a_cursor_past_the_end_resets_and_a_caught_up_one_makes_no_request` |
+| 22 | any file type is a transcript | `retain::tests::only_a_regular_file_is_a_transcript` |
+| 23 | an empty delta does not advance | `a_delta_with_nothing_to_send_advances_the_cursor_without_a_post` |
+| 24 | compactions are not accumulated | `a_compaction_is_counted_and_never_drives_the_chunk` |
+| 25 | a missing job row is unsettled | `a_missing_job_row_rolls_back_rather_than_wedging_the_session` |
+| 26 | a running job does not skip the turn | `a_running_job_skips_the_turn_without_a_second_post` |
+| 27 | an unreachable reconcile counts nothing | `an_unanswerable_reconcile_skips_the_turn_and_counts_a_transport_failure` |
+| 29 | the 404 bank retry is skipped | `a_missing_bank_is_created_once_and_the_retain_retried_once` |
+| 30 | an end reason is sliced by bytes | `session_end::tests::a_reason_is_bounded_on_a_char_boundary` |
+| 31 | catch-up does not re-check under the lock | `catchup_posts_each_selected_session_and_re_checks_under_the_lock` |
+| 32 | catch-up posts on a dry run | `a_dry_run_catchup_still_posts_nothing` |
+
+**Round 1: 29 caught, 5 survived.** Each survivor got a test, and all five are
+caught in round 2:
+
+| # | survivor | now caught by |
+|---|---|---|
+| 4 | a `202` with no job id advances anyway | `a_202_without_a_job_id_does_not_advance_and_moves_no_counter` |
+| 18 | a 5xx poisons | `a_500_counts_a_transport_failure_and_never_poisons` |
+| 28 | `--force` scanned anywhere in argv | `force_in_a_value_slot_does_not_force_the_retain` |
+| 34 | the retain POST uses the interactive budget | `the_retain_post_waits_longer_than_the_interactive_budget` |
+| 35 | `cwd` sent as `""` rather than `null` | `an_absent_cwd_is_null_on_the_wire` |
+
+**Survivors, reported rather than papered over: none after round 2.**
+
+Two of the five deserve their reason recorded, because they are the ones that
+say something about the code rather than about the tests:
+
+* **#28** is not reachable today. Only `session-end` spawns this argv and it
+  always passes `--force` first, so a scan and a slot agree on every input the
+  binary can currently receive. It is pinned anyway, because C2b's version of
+  the identical defect was also unreachable right up until it was not.
+* **#34** is C3's known unpinned survivor, inherited and now closed. The test
+  costs 800 ms of wall clock and buys the difference between a 5 s budget and
+  one that abandons a retain the daemon has already queued.
+
+### And one defect no mutation could have found
+
+`duplicate_and_skipped_both_advance_without_a_pending_job` **failed on first
+run**, against code that looked right: `#[serde(default)]` does not cover an
+explicit `null`, and the daemon sends `"job_id": null` on every `duplicate` and
+every `skipped`. The struct failed to parse exactly the two answers the accept
+table was added for, and a failed parse is a transport failure — so the cursor
+stayed wedged on the response designed to unwedge it. Fixed by making both
+fields `Option<String>`.
