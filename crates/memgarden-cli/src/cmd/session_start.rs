@@ -123,6 +123,14 @@ pub fn run() {
         // (a `resume` from a different cwd, an edited `directory_bank_map`)
         // would leave the offset pointing into another bank's document.
         input.transcript_path.clone_into(&mut st.transcript_path);
+        // Stored for C4b's two detached callers, which have no payload and
+        // would otherwise post the retain with a `null` `cwd` — producing
+        // absolute `file:` tags for the same files the live hook tagged
+        // relatively. Only when non-empty, so an absent field never clobbers
+        // a good stored one.
+        if !input.cwd.is_empty() {
+            input.cwd.clone_into(&mut st.cwd);
+        }
         match mirrored {
             Mirrored::Ok(_) => {
                 st.transport_failures = 0;

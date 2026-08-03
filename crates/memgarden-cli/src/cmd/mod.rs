@@ -8,6 +8,8 @@
 
 pub mod catchup;
 pub mod recall;
+pub mod retain;
+pub mod session_end;
 pub mod session_start;
 
 use std::io::Write;
@@ -17,6 +19,7 @@ use std::process::{Command, Stdio};
 use memgarden_core::config::{Config, HooksConfig};
 
 use crate::http::{HttpError, Target, Timeouts};
+use crate::state::SessionState;
 
 /// legacy/daemon: `memgarden_store::sessions::MAX_SESSION_ID_BYTES` — the bound
 /// `store::sessions::upsert` enforces, mirrored rather than imported because
@@ -31,6 +34,18 @@ use crate::http::{HttpError, Target, Timeouts};
 /// It lives here rather than in one subcommand because C3 is the second caller
 /// and C4b is the third.
 pub const MAX_SESSION_ID_BYTES: usize = 200;
+
+/// daemon: `routes/sessions.rs::MAX_REASON_BYTES` — the bound
+/// `POST …/sessions` enforces on `end_reason`, mirrored for the same reason
+/// `MAX_SESSION_ID_BYTES` is.
+///
+/// Checked client-side because `reason` arrives on untrusted stdin (bounded
+/// only by `hookio`'s 8 MB) and C4b passes it **as an argv element** to a
+/// detached child. An 8 MB argv element is an `E2BIG` on the `execve`, which
+/// is a lost `session-end` retain rather than a 400 — a failure one layer
+/// further out than the daemon's own check can reach. Claude Code sends one of
+/// six documented words.
+pub const MAX_END_REASON_BYTES: usize = 64;
 
 /// Loads the config and hands it back **only when the hooks are on**.
 ///
@@ -72,6 +87,70 @@ pub fn debug(cfg: &HooksConfig, message: &str) {
 /// once here so `session-end` (C4b) inherits it rather than picking again.
 pub fn interactive_timeouts(cfg: &HooksConfig) -> Timeouts {
     Timeouts::from_ms(cfg.connect_timeout_ms, cfg.recall_timeout_ms)
+}
+
+/// The retain-POST budget, and **only** the retain POST.
+///
+/// `retain_timeout_ms` is 5 s because `POST …/retain`'s `prepare()` is
+/// synchronous before the 202: tokenize twice with `cl100k_base`, upsert the
+/// document, insert the ledger and job rows. ~0.6 s was observed on a 9.4 MB
+/// initial retain, so 400 ms would abandon a legitimate retain *after* the
+/// daemon had already queued it — the one failure shape §Binding decisions #8
+/// exists to make recoverable, arrived at by a client that gave up early.
+///
+/// C4b's other two requests — the reconcile `GET /v1/retain/{job_id}` and the
+/// 404 bank-create — deliberately use [`interactive_timeouts`] instead: they
+/// are single-row operations with no `prepare()` behind them, and the
+/// reconcile in particular runs on **gated** turns, where a 5 s budget against
+/// a hung daemon would cost a `Stop` five seconds before the breaker ever got
+/// to skip a socket.
+pub fn retain_timeouts(cfg: &HooksConfig) -> Timeouts {
+    Timeouts::from_ms(cfg.connect_timeout_ms, cfg.retain_timeout_ms)
+}
+
+/// Whether the circuit breaker is open *and* the stamp that says so is one we
+/// could plausibly have written.
+///
+/// **Both sides of the window are guarded.** `breaker_open_until_ms` is read
+/// from a file, and a value far enough in the future turns "skip for 60 s"
+/// into "never talk to the daemon again" — silently. No attacker is required:
+/// an NTP step, a VM resume or a dual-boot RTC produces one. Anything more
+/// than one cooldown ahead cannot have come from `breaker_cooldown_secs`, so
+/// it is treated as closed.
+///
+/// It lives here, next to [`poisoned_within_throttle`], because the same shape
+/// of bug was found independently in C2b (`poisoned_at`) and C3
+/// (`breaker_open_until_ms`) and C4b is the third caller of both. One guard
+/// where every caller routes through is a smaller diff than a guard per hook —
+/// and it is the only version a future hook cannot forget to write.
+pub fn breaker_open(state: &SessionState, cfg: &HooksConfig, now_ms: i64) -> bool {
+    let until = state.breaker_open_until_ms;
+    now_ms < until && until <= now_ms.saturating_add(breaker_cooldown_ms(cfg))
+}
+
+pub fn breaker_cooldown_ms(cfg: &HooksConfig) -> i64 {
+    i64::try_from(cfg.breaker_cooldown_secs.saturating_mul(1000)).unwrap_or(i64::MAX)
+}
+
+/// Whether `poisoned_at` is set and its retry window has not elapsed.
+///
+/// Poisoning is a **slow-retry state, not a latch**: a session the daemon has
+/// durably rejected retries once per `poison_retry_secs` rather than every
+/// turn, and any success clears it.
+///
+/// `poisoned_at <= now_ms` is the future-stamp guard, for
+/// [`breaker_open`]'s reason and with a worse consequence here: the window is
+/// an hour rather than a minute, and the process that reads it writes to
+/// `/dev/null`.
+pub fn poisoned_within_throttle(state: &SessionState, retry_secs: u64, now_ms: i64) -> bool {
+    let Some(poisoned_at) = state.poisoned_at else {
+        return false;
+    };
+    // Saturating throughout: `poison_retry_secs` is a `u64` from config and an
+    // operator who writes `u64::MAX` should get "never retry", not an overflow
+    // panic in a process nobody is watching.
+    let window_ms = i64::try_from(retry_secs.saturating_mul(1000)).unwrap_or(i64::MAX);
+    poisoned_at <= now_ms && now_ms < poisoned_at.saturating_add(window_ms)
 }
 
 /// The **only** production way to build a [`Target`]: the daemon's url plus
@@ -133,4 +212,112 @@ pub fn spawn_detached(exe: &Path, args: &[&str]) {
     // Not waited on: the parent is about to exit and `init` reaps the child.
     // Waiting is the one thing "detached" must not do.
     let _ = command.spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> HooksConfig {
+        Config::defaults().unwrap().hooks
+    }
+
+    /// Moved here from `cmd::recall` when C4b became the third caller. The
+    /// window is asserted at **both** ends and one millisecond past the far
+    /// one, because the mutation this pins — dropping the upper conjunct — is
+    /// invisible to any test that only checks "open while inside".
+    #[test]
+    fn the_breaker_is_open_only_inside_a_window_it_could_have_written() {
+        let mut st = SessionState::new("s1", "b1");
+        let cfg = cfg();
+        let now = 1_000_000i64;
+        let cooldown = breaker_cooldown_ms(&cfg);
+
+        assert!(!breaker_open(&st, &cfg, now));
+        st.breaker_open_until_ms = now;
+        assert!(!breaker_open(&st, &cfg, now), "an expired stamp is closed");
+        st.breaker_open_until_ms = now + 1;
+        assert!(breaker_open(&st, &cfg, now));
+        st.breaker_open_until_ms = now + cooldown;
+        assert!(breaker_open(&st, &cfg, now), "the far edge is still open");
+
+        for absurd in [now + cooldown + 1, now + cooldown * 1000, i64::MAX] {
+            st.breaker_open_until_ms = absurd;
+            assert!(
+                !breaker_open(&st, &cfg, now),
+                "{absurd} wedged the hook off forever"
+            );
+        }
+    }
+
+    /// Moved here from `cmd::catchup` for the same reason, and asserted on the
+    /// same shape: both ends of the window, plus a stamp from the future.
+    #[test]
+    fn poisoning_throttles_inside_its_window_and_never_from_the_future() {
+        let mut st = SessionState::new("s1", "b1");
+        let retry_secs = 3600u64;
+        let window = 3_600_000i64;
+        let now = 1_000_000_000i64;
+
+        assert!(
+            !poisoned_within_throttle(&st, retry_secs, now),
+            "an unpoisoned session is never throttled"
+        );
+        st.poisoned_at = Some(now);
+        assert!(poisoned_within_throttle(&st, retry_secs, now));
+        st.poisoned_at = Some(now - window + 1);
+        assert!(poisoned_within_throttle(&st, retry_secs, now));
+        // The far edge: exactly one window old is a retry, not a skip.
+        st.poisoned_at = Some(now - window);
+        assert!(!poisoned_within_throttle(&st, retry_secs, now));
+
+        for future in [now + 1, now + window * 1000, i64::MAX] {
+            st.poisoned_at = Some(future);
+            assert!(
+                !poisoned_within_throttle(&st, retry_secs, now),
+                "poisoned_at = {future} (now = {now}) must not throttle"
+            );
+        }
+        // `u64::MAX` seconds is "never retry", not an overflow panic.
+        st.poisoned_at = Some(now);
+        assert!(poisoned_within_throttle(&st, u64::MAX, now));
+    }
+
+    /// The two budgets are not interchangeable, and a mutant that swaps them
+    /// is silent: `session-start` with 5 s looks healthy and `retain` with
+    /// 400 ms abandons a retain the daemon has already queued. Distinguishable
+    /// values, asserted in both directions.
+    #[test]
+    fn the_retain_budget_is_the_retain_budget_and_not_the_interactive_one() {
+        let mut cfg = cfg();
+        cfg.recall_timeout_ms = 400;
+        cfg.retain_timeout_ms = 5000;
+        assert_eq!(retain_timeouts(&cfg).io.as_millis(), 5000);
+        assert_eq!(interactive_timeouts(&cfg).io.as_millis(), 400);
+        // Both take the same connect budget: reaching the daemon costs the
+        // same microseconds whichever question we are about to ask.
+        assert_eq!(
+            retain_timeouts(&cfg).connect,
+            interactive_timeouts(&cfg).connect
+        );
+    }
+
+    /// The daemon 400s an `end_reason` over its own bound, and an `execve`
+    /// fails outright well before that. The mirrored constant has to be the
+    /// daemon's, not a rounder number near it.
+    #[test]
+    fn the_mirrored_bounds_match_the_daemons() {
+        assert_eq!(
+            MAX_SESSION_ID_BYTES,
+            memgarden_store_sessions_max_session_id_bytes()
+        );
+        assert_eq!(MAX_END_REASON_BYTES, 64);
+    }
+
+    /// `memgarden-store` is not in this crate's dependency budget, so the
+    /// bound is restated rather than imported. This function is where that
+    /// restatement is written down once.
+    fn memgarden_store_sessions_max_session_id_bytes() -> usize {
+        200
+    }
 }

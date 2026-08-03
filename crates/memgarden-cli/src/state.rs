@@ -75,6 +75,23 @@ pub struct SessionState {
     #[serde(default)]
     pub transcript_path: String,
 
+    /// The session's working directory, copied from whichever hook payload
+    /// last carried a non-empty one.
+    ///
+    /// Same shape and same reason as `transcript_path`, one PR later: the
+    /// **retain POST carries `cwd`** so the daemon can relativize its `file:`
+    /// tags, and the two callers that have no hook payload — C4b's detached
+    /// `session-end` child and the catch-up child — would otherwise post
+    /// `null` and produce absolute `file:` tags for the same files the live
+    /// hook tagged relatively. One session, two spellings of one path, is a
+    /// worse answer than one extra `#[serde(default)]` string.
+    ///
+    /// Not in plan §Binding decisions #5's state shape, for the same reason
+    /// `transcript_path` is not: the plan lists the fields the *live* hook
+    /// needs and both detached children need more than that.
+    #[serde(default)]
+    pub cwd: String,
+
     /// Byte position in the transcript file that has been POSTed.
     ///
     /// **Recovery seeds this from the mirror's `confirmed_offset`, never from
@@ -122,6 +139,7 @@ impl SessionState {
             session_id: session_id.to_string(),
             bank_id: bank_id.to_string(),
             transcript_path: String::new(),
+            cwd: String::new(),
             offset: 0,
             chunk: 0,
             turns: 0,
@@ -466,6 +484,7 @@ mod tests {
     fn sample(session_id: &str) -> SessionState {
         SessionState {
             transcript_path: "/tmp/transcript.jsonl".to_string(),
+            cwd: "/repo".to_string(),
             offset: 65536,
             chunk: 2,
             turns: 20,
@@ -580,6 +599,10 @@ mod tests {
         let state = load(dir.path(), "old").expect("an older shape is not a parse failure");
         assert_eq!(state.offset, 4096);
         assert_eq!(state.transcript_path, "");
+        // The C4b-era field takes the same treatment: absent reads as empty,
+        // which is what `none_if_empty` turns into a `null` the daemon
+        // leaves alone.
+        assert_eq!(state.cwd, "");
     }
 
     /// `load_all` is the catch-up child's only way to find the sessions it did
