@@ -5,9 +5,10 @@ hook subcommands built over C1–C4b become a thing a user can turn on, and — 
 part this PR is actually about — a thing they can turn back off without losing
 a byte of a file they share with four other tools.
 
-Branch `feat/hk-2-cutover-switch`. **698 tests in the workspace**, 229 of them
-in `memgarden-cli` — this PR adds 36: 18 `settings` unit tests, 3 `cmd::hooks`
-unit tests, and 15 in `tests/hooks_install.rs`.
+Branch `feat/hk-2-cutover-switch`. **706 tests in the workspace**, 237 of them
+in `memgarden-cli` — this PR adds 44: 25 `settings` unit tests, 3 `cmd::hooks`
+unit tests, and 16 in `tests/hooks_install.rs` — plus a 1,000-case property
+check run against the built binary.
 
 ---
 
@@ -67,7 +68,77 @@ The difference is load-bearing: the user's real `Stop` array could be written
 on one line, in which case our chunk and their entry share a line and a
 line-wise delete takes their hook with it.
 
-### Two guards that are not the happy path
+### The duplicate key — found by property-testing the built binary
+
+A settings.json with **two `"hooks"` keys** installed "successfully" and wired
+**zero hooks**. Duplicate keys are last-wins for every parser involved, but a
+forward scan finds the *first* member, so the splice landed in a member Claude
+Code discards. That is the one outcome worse than an error: `install` reported
+four entries written and `hooks status` agreed that none were wired. Neither
+was lying; they were describing different halves of the same file.
+
+`find_member` now scans the whole object even after a match and refuses on a
+second occurrence, at **both** levels — `"hooks"` and the event — naming the
+key and saying why an edit to the first one would be ignored.
+
+Found by a property check over **1,000 generated settings.json files**: nested
+containers, escaped quotes and backslashes, unicode escapes, Korean, `{`/`[`/
+`"hooks"` inside string *values*, single-line arrays, empty arrays, absent
+keys, tabs, CRLF and four indentation styles. Each is installed, re-installed
+and uninstalled through the real binary, asserting that the result still
+parses, that every pre-existing entry survives untouched, that a second install
+writes nothing, and that uninstall restores the bytes exactly. **1,000/1,000
+after the fix.**
+
+### What review found, and what it changed
+
+Three-way review (functional / security / code) plus the property check above.
+Nine findings changed code; every one of them is in the tests.
+
+**Two HIGH, and they were the same asymmetry.** Removal was driven by a literal
+byte search over a file four other tools rewrite, while everything else in the
+command reasons about the *parsed* document. That made `uninstall`
+simultaneously too weak and too strong:
+
+* **Too weak.** `MARKER` is `"statusMessage":"memgarden: ` with no space, and
+  every JSON serializer emits `": "`. One reformat by Claude Code's own
+  `/hooks` editor, `jq`, prettier or a format-on-save and all four markers were
+  gone — so `uninstall` printed *"nothing to remove"*, exited 0, and the hooks
+  kept firing while `status` reported all four events wired. The same binary
+  contradicted itself in two adjacent commands. Now the scan is
+  whitespace-tolerant across the colon, **and** the two views are reconciled: a
+  parse that still shows entries after the removal pass is
+  `SettingsError::Residual`, an error, not a quiet success.
+* **Too strong.** `chunk_span` accepted any line starting with `{` or `"`, so
+  an event member holding `[{another tool}, {ours}]` on one line was deleted
+  **whole** — someone else's hook gone, reported as `removed 1 entries`, exit
+  0. `validate` cannot see it; the result is valid JSON. Two guards now: the
+  line's key must be one we could have written (`hooks` or one of the four
+  events), and the span must contain exactly one `"command":` member. Anything
+  else is refused, and the residual check turns the refusal into a message.
+
+The rest, each with its test:
+
+| finding | change |
+|---|---|
+| duplicate `"hooks"` key → install wired zero and said four | `find_member` scans the whole object and refuses on a second occurrence, at both levels |
+| the temp file was created at `0666 & ~umask` and the mode copied *after* the content | `0600` at `create_new`, the owner's mode applied **before** the write; a file we create stays 0600 rather than taking the umask |
+| `rename` replaced a **symlinked** settings.json with a regular file, orphaning a dotfiles copy | the final component is canonicalized first, so the write lands on the real file and the link survives |
+| `backup` used `fs::copy`, which follows a symlink at the destination and truncates it | `create_new` at 0600 with a counter for same-millisecond collisions — the convention `state.rs` already documents being bitten by |
+| backups lived in the state dir, which `state::gc` prunes by `*.json` | they moved to `<state_dir>/backups/`; `gc` does not descend |
+| `state_dir()` fell back to `"."`, dropping a copy of settings.json into the cwd **and chmod 0700'ing it** | it returns `Option` and the write is refused instead |
+| `unconfirmed` probed 10 sessions in `read_dir` order while claiming "most recent" | sorted by state-file mtime; the cap is stated in the output |
+| a moved binary read as healthy — `wired_events` matches the marker, not the path | `status` stats the wired `command` and prints `STALE` with the repair |
+| `hooks <anything>` was exempt from `MEMGARDEN_HOOKS_DISABLE` and could exit 1 | only `install|uninstall|status` route here; everything else keeps the silent-zero arm |
+| a missing flag value silently defaulted — `--settings` fell back to the **real** `~/.claude/settings.json` | a flag whose value is missing is a usage error |
+| an unresolvable entry aborted the removal loop, hiding every later one | the scan steps past it and the residual check reports what is left |
+| LF inserted into a CRLF file left mixed endings, which invites the reformat that triggered the first HIGH | the file's own line ending is reused, and the deletion takes the `\r` with the `\n` |
+
+Two findings were **declined**, with reasons rather than silence: warning when
+the binary lives somewhere group-writable (advisory, and false-positive prone),
+and rejecting `--clear-poison` on `install`/`uninstall` (cosmetic).
+
+### Three guards that are not the happy path
 
 **The empty-container comma.** `[x,]` is not JSON. `trailing_comma` peeks past
 the bracket and omits it when the container is empty — which the fixture
@@ -77,8 +148,18 @@ exercises through an empty `"PreCompact": []` and through a bare `{}`.
 key spelling (`"hooks"`). The scanner returns `Unlocatable` and the
 command refuses, because the alternative is inserting a **second** `"hooks"`
 member — and last-wins duplicate keys would silently disable every hook in the
-first one. Same refusal for a `hooks` that is not an object or an event that is
-not an array.
+first one.
+
+**The key is there and holds the wrong thing.** A `"hooks"` that is not an
+object, or an event that is not an array, is `WrongType` — split out from
+`Unlocatable` because the shared message was actively misleading: it blamed an
+escaped key name for a file whose key is spelled perfectly and simply holds a
+string.
+
+A hand-written edge-case pass confirmed every refusal is **safe**: a BOM,
+JSONC-style comments, an escaped `hooks` key, wrong-typed values, a root array
+and an empty file are each declined with nothing written and the file
+unchanged.
 
 ---
 
@@ -397,6 +478,7 @@ test**).
 | `strings_that_contain_our_key_names_do_not_move_the_insertion_point` | the scanner being led by `"hooks"`/`"Stop"`/`[` inside a *string value* — the live file's SessionStart hook embeds a whole escaped JSON document |
 | `unusual_formatting_survives_the_round_trip` | tabs, CRLF, and a one-line document |
 | `a_hooks_key_of_the_wrong_type_is_refused_rather_than_shadowed` | a duplicate `"hooks"` key silently disabling every hook in the first one |
+| `a_duplicate_key_is_refused_rather_than_spliced_into_the_dead_member` | **the silent failure**: install reporting four entries written while wiring none. Both levels, plus the negative case (the same key at two *different* levels is not a duplicate — the real file has that shape everywhere) |
 | `a_file_that_changed_under_us_is_not_overwritten` | the read-modify-write window, and that no temp file is left behind when it fires |
 | `full_mode_refuses_while_legacy_is_wired_and_writes_nothing` | the double-injection ship, plus that a refusal writes nothing |
 | `a_bad_invocation_exits_one_and_never_two` | the crate guarantee, on the one family that can return a code |

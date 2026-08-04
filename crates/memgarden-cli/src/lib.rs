@@ -69,8 +69,15 @@ pub fn dispatch(args: &[String]) -> ExitCode {
     // must NOT silence it. A tool that reports whether the hooks are wired has
     // to work in exactly the state the user is asking about. Hence before the
     // disable check rather than after it.
-    if args.first().map(String::as_str) == Some("hooks") {
-        return cmd::hooks::run(args.get(1).map(String::as_str).unwrap_or(""), args);
+    // **Only the three real subcommands.** Routing on `args[0] == "hooks"`
+    // alone made every `hooks <anything>` argv exempt from the disable switch
+    // *and* able to exit 1 — so a typo in a hand-edited settings.json would
+    // print usage on a hook event, where before this PR every unrecognised
+    // argv exited 0 in silence. The unknown arm has no reason to be exempt.
+    if args.first().map(String::as_str) == Some("hooks")
+        && let Some(sub @ ("install" | "uninstall" | "status")) = args.get(1).map(String::as_str)
+    {
+        return cmd::hooks::run(sub, args);
     }
 
     // Checked once, here, before the match and before any config load — so no

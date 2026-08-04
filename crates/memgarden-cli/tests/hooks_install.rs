@@ -492,14 +492,31 @@ fn status_still_answers_when_the_hooks_are_disabled() {
 #[test]
 fn a_bad_invocation_exits_one_and_never_two() {
     let f = fixture(WITH_LEGACY);
+    // A real subcommand with a bad argument refuses visibly. `--settings`
+    // with its value missing is in here because the silent fallback was to
+    // the user's **real** `~/.claude/settings.json`.
     for args in [
-        vec!["hooks", "wat"],
-        vec!["hooks"],
         vec!["hooks", "install", "--dry-runn"],
         vec!["hooks", "install", "--mode", "loud"],
     ] {
         let out = f.run(&args);
         assert_code(&out, 1, &format!("{args:?}"));
+        assert_eq!(
+            f.settings_bytes(),
+            WITH_LEGACY,
+            "{args:?} wrote to the file"
+        );
+    }
+
+    // Anything that is *not* one of the three subcommands falls through to the
+    // crate's silent-zero arm instead. Only `install|uninstall|status` are
+    // routed to this family — a typo in a hand-edited settings.json has to
+    // stay a silent success on a hook event, which is what every unrecognised
+    // argv did before this PR.
+    for args in [vec!["hooks", "wat"], vec!["hooks"]] {
+        let out = f.run(&args);
+        assert_code(&out, 0, &format!("{args:?}"));
+        assert!(out.stdout.is_empty(), "{args:?} printed {:?}", stdout(&out));
         assert_eq!(
             f.settings_bytes(),
             WITH_LEGACY,

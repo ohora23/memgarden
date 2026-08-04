@@ -126,10 +126,37 @@ pub enum SettingsError {
     /// the alternative is inserting a **second** `"hooks"` member, and the
     /// last-wins duplicate would silently disable every hook in the first one.
     Unlocatable(&'static str),
+    /// The key exists and holds something we cannot splice into — a `"hooks"`
+    /// that is not an object, or an event that is not an array.
+    ///
+    /// Split out from [`SettingsError::Unlocatable`] because the two need
+    /// different advice and the shared message was actively misleading: it
+    /// blamed an escaped key name for a file whose key is spelled perfectly
+    /// and simply holds a string.
+    WrongType(&'static str),
+    /// The same key appears twice at the level we were about to edit.
+    ///
+    /// **This is the silent-failure case, and it is why the check exists.**
+    /// JSON duplicate keys are last-wins for every parser involved, but a
+    /// forward scan finds the *first* member — so the splice would land in a
+    /// member Claude Code ignores. Install would report four entries written
+    /// and wire **none of them**, which is the one outcome worse than an
+    /// error: `hooks status` would then agree, because it reads the same
+    /// last-wins view.
+    Duplicate(&'static str),
     /// The splice produced bytes that no longer parse. Nothing is written.
     /// This is the assertion that the scanner cannot corrupt the user's file
     /// even if every other belief in this module is wrong.
     WouldCorrupt(String),
+    /// `uninstall` finished and the parsed document still shows entries wired.
+    ///
+    /// The byte scan and the parse can disagree — a co-tenant that rewrote
+    /// this shared file through a pretty-printer leaves an entry the parse
+    /// sees and a scan may not resolve to a deletable chunk. Reporting
+    /// "nothing to remove" while four hooks keep firing is the one failure a
+    /// cutover switch must not have, so this is an error rather than a
+    /// partial success.
+    Residual(usize),
 }
 
 impl std::fmt::Display for SettingsError {
@@ -142,10 +169,31 @@ impl std::fmt::Display for SettingsError {
                 "the {k:?} key exists but is written in a form this editor cannot locate \
                  (an escaped key name?) — edit it by hand rather than risk a duplicate"
             ),
+            SettingsError::WrongType(k) => write!(
+                f,
+                "the {k:?} key holds something this editor cannot splice into — \
+                 \"hooks\" must be an object and an event must be an array. \
+                 Fix it by hand and run install again"
+            ),
+            SettingsError::Duplicate(k) => write!(
+                f,
+                "settings.json has more than one {k:?} key at the same level. \
+                 Duplicate keys are last-wins, so an edit to the first one would be \
+                 silently ignored — install would report success and wire nothing. \
+                 Delete the duplicate and run install again"
+            ),
             SettingsError::WouldCorrupt(e) => write!(
                 f,
                 "refusing to write: the edited file would not parse ({e}). \
                  This is a bug in memgarden; nothing was changed"
+            ),
+            SettingsError::Residual(n) => write!(
+                f,
+                "{n} memgarden entr{} still wired after the removal pass — the file has \
+                 been rewritten since install (a reformatter, or a hand edit) into a shape \
+                 this uninstaller cannot locate. Nothing was written. Remove them by hand, \
+                 or restore the timestamped backup from the install",
+                if *n == 1 { "y is" } else { "ies are" }
             ),
         }
     }
@@ -223,7 +271,13 @@ pub fn install(src: &str, bin: &Path) -> Result<Splice, SettingsError> {
             serde_json::from_str(&text).map_err(|e| SettingsError::Parse(e.to_string()))?;
         let (at, chunk) = insertion(&text, &doc, entry.event, &line)?;
         let indent = inner_indent(text.as_bytes(), at);
-        let inserted = format!("\n{indent}{chunk}");
+        // The file's own line ending, not ours. A bare LF into a CRLF file is
+        // byte-restorable and therefore harmless on its own — but it leaves a
+        // mixed-ending file, which an editor is then likely to normalise, and
+        // normalising is what H1's whitespace tolerance exists to survive.
+        // Not creating the trigger is cheaper than surviving it.
+        let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+        let inserted = format!("{newline}{indent}{chunk}");
         text.insert_str(at, &inserted);
         changed.push(format!("{indent}{chunk}"));
     }
@@ -255,15 +309,36 @@ pub fn uninstall(src: &str) -> Result<Splice, SettingsError> {
     // can contain a later chunk (the `"hooks": {…}` wrapper form holds the
     // event array that holds a group), so offsets from the previous round are
     // not valid after a removal.
-    while let Some(m) = text.find(MARKER) {
+    // `from` exists so an entry we cannot resolve does not hide every later
+    // one: the search restarts at 0 after each removal (a chunk can contain a
+    // later chunk), but steps past a refusal instead of ending the pass. What
+    // is left unresolved is reported by the residual check below.
+    let mut from = 0usize;
+    while let Some(m) = find_marker(text.as_bytes(), from) {
         let Some((start, end)) = chunk_span(text.as_bytes(), m) else {
-            // A marker we cannot resolve to a chunk is left in place: doing
-            // nothing is always recoverable, and the backup plus the printed
-            // path is the escape hatch for anything this refuses to touch.
-            break;
+            // Left in place deliberately: doing nothing is always recoverable,
+            // and deleting a span we cannot prove is ours is not.
+            from = m + 1;
+            continue;
         };
         changed.push(text[start..end].trim_start().to_string());
         text.replace_range(start..end, "");
+        from = 0;
+    }
+
+    // **The byte scan and the parsed view have to agree that we are done.**
+    // They can disagree, and the disagreement is silent in the worst
+    // direction: `install` decides idempotency from the *parsed* document,
+    // `uninstall` deletes from *raw bytes*, and any other tool that rewrites
+    // this shared file through a pretty-printer leaves an entry the parse
+    // still sees and a byte scan may not. Reporting "nothing to remove" while
+    // four hooks keep firing is the one failure a cutover switch must not
+    // have, so the residual is an error with the count in it.
+    let residual = serde_json::from_str::<serde_json::Value>(&text)
+        .map(|doc| wired_events(&doc).len())
+        .unwrap_or(0);
+    if residual > 0 {
+        return Err(SettingsError::Residual(residual));
     }
 
     if changed.is_empty() {
@@ -271,6 +346,41 @@ pub fn uninstall(src: &str) -> Result<Splice, SettingsError> {
     }
     validate(&text)?;
     Ok(Splice { text, changed })
+}
+
+/// The first byte of a `"statusMessage"` member whose value begins
+/// `memgarden: `, scanning **whitespace-tolerantly** across the colon.
+///
+/// [`MARKER`] is what [`group_line`] emits and is exact by construction — but
+/// `settings.json` is shared, and a co-tenant that rewrites it through
+/// `JSON.stringify(x, null, 2)` or `to_string_pretty` produces
+/// `"statusMessage": "memgarden: …"` with a space. Matching the emitted
+/// spelling only would make `uninstall` a no-op on a file that has merely been
+/// reformatted — while `status`, which reads the parse, still reported four
+/// hooks wired.
+///
+/// The opening `"` of the key is what is returned, because [`chunk_span`]
+/// only needs a byte inside the chunk.
+fn find_marker(s: &[u8], start: usize) -> Option<usize> {
+    const KEY: &[u8] = b"\"statusMessage\"";
+    const VALUE_PREFIX: &[u8] = b"\"memgarden: ";
+    let mut from = start.min(s.len());
+    while let Some(rel) = s[from..]
+        .windows(KEY.len())
+        .position(|w| w == KEY)
+        .map(|p| from + p)
+    {
+        let after_key = rel + KEY.len();
+        let colon = skip_ws(s, after_key);
+        if s.get(colon) == Some(&b':') {
+            let value = skip_ws(s, colon + 1);
+            if s.get(value..value + VALUE_PREFIX.len()) == Some(VALUE_PREFIX) {
+                return Some(rel);
+            }
+        }
+        from = rel + 1;
+    }
+    None
 }
 
 fn validate(text: &str) -> Result<(), SettingsError> {
@@ -301,6 +411,24 @@ pub fn wired_events(doc: &serde_json::Value) -> Vec<&'static str> {
         })
         .map(|entry| entry.event)
         .collect()
+}
+
+/// The `command` of **our** entry for `event`, if one is wired.
+///
+/// Exists so `status` can notice that the path it wired no longer resolves:
+/// `wired_events` deliberately matches on the marker and the subcommand
+/// rather than on the path, because that is what makes `install` idempotent
+/// after a rebuild — but it means a *moved* binary reads as healthy.
+pub fn wired_command(doc: &serde_json::Value, event: &str) -> Option<String> {
+    groups(doc, event)
+        .find(|hook| {
+            hook.get("statusMessage")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s.starts_with("memgarden: "))
+        })
+        .and_then(|hook| hook.get("command"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
 }
 
 /// The legacy (hindsight) hook commands wired for `event`, if any.
@@ -357,7 +485,7 @@ fn groups<'a>(
 fn insertion(
     text: &str,
     doc: &serde_json::Value,
-    event: &str,
+    event: &'static str,
     line: &str,
 ) -> Result<(usize, String), SettingsError> {
     let s = text.as_bytes();
@@ -368,7 +496,7 @@ fn insertion(
         // alone by the `filter` and lands here — where the splice would
         // produce a duplicate key, so `validate` is not enough. Refuse.
         if doc.get("hooks").is_some() {
-            return Err(SettingsError::Unlocatable("hooks"));
+            return Err(SettingsError::WrongType("hooks"));
         }
         let chunk = format!(
             r#""hooks": {{"{event}": [{line}]}}{comma}"#,
@@ -377,12 +505,12 @@ fn insertion(
         return Ok((root + 1, chunk));
     };
 
-    let hooks_at = find_member(s, root, "hooks").ok_or(SettingsError::Unlocatable("hooks"))?;
+    let hooks_at = find_member(s, root, "hooks").map_err(|e| e.at("hooks"))?;
     if hooks.get(event).and_then(|e| e.as_array()).is_none() {
         // Shape 2. Same refusal as above for a non-array event value: we
         // cannot insert into it and must not shadow it.
         if hooks.get(event).is_some() {
-            return Err(SettingsError::Unlocatable("event"));
+            return Err(SettingsError::WrongType(event));
         }
         let chunk = format!(
             r#""{event}": [{line}]{comma}"#,
@@ -392,7 +520,7 @@ fn insertion(
     }
 
     // Shape 1.
-    let event_at = find_member(s, hooks_at, event).ok_or(SettingsError::Unlocatable("event"))?;
+    let event_at = find_member(s, hooks_at, event).map_err(|e| e.at(event))?;
     Ok((
         event_at + 1,
         format!("{line}{}", trailing_comma(s, event_at)),
@@ -462,19 +590,56 @@ fn inner_indent(s: &[u8], after_open: usize) -> String {
 fn chunk_span(s: &[u8], marker: usize) -> Option<(usize, usize)> {
     let newline = s[..marker].iter().rposition(|&b| b == b'\n')?;
     let line_start = skip_ws_inline(s, newline + 1);
+    // The line ending install writes is the file's own, so on a CRLF file the
+    // deletion has to take the `\r` with the `\n`. Leaving it behind was
+    // measured, and it accumulates: `"hooks": {\r\r\r\r\n` after four rounds.
+    let start = match newline.checked_sub(1) {
+        Some(prev) if s[prev] == b'\r' => prev,
+        _ => newline,
+    };
 
-    // Does the line start with a wrapper we wrote, or with the group itself?
-    let starts_here = matches!(s.get(line_start), Some(b'{') | Some(b'"'));
-    if !starts_here {
-        return None;
+    match s.get(line_start)? {
+        // The group object itself — the shape install writes into an event
+        // array that already existed. Deleting it takes exactly one entry.
+        b'{' => {}
+        // A wrapper. **Two checks, and neither is optional.** Review
+        // demonstrated the unchecked version deleting an entire
+        // `"SubagentStop": [{other tool}, {ours}]` member — another tool's
+        // hook gone, reported as `removed 1 entries`, exit 0, and `validate`
+        // cannot see it because the result is valid JSON.
+        b'"' => {
+            let key_end = skip_string(s, line_start)?;
+            let key = s.get(line_start + 1..key_end - 1)?;
+            // 1. It has to be a key we could have written.
+            let ours = key == b"hooks" || ENTRIES.iter().any(|e| e.event.as_bytes() == key);
+            if !ours {
+                return None;
+            }
+        }
+        _ => return None,
     }
+
     let end = chunk_end(s, line_start)?;
     // The marker has to be inside what we are about to delete. Without this,
     // a line that merely *precedes* our chunk could claim it.
     if !(line_start..end).contains(&marker) {
         return None;
     }
-    Some((newline, end))
+    // 2. And it has to hold **only** our entry. One `"command"` member is one
+    // hook; a second belongs to somebody else and this span is not ours to
+    // delete. Refusing here is not a silent skip — `uninstall`'s residual
+    // check turns an unresolvable entry into a visible error.
+    // `"command":` with the colon, not `"command"` — every hook object also
+    // carries `"type":"command"`, whose *value* is the same eight bytes.
+    let occurrences = s
+        .get(line_start..end)?
+        .windows(b"\"command\":".len())
+        .filter(|w| *w == b"\"command\":")
+        .count();
+    if occurrences != 1 {
+        return None;
+    }
+    Some((start, end))
 }
 
 /// The end of the chunk starting at `start`: either `{…}` (a group) or
@@ -496,32 +661,70 @@ fn chunk_end(s: &[u8], start: usize) -> Option<usize> {
     Some(end)
 }
 
+/// Why a member lookup did not produce exactly one offset. Mapped to a
+/// [`SettingsError`] by the caller, which knows whether it was looking for
+/// `"hooks"` or for an event.
+enum NoMember {
+    NotFound,
+    Duplicate,
+}
+
+impl NoMember {
+    fn at(self, key: &'static str) -> SettingsError {
+        match self {
+            NoMember::NotFound => SettingsError::Unlocatable(key),
+            NoMember::Duplicate => SettingsError::Duplicate(key),
+        }
+    }
+}
+
 /// The byte offset of the value of `key` in the object whose `{` is at
 /// `obj_start`. Members are walked at exactly one level of nesting; a matching
 /// key deeper in the tree is not a match.
-fn find_member(s: &[u8], obj_start: usize, key: &str) -> Option<usize> {
+///
+/// **The whole object is scanned even after a match, to catch a duplicate
+/// key.** That is not thoroughness for its own sake: JSON duplicate keys are
+/// last-wins everywhere, but a forward scan finds the *first* member, so
+/// splicing into it would write into a member Claude Code discards. The result
+/// is the worst outcome available — install reports four entries written,
+/// `hooks status` reads the same last-wins view and agrees that none are
+/// wired, and nothing in the system is lying about anything except the effect.
+/// Verified against the built binary before this guard existed: a settings.json
+/// with two `"hooks"` keys installed "successfully" and wired zero hooks.
+fn find_member(s: &[u8], obj_start: usize, key: &str) -> Result<usize, NoMember> {
     if s.get(obj_start) != Some(&b'{') {
-        return None;
+        return Err(NoMember::NotFound);
     }
+    let mut found: Option<usize> = None;
     let mut i = skip_ws(s, obj_start + 1);
     while s.get(i) == Some(&b'"') {
-        let key_end = skip_string(s, i)?;
-        let found = s.get(i + 1..key_end - 1)? == key.as_bytes();
+        let Some(key_end) = skip_string(s, i) else {
+            break;
+        };
+        let matches = s
+            .get(i + 1..key_end - 1)
+            .is_some_and(|k| k == key.as_bytes());
         i = skip_ws(s, key_end);
         if s.get(i) != Some(&b':') {
-            return None;
+            break;
         }
         let value = skip_ws(s, i + 1);
-        if found {
-            return Some(value);
+        if matches {
+            if found.is_some() {
+                return Err(NoMember::Duplicate);
+            }
+            found = Some(value);
         }
-        i = skip_ws(s, skip_value(s, value)?);
+        let Some(after) = skip_value(s, value) else {
+            break;
+        };
+        i = skip_ws(s, after);
         if s.get(i) != Some(&b',') {
-            return None;
+            break;
         }
         i = skip_ws(s, i + 1);
     }
-    None
+    found.ok_or(NoMember::NotFound)
 }
 
 fn skip_ws(s: &[u8], mut i: usize) -> usize {
@@ -611,11 +814,65 @@ fn skip_container(s: &[u8], mut i: usize) -> Option<usize> {
 /// Every `install` and `uninstall` takes one first. The targeted line removal
 /// is the normal way back; this is the way back from everything else,
 /// including the residual race [`write_atomic`] documents and cannot close.
+/// **Backups live in their own subdirectory** — `<state_dir>/backups/` — and
+/// not next to the session state, because `state::gc` deletes every `*.json`
+/// in the state dir older than `session_retention_days` with no name filter.
+/// The backup is the documented recovery for the residual `write_atomic` race
+/// and for the acknowledged "uninstall eats a hand-added sibling entry" case;
+/// putting it where a per-turn hook prunes it gives the recovery path a silent
+/// expiry. `gc` does not descend, so a subdirectory is the whole fix.
+///
+/// The copy is written through `create_new` at 0600 rather than
+/// `std::fs::copy`, for the reason `state.rs` documents at length: `fs::copy`
+/// opens the destination `create(true).truncate(true)`, which **follows a
+/// symlink** — a planted `settings-backup-<ms>.json -> ~/.bashrc` would come
+/// back truncated and holding this file's contents.
+/// A same-millisecond collision takes the next free suffix rather than
+/// failing: `create_new` is what makes the symlink refusal work, but two
+/// operations inside one millisecond are ordinary (`install` immediately
+/// followed by `uninstall` in a script, which the property check does 1,000
+/// times), and a backup that errors aborts the whole command by design.
 pub fn backup(path: &Path, dir: &Path, now_ms: i64) -> std::io::Result<std::path::PathBuf> {
-    crate::state::ensure_dir(dir)?;
-    let dest = dir.join(format!("settings-backup-{now_ms}.json"));
-    std::fs::copy(path, &dest)?;
-    Ok(dest)
+    let dir = dir.join("backups");
+    crate::state::ensure_dir(&dir)?;
+    let mut source = std::fs::File::open(path)?;
+    let mut last = None;
+    for attempt in 0..64 {
+        let suffix = if attempt == 0 {
+            String::new()
+        } else {
+            format!("-{attempt}")
+        };
+        let dest = dir.join(format!("settings-backup-{now_ms}{suffix}.json"));
+        match open_private(&dest) {
+            Ok(mut destination) => {
+                std::io::copy(&mut source, &mut destination)?;
+                return Ok(dest);
+            }
+            // Taken already — by a previous backup in the same millisecond, or
+            // by a planted symlink. Both are "pick another name", and neither
+            // is a reason to follow it.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free backup name")
+    }))
+}
+
+/// `create_new` at mode 0600 — the same primitive `state::open_private` uses,
+/// restated here because that one is private to its module and this crate's
+/// dependency budget does not extend to a shared-utility crate for two calls.
+fn open_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::File::options();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 /// Writes `text` to `path` atomically, refusing if the file no longer holds
@@ -635,36 +892,58 @@ pub fn backup(path: &Path, dir: &Path, now_ms: i64) -> std::io::Result<std::path
 /// strictly stronger: a hash can collide, a comparison cannot. The residual
 /// race is unchanged and accepted — someone writing between this read and the
 /// `rename` still loses — and [`backup`] is its recovery.
+/// **The symlink is resolved first.** `rename` replaces the *final component*
+/// without following it, so a `~/.claude/settings.json` symlinked into a
+/// dotfiles repository — a common arrangement for a file people version —
+/// would be replaced by a regular file, silently orphaning the copy the user
+/// actually edits. `canonicalize` makes the write land on the real file, and
+/// puts the temp file beside it so the `rename` stays single-filesystem.
 pub fn write_atomic(path: &Path, text: &str, expected: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let dir = target.parent().unwrap_or_else(|| Path::new("."));
+    // A `CLAUDE_CONFIG_DIR` pointing somewhere fresh, or a machine where
+    // Claude Code has not started yet, otherwise fails here with a bare
+    // "No such file or directory" printed *after* the diff that said we were
+    // about to write. `create_dir_all` is a no-op when it already exists, so
+    // no existing directory's mode is touched.
+    if !dir.exists() {
+        std::fs::create_dir_all(dir)?;
+    }
     let tmp = dir.join(format!(".memgarden-settings.{}.tmp", std::process::id()));
     // `create_new`, like `state::create_temp`: the open fails rather than
-    // following a symlink someone planted at the temp path.
+    // following a symlink someone planted at the temp path. (`remove_file`
+    // above it is safe for the same reason — `unlink` removes the link, it
+    // does not follow it.)
     let _ = std::fs::remove_file(&tmp);
-    let mut file = std::fs::File::options()
-        .write(true)
-        .create_new(true)
-        .open(&tmp)?;
+    // **0600 at creation, widened afterwards — never the other way round.**
+    // Without the explicit mode the temp file lands at `0666 & ~umask`, which
+    // on this machine is 0664 against a settings.json that is 0660: a
+    // world-readable copy of the user's hook configuration for the duration of
+    // an fsync, and indefinitely if the process is killed before the rename.
+    let mut file = open_private(&tmp)?;
 
     let write = (|| {
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        // The user's own mode, not ours: settings.json is not a MemGarden
-        // file and a hook installer has no business tightening or loosening
-        // the permissions on it.
-        if let Ok(meta) = std::fs::metadata(path) {
+        // The user's own mode, not ours: settings.json is not a MemGarden file
+        // and a hook installer has no business tightening or loosening it.
+        // Applied *before* the content, so there is no window in which the
+        // bytes are on disk under the wrong permissions. A file we are
+        // creating for the first time keeps 0600 rather than the umask's
+        // opinion.
+        if let Ok(meta) = std::fs::metadata(&target) {
             std::fs::set_permissions(&tmp, meta.permissions())?;
         }
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
         // Last thing before the rename, deliberately: the smaller this window
         // is, the smaller the race it cannot close.
-        if std::fs::read(path).as_deref().unwrap_or_default() != expected {
+        if std::fs::read(&target).as_deref().unwrap_or_default() != expected {
             return Err(std::io::Error::other(
                 "settings.json changed while we were editing it — nothing written",
             ));
         }
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, &target)
     })();
 
     if write.is_err() {
@@ -888,12 +1167,49 @@ mod tests {
     fn a_hooks_key_of_the_wrong_type_is_refused_rather_than_shadowed() {
         assert!(matches!(
             install(r#"{"hooks": "off"}"#, &bin()),
-            Err(SettingsError::Unlocatable("hooks"))
+            Err(SettingsError::WrongType("hooks"))
         ));
         assert!(matches!(
             install(r#"{"hooks": {"Stop": "off"}}"#, &bin()),
-            Err(SettingsError::Unlocatable("event"))
+            // Named by the event rather than by the word "event": the message
+            // has to tell the user which key to go and fix.
+            Err(SettingsError::WrongType("Stop"))
         ));
+    }
+
+    /// **The silent-failure case.** Duplicate keys are last-wins for every
+    /// parser involved, but a forward scan finds the first member — so an
+    /// install would write into a member Claude Code discards, report four
+    /// entries written, and wire none. Verified against the built binary
+    /// before this guard existed.
+    ///
+    /// Both levels are covered, because they fail identically and are found
+    /// by different call sites.
+    #[test]
+    fn a_duplicate_key_is_refused_rather_than_spliced_into_the_dead_member() {
+        let events = r#""SessionStart": [], "UserPromptSubmit": [], "Stop": [], "SessionEnd": []"#;
+        let two_hooks = format!("{{\"hooks\": {{{events}}}, \"hooks\": {{{events}}}}}");
+        assert!(
+            matches!(
+                install(&two_hooks, &bin()),
+                Err(SettingsError::Duplicate("hooks"))
+            ),
+            "two hooks keys must refuse"
+        );
+
+        let two_events = format!("{{\"hooks\": {{\"Stop\": [], \"Stop\": [], {events}}}}}");
+        assert!(
+            matches!(
+                install(&two_events, &bin()),
+                Err(SettingsError::Duplicate("Stop"))
+            ),
+            "two event keys must refuse"
+        );
+
+        // And the guard is narrow: the same key at two *different* levels is
+        // not a duplicate, which is the shape the real file has all over it.
+        let nested = r#"{"other": {"hooks": {"Stop": []}}, "hooks": {"Stop": []}}"#;
+        assert!(install(nested, &bin()).is_ok());
     }
 
     /// Uninstalling a file we never touched is a no-op, not an edit.
@@ -1017,6 +1333,81 @@ mod tests {
         }
     }
 
+    /// A co-tenant rewriting this shared file through a pretty-printer turns
+    /// `"statusMessage":"` into `"statusMessage": "`. Matching only the
+    /// spelling we emit made `uninstall` a silent no-op on a file whose hooks
+    /// were still firing — and `status`, which reads the parse, still reported
+    /// four events wired. The scan is whitespace-tolerant across the colon.
+    #[test]
+    fn a_reformatted_file_can_still_be_uninstalled() {
+        let installed = install_ok(FIXTURE);
+        // Exactly what `JSON.stringify(x, null, 2)` and `to_string_pretty` do.
+        let reformatted = installed.replace("\"statusMessage\":\"", "\"statusMessage\": \"");
+        assert_ne!(reformatted, installed, "the fixture must actually change");
+
+        let out = uninstall(&reformatted).expect("uninstall");
+        assert_eq!(out.changed.len(), 4, "all four found after reformatting");
+        let doc: serde_json::Value = serde_json::from_str(&out.text).expect("valid json");
+        assert!(wired_events(&doc).is_empty());
+    }
+
+    /// **Never delete a member we did not write.** Review demonstrated the
+    /// unguarded version removing an entire
+    /// `"SubagentStop": [{other tool}, {ours}]` line — another tool's hook
+    /// gone, reported as `removed 1 entries`, exit 0. `validate` cannot catch
+    /// it: the result is perfectly good JSON.
+    ///
+    /// Both guards are asserted: the key has to be one we could have written,
+    /// and the span has to hold exactly one hook.
+    #[test]
+    fn a_member_holding_someone_elses_hook_is_never_deleted() {
+        let ours = group_line(&ENTRIES[2], &bin());
+
+        // Our entry sharing a wrapper line with another tool's: the span holds
+        // two `"command":` members, so it is not ours to delete. `Stop` *is*
+        // one of our events, so the entry left behind is a residual and the
+        // command fails rather than reporting success.
+        let shared = format!(
+            "{{\n  \"hooks\": {{\n    \"Stop\": [{{\"hooks\":[{{\"type\":\"command\",\"command\":\"/other/tool.sh\"}}]}},{ours}]\n  }}\n}}"
+        );
+        serde_json::from_str::<serde_json::Value>(&shared).expect("fixture parses");
+        match uninstall(&shared) {
+            Err(SettingsError::Residual(1)) => {}
+            other => panic!("expected Residual(1), got {other:?}\n{shared}"),
+        }
+
+        // A key we never write, holding a copy of our entry. Left alone, and
+        // *not* a residual: `SubagentStop` is not one of the four events this
+        // installer manages, so it is outside what uninstall claims to cover.
+        // Recorded here so the boundary is a decision rather than an accident.
+        let foreign = format!("{{\n  \"hooks\": {{\n    \"SubagentStop\": [{ours}]\n  }}\n}}");
+        let out = uninstall(&foreign).expect("not an error — simply not ours");
+        assert!(out.is_noop());
+        assert_eq!(out.text, foreign);
+    }
+
+    /// And when the scan genuinely cannot reach an entry the parse can see,
+    /// the command **fails** rather than reporting "nothing to remove". A
+    /// cutover switch whose off position silently does nothing is the one
+    /// failure it must not have.
+    #[test]
+    fn entries_the_scan_cannot_reach_are_an_error_not_a_silent_success() {
+        // A wired entry written in a shape the chunk scan refuses: the marker
+        // is on the same line as the array open, so there is no newline to
+        // anchor the deletion to.
+        let stuck = format!(
+            "{{\"hooks\": {{\"Stop\": [{}]}}}}",
+            group_line(&ENTRIES[2], &bin())
+        );
+        let doc: serde_json::Value = serde_json::from_str(&stuck).unwrap();
+        assert_eq!(wired_events(&doc), vec!["Stop"], "fixture must be wired");
+
+        match uninstall(&stuck) {
+            Err(SettingsError::Residual(1)) => {}
+            other => panic!("expected Residual(1), got {other:?}"),
+        }
+    }
+
     #[test]
     fn a_backup_is_a_copy_under_a_timestamped_name() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1030,6 +1421,117 @@ mod tests {
             "settings-backup-1700000000123.json"
         );
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), FIXTURE);
+
+        // **In its own subdirectory**, because `state::gc` deletes every
+        // `*.json` in the state dir older than the retention window with no
+        // name filter — which would give the documented recovery path a silent
+        // expiry. `gc` does not descend.
+        assert_eq!(dest.parent().unwrap(), dir.join("backups"));
+        assert!(!dir.join("settings-backup-1700000000123.json").exists());
+
+        // 0600: the backup holds the same content as a file the user may keep
+        // at 0600 themselves, and `fs::copy` would have set the mode after
+        // writing the bytes.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    /// `std::fs::copy` opens the destination `create(true).truncate(true)`,
+    /// which **follows a symlink** — the exact class `state.rs` documents
+    /// having been bitten by. A planted backup name must not truncate what it
+    /// points at.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_symlink_at_the_backup_path_is_not_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        std::fs::write(&path, FIXTURE).unwrap();
+        let precious = tmp.path().join("precious.conf");
+        std::fs::write(&precious, "do not lose me").unwrap();
+
+        let dir = tmp.path().join("hooks");
+        std::fs::create_dir_all(dir.join("backups")).unwrap();
+        std::os::unix::fs::symlink(&precious, dir.join("backups/settings-backup-7.json")).unwrap();
+
+        // It takes the next free name rather than following the link — and
+        // the link's target is untouched either way, which is the property
+        // that matters.
+        let dest = backup(&path, &dir, 7).expect("backup");
+        assert_ne!(dest.file_name().unwrap(), "settings-backup-7.json");
+        assert_eq!(
+            std::fs::read_to_string(&precious).unwrap(),
+            "do not lose me"
+        );
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), FIXTURE);
+    }
+
+    /// Two operations inside one millisecond is ordinary — `install` then
+    /// `uninstall` in a script — and a backup that errors aborts the command
+    /// by design, so a name collision must not be an error.
+    #[test]
+    fn two_backups_in_the_same_millisecond_both_survive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        std::fs::write(&path, FIXTURE).unwrap();
+        let dir = tmp.path().join("hooks");
+
+        let first = backup(&path, &dir, 42).unwrap();
+        let second = backup(&path, &dir, 42).unwrap();
+        assert_ne!(first, second);
+        for p in [&first, &second] {
+            assert_eq!(std::fs::read_to_string(p).unwrap(), FIXTURE);
+        }
+    }
+
+    /// `rename` replaces the final component without following it, so a
+    /// settings.json symlinked into a dotfiles repository would be replaced by
+    /// a regular file and the copy the user actually edits would be silently
+    /// orphaned.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_settings_file_is_written_through_rather_than_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("dotfiles").join("settings.json");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, "{}\n").unwrap();
+        let link = tmp.path().join("settings.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        write_atomic(&link, "{\"ours\":true}", b"{}\n").unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link).unwrap().is_symlink(),
+            "the link was replaced by a regular file"
+        );
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "{\"ours\":true}");
+    }
+
+    /// A settings.json this command **creates** must not inherit the process
+    /// umask. Without an explicit mode the temp file lands at `0666 & ~umask`
+    /// — 0664 on this machine — for a file that holds the user's hook
+    /// configuration.
+    #[cfg(unix)]
+    #[test]
+    fn a_created_settings_file_does_not_take_the_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+
+        write_atomic(&path, "{}\n", b"").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a file we create is ours to keep private");
+        // And no temp file is left behind.
+        let strays: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(strays.is_empty(), "{strays:?}");
     }
 
     /// The scanner walks members at one level only: a nested `"hooks"` inside

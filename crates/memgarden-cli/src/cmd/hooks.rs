@@ -70,9 +70,23 @@ fn parse(argv: &[String]) -> Args {
     let mut it = argv.iter().skip(2);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--mode" => args.mode = it.next().cloned().unwrap_or_default(),
-            "--settings" => args.settings = it.next().map(PathBuf::from),
-            "--clear-poison" => args.clear_poison = it.next().cloned(),
+            // A flag whose value is missing joins `unknown` rather than
+            // silently defaulting. `--settings` is why: with the value
+            // forgotten — or `--settings "$S"` with `S` unset — it fell back
+            // to the user's REAL ~/.claude/settings.json, which is the one
+            // file this family's own tests are forbidden from writing.
+            "--mode" => match it.next() {
+                Some(v) => args.mode = v.clone(),
+                None => args.unknown.push("--mode (missing value)".into()),
+            },
+            "--settings" => match it.next() {
+                Some(v) => args.settings = Some(PathBuf::from(v)),
+                None => args.unknown.push("--settings (missing value)".into()),
+            },
+            "--clear-poison" => match it.next() {
+                Some(v) => args.clear_poison = Some(v.clone()),
+                None => args.unknown.push("--clear-poison (missing value)".into()),
+            },
             "--dry-run" => args.dry_run = true,
             "--allow-double-injection" => args.allow_double_injection = true,
             other => args.unknown.push(other.to_string()),
@@ -210,12 +224,18 @@ fn install(args: &Args) -> ExitCode {
     }
 
     if existed {
-        match settings::backup(&path, &state_dir(), now_ms()) {
+        // No backup, no write — the backup is the recovery path for the one
+        // race the atomic write cannot close, so proceeding without it would
+        // be proceeding without the escape hatch. That includes not being able
+        // to decide *where* it goes: see `state_dir`.
+        let Some(dir) = state_dir() else {
+            println!("cannot resolve a backup directory (HOME and XDG_DATA_HOME unset)");
+            println!("— nothing written");
+            return ExitCode::FAILURE;
+        };
+        match settings::backup(&path, &dir, now_ms()) {
             Ok(dest) => println!("backup: {}", dest.display()),
             Err(e) => {
-                // No backup, no write. The backup is the recovery path for the
-                // one race the atomic write cannot close, so proceeding
-                // without it would be proceeding without the escape hatch.
                 println!("cannot write a backup ({e}) — nothing written");
                 return ExitCode::FAILURE;
             }
@@ -302,7 +322,12 @@ fn uninstall(args: &Args) -> ExitCode {
         println!("--dry-run: nothing written.");
         return ExitCode::SUCCESS;
     }
-    match settings::backup(&path, &state_dir(), now_ms()) {
+    let Some(dir) = state_dir() else {
+        println!("cannot resolve a backup directory (HOME and XDG_DATA_HOME unset)");
+        println!("— nothing written");
+        return ExitCode::FAILURE;
+    };
+    match settings::backup(&path, &dir, now_ms()) {
         Ok(dest) => println!("backup: {}", dest.display()),
         Err(e) => {
             println!("cannot write a backup ({e}) — nothing written");
@@ -374,18 +399,41 @@ fn status(args: &Args) -> ExitCode {
         Some(doc) => {
             ours = settings::wired_events(doc);
             theirs = legacy_wiring(doc);
+            let mut stale = Vec::new();
             for entry in settings::ENTRIES {
-                let mine = if ours.contains(&entry.event) {
-                    "memgarden"
-                } else {
-                    "-"
+                let wired = ours.contains(&entry.event);
+                // **A wired entry whose binary is gone is worse than none.**
+                // `wired_events` matches on the marker and the subcommand, not
+                // on the path, so `cargo install` landing somewhere else
+                // leaves `install` a no-op and every event still reporting
+                // "memgarden" while Claude Code spawns a path that does not
+                // exist, on every prompt, forever.
+                let missing = wired
+                    .then(|| settings::wired_command(doc, entry.event))
+                    .flatten()
+                    .filter(|cmd| !Path::new(cmd).exists());
+                let mine = match (&missing, wired) {
+                    (Some(_), _) => "STALE",
+                    (None, true) => "memgarden",
+                    (None, false) => "-",
                 };
+                if let Some(cmd) = missing {
+                    stale.push((entry.event, cmd));
+                }
                 let legacy = if theirs.iter().any(|(e, _)| e == entry.event) {
                     "hindsight"
                 } else {
                     "-"
                 };
                 println!("  {:<17} {:<10} {legacy}", entry.event, mine);
+            }
+            for (event, cmd) in &stale {
+                println!("  ! {event}: {} does not exist", elide(cmd, 90));
+            }
+            if !stale.is_empty() {
+                println!(
+                    "  ! the binary moved since install — run: hooks uninstall && hooks install"
+                );
             }
         }
         None => println!("  (unreadable or not valid JSON — nothing else can be said about it)"),
@@ -489,10 +537,27 @@ fn unconfirmed(cfg: &memgarden_core::config::HooksConfig, sessions: &[crate::sta
         return;
     };
     let timeouts = super::interactive_timeouts(cfg);
-    let probed = sessions.len().min(MAX_PROBES);
+    // **Most recent first, and the doc says so because the order decides
+    // which sessions the cap drops.** `state::load_all` returns `read_dir`
+    // order — filesystem order — so taking the first ten off it probed an
+    // arbitrary subset while the output claimed "10 most-recent". On a machine
+    // with more than ten state files that lets a shadow run read
+    // `unconfirmed 0 B` because the sessions with gaps were never asked.
+    let mut ordered: Vec<&crate::state::SessionState> = sessions.iter().collect();
+    ordered.sort_by_key(|s| {
+        std::cmp::Reverse(
+            crate::state::path_for(cfg.state_dir.as_path(), &s.session_id)
+                .and_then(|p| std::fs::metadata(p).ok())
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+        )
+    });
+    let probed = ordered.len().min(MAX_PROBES);
     let mut total = 0i64;
     let mut seen = 0usize;
-    for s in sessions.iter().take(MAX_PROBES) {
+    for s in ordered.iter().take(MAX_PROBES) {
         let path = format!(
             "/v1/banks/{}/sessions/{}",
             crate::http::encode_path_segment(&s.bank_id),
@@ -525,7 +590,7 @@ fn unconfirmed(cfg: &memgarden_core::config::HooksConfig, sessions: &[crate::sta
              chunks_failed cursor gap is open (docs/design/c4b-hook-retain.md)",
             sessions.len(),
             if sessions.len() > probed {
-                format!(", capped at {MAX_PROBES}")
+                format!(", capped at the {MAX_PROBES} most recent")
             } else {
                 String::new()
             }
@@ -641,11 +706,23 @@ fn legacy_wiring(doc: &serde_json::Value) -> Vec<(String, String)> {
         .collect()
 }
 
-fn state_dir() -> PathBuf {
+/// Where backups go. **`None` rather than a fallback**, and the caller aborts
+/// the write on `None`.
+///
+/// The earlier `unwrap_or_else(|| PathBuf::from("."))` was reachable — with
+/// `--settings <path>` set while `HOME` and `XDG_DATA_HOME` are both unset,
+/// which an `env -i` invocation, a systemd unit or a container produces — and
+/// it did two silent things: dropped a full copy of the user's settings.json
+/// into whatever directory they happened to be in, and, through
+/// `ensure_dir` → `ensure_data_dir`, **chmod 0700'd that directory**. On a
+/// shared or group-readable project checkout that is a real change nobody
+/// asked for. The backup is already mandatory, so failing to place it has to
+/// be a refusal rather than a guess.
+fn state_dir() -> Option<PathBuf> {
     Config::load()
         .map(|c| c.hooks.state_dir)
         .or_else(|_| memgarden_core::paths::hooks_state_dir())
-        .unwrap_or_else(|_| PathBuf::from("."))
+        .ok()
 }
 
 /// Truncated on a **char** boundary, not a byte one. The commands being
@@ -674,8 +751,12 @@ mod tests {
     fn the_default_mode_is_shadow() {
         assert_eq!(parse(&argv(&[])).mode, "shadow");
         assert_eq!(parse(&argv(&["--mode", "full"])).mode, "full");
-        // A `--mode` with nothing after it is not "full by accident".
-        assert_eq!(parse(&argv(&["--mode"])).mode, "");
+        // A `--mode` with nothing after it is neither "full by accident" nor
+        // a silent default — it is a usage error, like every other flag whose
+        // value went missing.
+        let bare = parse(&argv(&["--mode"]));
+        assert_eq!(bare.mode, "shadow");
+        assert_eq!(bare.unknown, vec!["--mode (missing value)"]);
     }
 
     #[test]
