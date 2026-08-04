@@ -1,0 +1,20 @@
+[book]
+title = "MemGarden Wiki"
+description = "Install, use, understand, extend and steer MemGarden — the Rust memory layer for Claude Code. English canonical, Korean alongside."
+authors = ["ohora23"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../target/wiki"
+create-missing = false
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/ohora23/memgarden"
+edit-url-template = "https://github.com/ohora23/memgarden/edit/master/book/{path}"
+# The wiki quotes measured numbers and code paths constantly; a reader who
+# cannot find "confirmed_offset" in three seconds will not look it up at all.
+search.enable = true
+search.limit-results = 20
