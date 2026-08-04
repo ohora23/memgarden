@@ -27,6 +27,30 @@ correction and invite the gap being "rediscovered" and re-opened wrongly.
 | **Knowledge-base folder/page tree over mental models** | `http.py:5257-5582` | A UI surface with no v1 requirement | A UI |
 | ~~**Session/turn-state tables**~~ **CLOSED by C1 (HK-1a)** | legacy `turns.json` / `retention_tracking.json` (`state.py:111-193`) | **Closed by `feat/hk-1a-session-state`** — `0007_sessions.sql` adds one row per `(bank_id, session_id)` with `store::sessions` and `POST/GET /v1/banks/{bank_id}/sessions`. The grain split this row used to gesture at is now explicit and enforced: `retain_jobs` is one row per retain *request*, `sessions` is one row per *session*, `sessions.retains` is a count and the detail stays in `retain_jobs` joined on `session_id`. Two cursors rather than one, because the daemon's `202` means *queued*: `byte_offset` is what the hook POSTed, `confirmed_offset` is what a clean job ingested, and the gap is the in-flight-or-lost window. Retention is by age (90 days, on the metrics tick), not legacy's 10,000-entry truncation. `docs/design/c1-session-state.md` | **Not a gap.** Legacy state is **not migrated and MG-1 will not migrate it**: legacy tracks a message *index*, `sessions` tracks a *byte offset*, and there is no function from one to the other without re-parsing every historical transcript. Every session starts at offset 0 after cutover — one initial retain each, bounded by `retain.max_initial_messages`. Reopen only if a *table* is missing, not a field |
 
+## Phase C — the hook layer
+
+Added by C5 (HK-2), the last Phase C PR, so the cutover gate reads one list
+rather than six hook design notes. Each row was checked against the legacy
+source **and** against the live `~/.hindsight/claude-code.json`: "unset in the
+live config" means we are matching the system as it actually runs, which is
+what AC-1 compares against.
+
+| Gap | Legacy | Why not ported | Re-entry criterion |
+|---|---|---|---|
+| **Daemon lifecycle management** — start on `SessionStart`, stop on `SessionEnd` | `lib/daemon.py`, `session_start.py:49`, `session_end.py:44` | A 5 s hook must not spawn a process that loads a 133 MB model; that shape *is* the pg0 restart race the rebuild removes. The embedded store also removed the reason auto-start was attractive: there is no second process to keep alive. `memgardend` is a long-lived user service and `hooks status` prints the command to start it | A user who wants `memgardend` on demand — **and** a start path that cannot race a migration |
+| **Cross-bank recall** (`recallAdditionalBanks`, `recallAdditionalBankFilters`) | `recall.py:207-237` | Unset in the live config. One bank per call keeps `hook recall` to a single round trip on the per-prompt path, which is the budget that matters | A shared user-profile bank that should be recalled alongside the project bank |
+| **Client-side score floors** (`recallMinScores`) | `recall.py:44-72` | `{}` in the live config — already disabled in the system we are matching. AX-2 and both external systems reviewed in Phase B argue against a hard cosine floor: it drops recall to zero on the queries it is meant to sharpen, and precision belongs in the reranker | AX-2 showing **precision**, not recall, is the binding constraint — and then the floor belongs in CE-6, not in a hook |
+| **Multi-turn query composition** (`recallContextTurns > 1`) | `recall.py:160-172` | `recallContextTurns: 1` in the live config, so it is off in the system we are matching. Enabling it would also put a transcript read on the **per-prompt** path, which is the one path with a 400 ms budget and a circuit breaker | An AX-2 run showing multi-turn queries beat single-turn on the gold set |
+| **Chunked retain mode** (`retainMode: "chunked"`) | `retain.py:117-127` | The live config is `full-session`. The two modes' `document_id` schemes are incompatible, and only one of them is in use | A workload where sliding-window overlap measurably improves extraction |
+| **`bankIdPrefix`, channel/user granularity** | `bank.py:85-143` | Openclaw multi-tenant leftovers with no Claude Code caller. `directoryBankMap` **is** ported (one `HashMap` lookup); the rest of the precedence chain has nothing to resolve | A second agent, or a multi-user deployment |
+| **`PostCompact` re-injection** | `recall.py:41` names `last_recall.json` as being "for PostCompact re-injection" — but no `PostCompact` hook exists in legacy's `hooks.json`, so it was never wired | **Nothing to port.** We keep the diagnostic file for the same reason legacy does: it is the only record of what the last recall returned | A measured case of context loss across a compaction boundary |
+
+Two Phase C items are **not** gaps and are recorded here so they are not read
+as such. The `settings.json` install is a line splice rather than a `Value`
+round-trip (C5), and `--mode full` refuses while legacy is wired
+(`docs/design/hk-2-cutover-switch.md`) — both are deliberate designs with tests,
+not missing features.
+
 ## What AC-1 does and does not cover for reflect
 
 AC-1 is a **recall** comparison. Both `POST /reflect` and mental-model refresh

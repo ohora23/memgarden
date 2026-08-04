@@ -20,9 +20,13 @@ fn main() -> ExitCode {
     }));
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    memgarden_cli::dispatch(&args);
 
     // The only `return` in the program. No `?`, no `std::process::exit` with
     // anything but 0, no `unwrap` outside the panic hook's reach.
-    ExitCode::SUCCESS
+    //
+    // C5 made this a value rather than the constant it was: `hooks install` is
+    // typed by a human and has to be able to refuse visibly (exit 1). Every
+    // `hook` path still returns `SUCCESS`, and `ExitCode` offers no way to
+    // say 2.
+    memgarden_cli::dispatch(&args)
 }
