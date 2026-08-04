@@ -7,6 +7,7 @@
 //! correct handling is "exit 0".
 
 pub mod catchup;
+pub mod hooks;
 pub mod recall;
 pub mod retain;
 pub mod session_end;
