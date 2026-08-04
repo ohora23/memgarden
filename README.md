@@ -33,7 +33,7 @@ The legacy stack (hindsight daemon + embedded Postgres + Python hooks) works, bu
 ## Architecture
 
 ```
-Claude Code hooks (Rust subcommands, measured 0.24ms — budget 10ms)
+Claude Code hooks (Rust subcommands, measured 0.85ms per turn — budget 10ms)
         │ raw transcript / query
         ▼
 memgardend (axum, :9100) ──────────── web UI (dashboard + graph viewer, Phase E)
@@ -63,12 +63,49 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 |---|---|---|
 | A — Foundation | workspace/CI, SQLite schema, REST skeleton, metrics plumbing (CE-1..3, MX-1) | ✅ merged |
 | B — Core pipeline | embeddings CE-4 · Ollama extraction CE-5a · retain ingest CE-5b · hybrid recall CE-6 · entities/graph CE-7 · temporal CE-8 · consolidation CE-9 · reflect CE-10 · reranker CE-11, plus vector-space tagging AX-1 and the recall-quality harness AX-2 | ✅ merged |
-| C — Hooks | session/turn state ✅ · CLI foundation + hook-latency harness ✅ · session-start · recall · retain · install & cutover switch | 🔄 in progress |
+| C — Hooks | session/turn state ✅ · CLI foundation + hook-latency harness ✅ · session-start ✅ · recall ✅ · transcript delta ✅ · retain ✅ · install & cutover switch ✅ | ✅ merged — shadow run next |
 | D — Migration | Postgres → SQLite exporter, lossless-verification script | ⏳ |
 | E — UI & metrics | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views | ⏳ |
 | F — Cutover | quality-parity A/B + performance gates + lossless migration → legacy shutdown | ⏳ |
 
 **Cutover gates (AC-1..3):** recall quality ≥ legacy on a fixed query set (human-judged), recall p50 ≤35ms / p95 ≤60ms with hook overhead <10ms, and node/link/document counts + 50-sample content diff proving lossless migration of the 3 existing banks.
+
+## Claude Code hooks
+
+Four hook subcommands of one small binary (496 KB–1.6 MB, glibc only, no
+tokio/SQLite/ONNX in its dependency closure — CI-enforced), wired into
+`~/.claude/settings.json` by the binary itself:
+
+```bash
+memgarden hooks install --dry-run    # print the exact lines, write nothing
+memgarden hooks install              # shadow mode — wires everything, injects nothing
+memgarden hooks status               # which system is wired per event, daemon health, poisoned sessions
+memgarden hooks uninstall            # restores the file to its pre-install bytes
+```
+
+Measured per invocation, interleaved-paired against the same binary doing
+nothing, N=300 — the whole per-turn cost is `recall` + `retain` = **0.85 ms**
+against the 10 ms budget:
+
+| | `session-start` | `recall` | `retain` (gated turn) | `session-end` |
+|---|---|---|---|---|
+| p50 | 0.549 ms | 0.465 ms | 0.380 ms | 0.361 ms |
+| p95 | 0.624 ms | 0.526 ms | 0.435 ms | 0.416 ms |
+
+Three properties the design is built around, all tested rather than intended:
+
+- **It can never exit 2.** On `UserPromptSubmit` exit 2 *erases what you typed*.
+  There is no `clap` (its usage errors exit 2), no `?` out of `main`, and a
+  panic hook that exits 0 with empty stdout.
+- **Installing turns nothing on.** Wiring lives in `settings.json`, injection
+  in `config.toml`, and the default install wires all four events in *shadow*
+  mode — real daemon calls, real latency, and nothing reaches the model.
+- **`settings.json` is edited by line splice, never reserialized.** Uninstall
+  restores the file byte for byte; a `serde_json` round-trip would silently
+  re-sort every key in a file shared with other tools.
+
+Full runbook — install, verify, shadow-evidence collection, rollback,
+coexistence with the legacy hooks: [`docs/runbook-hooks.md`](docs/runbook-hooks.md).
 
 ## Development
 
@@ -88,7 +125,7 @@ Configuration: `config.example.toml` → `~/.config/memgarden/config.toml`, env 
 - `crates/memgarden-core` — types, config, lock-free metrics
 - `crates/memgarden-store` — SQLite layer (migrations, vec/FTS, banks/nodes/search/ledger)
 - `crates/memgardend` — the daemon (routes, Ollama client, extraction, retain pipeline, embed worker)
-- `crates/memgarden-cli` — the `memgarden` hook binary (loopback HTTP, session state, bank derivation); dependency-closure-checked in CI, because a hook pays for its binary on every invocation
+- `crates/memgarden-cli` — the `memgarden` hook binary (loopback HTTP, session state, bank derivation, transcript delta reader, and the `settings.json` installer); dependency-closure-checked in CI, because a hook pays for its binary on every invocation
 - `gold/` — the frozen recall-quality corpus, graded queries, and the results ledger
 - `docs/PRD.md` — the deep-interview product spec this repo executes
 - `docs/design/` — one design note per merged PR (mirrored to my Obsidian vault)
