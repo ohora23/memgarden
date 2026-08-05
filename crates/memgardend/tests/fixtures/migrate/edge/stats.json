@@ -1,0 +1,83 @@
+{
+ "edge::legal-but-absent": {
+  "bank_id": "edge::legal-but-absent",
+  "stats": {
+   "bank_id": "edge::legal-but-absent",
+   "total_nodes": 4,
+   "total_documents": 1,
+   "total_observations": 1,
+   "nodes_by_fact_type": {
+    "world": 3,
+    "observation": 1
+   },
+   "links_by_link_type": {
+    "caused_by": 1
+   }
+  },
+  "documents": [
+   {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "content_hash": "28761af265b5ee2ca1970de7ca6a895b35151adb5fd74f9ae8018af54ea7db13",
+    "memory_unit_count": 3
+   }
+  ],
+  "memories_total": 4,
+  "documents_total": 1,
+  "memories_invalidated": 0,
+  "dropped": false
+ },
+ "edge::null-original-text": {
+  "bank_id": "edge::null-original-text",
+  "stats": {
+   "bank_id": "edge::null-original-text",
+   "total_nodes": 1,
+   "total_documents": 1,
+   "total_observations": 0,
+   "nodes_by_fact_type": {
+    "world": 1,
+    "observation": 0
+   },
+   "links_by_link_type": {
+    "caused_by": 0
+   }
+  },
+  "documents": [
+   {
+    "id": "00000000-0000-4000-8000-000000000002",
+    "content_hash": "n/a",
+    "memory_unit_count": 1
+   }
+  ],
+  "memories_total": 1,
+  "documents_total": 1,
+  "memories_invalidated": 0,
+  "dropped": false
+ },
+ "edge::observation-scopes": {
+  "bank_id": "edge::observation-scopes",
+  "stats": {
+   "bank_id": "edge::observation-scopes",
+   "total_nodes": 2,
+   "total_documents": 1,
+   "total_observations": 1,
+   "nodes_by_fact_type": {
+    "world": 1,
+    "observation": 1
+   },
+   "links_by_link_type": {
+    "caused_by": 0
+   }
+  },
+  "documents": [
+   {
+    "id": "00000000-0000-4000-8000-000000000003",
+    "content_hash": "8660b354496bc8635e83558ad19dea600d58373204ec9d969cf78672280954e2",
+    "memory_unit_count": 1
+   }
+  ],
+  "memories_total": 2,
+  "documents_total": 1,
+  "memories_invalidated": 0,
+  "dropped": false
+ }
+}
