@@ -179,6 +179,12 @@ pub struct RetainTask {
     /// on a clean run — same place, and for the same reason, as the content
     /// hash. `None` when the caller is not the hook.
     pub byte_offset: Option<i64>,
+    /// The other end of that range, and the **guard** for writing it: the
+    /// durable cursor advances to `byte_offset` only if it has already reached
+    /// `offset_from`, so a clean job cannot confirm over an earlier job's gap
+    /// (migration `0008`). `None` leaves the cursor alone rather than
+    /// advancing it on a guess.
+    pub offset_from: Option<i64>,
 }
 
 /// Total transcript bytes currently sitting in the retain queue.
@@ -374,16 +380,22 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
         let hash = task.content_hash.clone();
         let bank_id = task.bank_id.clone();
         let session_id = task.session_id.clone();
-        let byte_offset = task.byte_offset;
+        // Both ends. The confirm is **range-guarded** rather than
+        // unconditional: `MAX` merging meant a clean job covering
+        // 1008399..2163159 confirmed straight over an earlier job's unsettled
+        // 0..1008399, erasing the evidence of a gap it never carried. A job
+        // that cannot name its start does not confirm at all — over-reporting
+        // outstanding work is the safe direction here.
+        let range = task.offset_from.zip(task.byte_offset);
         let stored = tokio::task::spawn_blocking(move || {
             documents::set_content_hash(&db, document_id, &hash)?;
-            if let (Some(session_id), Some(byte_offset)) = (session_id, byte_offset) {
+            if let (Some(session_id), Some(range)) = (session_id, range) {
                 memgarden_store::sessions::upsert(
                     &db,
                     &bank_id,
                     &memgarden_store::sessions::SessionUpdate {
                         session_id: &session_id,
-                        confirmed_offset: Some(byte_offset),
+                        confirm_range: Some(range),
                         ..Default::default()
                     },
                 )?;
@@ -848,6 +860,7 @@ mod tests {
             tags: vec![],
             content_hash: "hash".to_string(),
             byte_offset: None,
+            offset_from: None,
         }
     }
 

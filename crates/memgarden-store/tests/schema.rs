@@ -1644,18 +1644,18 @@ fn migrate_upgrades_a_v5_database_in_place() {
 /// `WITHOUT ROWID`, and the `last_seen_at DESC` index — are each pinned by
 /// something that fails if the clause is deleted.
 ///
-/// This test carries the single **absolute** `LATEST_VERSION` pin; every
-/// other migration test asserts the derived constant.
+/// The absolute `LATEST_VERSION` pin moved to the 0008 test below when that
+/// migration landed; this one asserts the derived constant, like every other
+/// migration test.
 #[test]
 fn fresh_database_has_the_0007_sessions_schema() {
     let db = Db::open_memory().unwrap();
     let conn = db.read().unwrap();
 
-    assert_eq!(memgarden_store::LATEST_VERSION, 7);
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, memgarden_store::LATEST_VERSION);
 
     let n: i64 = conn
         .query_row("SELECT count(*) FROM sessions", [], |r| r.get(0))
@@ -1769,4 +1769,48 @@ fn migrate_upgrades_a_v6_database_in_place() {
     .unwrap();
     assert_eq!(row.byte_offset, 42);
     assert_eq!(sessions::list(&db, "legacy", 10, false).unwrap().len(), 1);
+}
+
+// --- 0008: the byte range a retain job carries ---------------------------
+
+/// A fresh database lands on v8 with `retain_jobs.offset_from` /
+/// `offset_to` in place.
+///
+/// This test carries the single **absolute** `LATEST_VERSION` pin; every
+/// other migration test asserts the derived constant.
+///
+/// The defaults are the load-bearing part. Every row written before this
+/// migration belongs to a job that has already settled or already failed, and
+/// `0, 0` has to read as **"unknown"** rather than as a claim that the job
+/// carried no bytes — because the guard built on `offset_from`
+/// (`sessions::SessionUpdate::confirm_range`) treats `0` as "starts at the
+/// beginning", which for a historical row would be a confirmation nobody
+/// made.
+#[test]
+fn fresh_database_has_the_0008_retain_cursor_range() {
+    let db = Db::open_memory().unwrap();
+    let conn = db.read().unwrap();
+
+    assert_eq!(memgarden_store::LATEST_VERSION, 8);
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 8);
+
+    for column in ["offset_from", "offset_to"] {
+        let (notnull, default): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT \"notnull\", dflt_value FROM pragma_table_info('retain_jobs')
+                 WHERE name = ?1",
+                [column],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or_else(|e| panic!("{column} missing from retain_jobs: {e}"));
+        assert_eq!(notnull, 1, "{column} must be NOT NULL");
+        assert_eq!(
+            default.as_deref(),
+            Some("0"),
+            "{column} needs a default so existing rows migrate"
+        );
+    }
 }

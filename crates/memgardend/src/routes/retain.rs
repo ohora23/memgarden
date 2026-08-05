@@ -85,6 +85,19 @@ pub struct RetainRequest {
     /// optimistic cursor.
     #[serde(default)]
     pub byte_offset: Option<i64>,
+    /// Byte position this request's messages **start** at — the hook's
+    /// `offset_from`, the other end of the same range.
+    ///
+    /// It exists so a clean run can confirm the durable cursor *without*
+    /// confirming over an earlier job's gap: the guard is
+    /// `confirmed_offset >= offset_from`, and no other persisted value can
+    /// stand in for it (`store::sessions::SessionUpdate::confirm_range`,
+    /// migration `0008`).
+    ///
+    /// Absent means "this caller cannot name its start", and the durable
+    /// cursor is then left alone rather than advanced on a guess.
+    #[serde(default)]
+    pub offset_from: Option<i64>,
     /// The hook's cumulative `Stop`-invocation count. Not a per-request
     /// increment: retain fires on one `Stop` in ten.
     #[serde(default)]
@@ -394,6 +407,9 @@ fn prepare(
         Some(upsert.id),
         body.session_id.as_deref(),
         Some(&detail),
+        // Both ends or neither: a range with one end missing cannot guard
+        // anything, and storing half of it would read as a claim.
+        body.offset_from.zip(body.byte_offset),
     )?;
 
     // The optimistic half of the mirror. `confirmed_offset` stays put: a
@@ -431,6 +447,7 @@ fn prepare(
         tags,
         content_hash: plan.content_hash.clone(),
         byte_offset: body.byte_offset,
+        offset_from: body.offset_from,
     };
     Ok(Prepared::Queued {
         plan,
@@ -592,6 +609,12 @@ pub async fn get_job(
         "chunks_skipped": job.chunks_skipped,
         "chunks_failed": job.chunks_failed,
         "facts_written": job.facts_written,
+        // The byte range this job carried. Reported so a reader that sees a
+        // gap can name it without joining anything — `sessions.inflight_bytes`
+        // can only lower-bound it. `0, 0` means "unknown": a caller that is
+        // not the hook, or a row written before migration `0008`.
+        "offset_from": job.offset_from,
+        "offset_to": job.offset_to,
         "error": job.error,
         "detail": job.detail.and_then(|d| serde_json::from_str::<Value>(&d).ok()),
         "created_at": job.created_at,

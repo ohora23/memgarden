@@ -448,6 +448,14 @@ chunk alone. That is a C1-shaped change, not a C4b one.
 
 ### A later clean job confirms straight over an earlier job's gap
 
+> **CLOSED by `fix/retain-cursor-gap` (HK-1g), 2026-08-05**, in exactly the
+> four pieces this section specifies. The first half — a `done` job with a
+> failed chunk leaving a gap — is unchanged and still open; what is fixed is
+> that a later clean job can no longer erase the evidence of it. See
+> `docs/design/hk-1g-retain-cursor-gap.md`. The paragraph below is kept as
+> written because the *wrong* fix it names is the part worth not
+> rediscovering.
+
 Read from the source rather than observed, because both jobs in the run above
 failed a chunk. The worker's clean-run block writes
 `confirmed_offset = task.byte_offset` unconditionally, and `store::sessions`

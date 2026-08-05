@@ -1123,6 +1123,7 @@ async fn a_retain_mirrors_the_session_and_confirms_it_on_a_clean_run() {
                 "session_id": "mirrored",
                 "is_initial": true,
                 "cwd": "/repo",
+                "offset_from": 0,
                 "byte_offset": 8192,
                 "turn": 30,
                 "compactions": 2,
@@ -1254,10 +1255,14 @@ async fn skipped_and_duplicate_settle_only_when_nothing_is_outstanding() {
     assert_eq!(row.retains, 1);
 
     // A real retain, then the identical bytes again -> `duplicate`.
+    // `offset_from` is what lets the clean run confirm: without it the worker
+    // declines rather than guessing, and the `duplicate` below would then find
+    // an open gap and refuse to settle.
     let body = json!({
         "messages": transcript(4),
         "session_id": "settled",
         "is_initial": false,
+        "offset_from": 100,
         "byte_offset": 900,
     });
     let response = harness

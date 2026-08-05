@@ -16,6 +16,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (5, include_str!("../migrations/0005_embedding_model.sql")),
     (6, include_str!("../migrations/0006_mental_models.sql")),
     (7, include_str!("../migrations/0007_sessions.sql")),
+    (
+        8,
+        include_str!("../migrations/0008_retain_cursor_range.sql"),
+    ),
 ];
 
 /// The schema version this build expects, i.e. the highest entry in
