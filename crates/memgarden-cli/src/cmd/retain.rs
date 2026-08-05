@@ -563,6 +563,13 @@ fn post_delta(cfg: &Config, st: &SessionState, delta: &Delta, from: u64, now_ms:
         // The optimistic cursor, mirrored: `Delta::consumed_to`, a line
         // boundary, never the file size.
         "byte_offset": delta.consumed_to,
+        // The other end of the same range, and the one line of this hook that
+        // the cursor fix needed: it is the guard the daemon's clean-run
+        // confirm is gated on, so a job cannot settle the durable cursor over
+        // an earlier job's gap. Omitting it does not break a retain — the
+        // daemon simply declines to confirm, which over-reports outstanding
+        // work rather than under-reporting it.
+        "offset_from": from,
         // All four mirror fields are cumulative absolutes from our own state
         // file, merged `MAX` server-side — not per-request increments.
         "turn": st.turns,

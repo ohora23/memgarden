@@ -26,6 +26,18 @@ pub struct RetainJob {
     pub detail: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// The transcript byte range this job carries, as the request reported it.
+    ///
+    /// `offset_from` is the guard the durable cursor needs: a clean job may
+    /// only confirm past its own start, so a later job cannot confirm over an
+    /// earlier one's gap (migration `0008`). `offset_to` is stored with it so
+    /// a job row can answer "which bytes did you carry?" on its own — the
+    /// question a shadow run asks the moment it sees a gap.
+    ///
+    /// `0, 0` on a row written before migration `0008`, and on any caller that
+    /// is not the hook: it means "unknown", not "zero bytes".
+    pub offset_from: i64,
+    pub offset_to: i64,
 }
 
 /// Mutable job state, written wholesale on every flush.
@@ -65,6 +77,8 @@ impl JobStatus {
 /// Creates the job row in `pending`. Called synchronously by the retain
 /// endpoint before enqueueing, so `GET /v1/retain/{job_id}` is answerable
 /// the instant the 202 lands.
+/// `range` is the transcript byte span the job carries — `None` for any caller
+/// that is not the hook, which stores `0, 0` and means "unknown".
 pub fn insert(
     db: &Db,
     job_id: &str,
@@ -72,14 +86,26 @@ pub fn insert(
     document_id: Option<i64>,
     session_id: Option<&str>,
     detail: Option<&str>,
+    range: Option<(i64, i64)>,
 ) -> Result<()> {
     let now = now_ms();
+    let (offset_from, offset_to) = range.unwrap_or((0, 0));
     db.write(|tx| {
         tx.execute(
             "INSERT INTO retain_jobs
-             (job_id, bank_id, document_id, session_id, status, detail, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?6)",
-            params![job_id, bank_id, document_id, session_id, detail, now],
+             (job_id, bank_id, document_id, session_id, status, detail, created_at, updated_at,
+              offset_from, offset_to)
+             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?6, ?7, ?8)",
+            params![
+                job_id,
+                bank_id,
+                document_id,
+                session_id,
+                detail,
+                now,
+                offset_from.max(0),
+                offset_to.max(0)
+            ],
         )
         .map_err(store_err)?;
         Ok(())
@@ -116,7 +142,8 @@ pub fn get(db: &Db, job_id: &str) -> Result<Option<RetainJob>> {
     let conn = db.read()?;
     conn.query_row(
         "SELECT job_id, bank_id, document_id, session_id, status, chunks_total, chunks_done,
-                chunks_skipped, chunks_failed, facts_written, error, detail, created_at, updated_at
+                chunks_skipped, chunks_failed, facts_written, error, detail, created_at,
+                updated_at, offset_from, offset_to
          FROM retain_jobs WHERE job_id = ?1",
         params![job_id],
         |r| {
@@ -135,6 +162,8 @@ pub fn get(db: &Db, job_id: &str) -> Result<Option<RetainJob>> {
                 detail: r.get(11)?,
                 created_at: r.get(12)?,
                 updated_at: r.get(13)?,
+                offset_from: r.get(14)?,
+                offset_to: r.get(15)?,
             })
         },
     )
@@ -168,7 +197,16 @@ mod tests {
         let db = Db::open_memory().unwrap();
         banks::create(&db, "b1", None, None).unwrap();
 
-        insert(&db, "job-1", "b1", None, Some("sess-1"), Some(r#"{"a":1}"#)).unwrap();
+        insert(
+            &db,
+            "job-1",
+            "b1",
+            None,
+            Some("sess-1"),
+            Some(r#"{"a":1}"#),
+            Some((100, 5000)),
+        )
+        .unwrap();
         let job = get(&db, "job-1").unwrap().unwrap();
         assert_eq!(job.status, "pending");
         assert_eq!(job.session_id.as_deref(), Some("sess-1"));
@@ -208,7 +246,7 @@ mod tests {
     fn bad_status_violates_check() {
         let db = Db::open_memory().unwrap();
         banks::create(&db, "b1", None, None).unwrap();
-        insert(&db, "job-1", "b1", None, None, None).unwrap();
+        insert(&db, "job-1", "b1", None, None, None, None).unwrap();
         let err = db.write(|tx| {
             tx.execute(
                 "UPDATE retain_jobs SET status = 'bogus' WHERE job_id = 'job-1'",
@@ -223,8 +261,8 @@ mod tests {
     fn fail_stale_closes_inflight_jobs() {
         let db = Db::open_memory().unwrap();
         banks::create(&db, "b1", None, None).unwrap();
-        insert(&db, "job-1", "b1", None, None, None).unwrap();
-        insert(&db, "job-2", "b1", None, None, None).unwrap();
+        insert(&db, "job-1", "b1", None, None, None, None).unwrap();
+        insert(&db, "job-2", "b1", None, None, None, None).unwrap();
         update(
             &db,
             "job-2",

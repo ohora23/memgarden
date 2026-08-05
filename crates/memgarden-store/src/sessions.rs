@@ -143,10 +143,32 @@ pub struct SessionUpdate<'a> {
     pub turns: Option<i64>,
     pub chunk_index: Option<i64>,
     pub byte_offset: Option<i64>,
-    /// **Unconditional** advance of the durable cursor. Only the retain
-    /// worker may use this, and only on a clean run: it has observed the
-    /// whole range it is confirming, so it may close a gap it did not open.
-    pub confirmed_offset: Option<i64>,
+    /// **Range-guarded** advance of the durable cursor: `(offset_from,
+    /// offset_to)`, applied only when the row's durable cursor has already
+    /// reached `offset_from` — i.e. when there is no unsettled range in front
+    /// of the one being confirmed.
+    ///
+    /// This is the retain worker's channel, used on a clean run. It replaced
+    /// an **unconditional** confirm, and the replacement is the fix for a
+    /// defect observed in production on 2026-08-05: the column merges with
+    /// `MAX`, so a clean job covering 1008399..2163159 set the cursor to
+    /// 2,163,159 even though an earlier job had left 0..1008399 unsettled —
+    /// erasing the evidence of a gap it never covered.
+    ///
+    /// **It is not [`SessionUpdate::confirm_if_settled`], and that channel
+    /// cannot be reused here.** That guard reads `confirmed_offset >=
+    /// byte_offset` on the pre-update row, and the *request* path has already
+    /// written `byte_offset = this job's end` before the worker runs — so an
+    /// ordinary clean job reads `0 >= 5000`, never confirms, and the durable
+    /// cursor freezes at 0 for every session forever. The guard needs the
+    /// job's **start**, which is why `retain_jobs.offset_from` exists
+    /// (migration `0008`).
+    ///
+    /// `None` when the caller cannot name its start — an older hook, or any
+    /// non-hook caller. The confirm is then simply not made: over-reporting
+    /// outstanding work is the safe direction for an instrument whose whole
+    /// job is to notice loss.
+    pub confirm_range: Option<(i64, i64)>,
     /// **Conditional** advance of the durable cursor: applied only when the
     /// row has no open gap (`confirmed_offset >= byte_offset`) at the moment
     /// of the write.
@@ -190,7 +212,15 @@ pub fn upsert(db: &Db, bank_id: &str, u: &SessionUpdate) -> Result<Session> {
     let turns = clamp(u.turns);
     let chunk_index = clamp(u.chunk_index);
     let byte_offset = clamp(u.byte_offset);
-    let confirmed_offset = clamp(u.confirmed_offset);
+    // Split rather than clamped as a pair: the guard compares against `from`
+    // and the value written is `to`, so they are two parameters even though
+    // they arrive as one.
+    let (confirm_from, confirm_to) = match u.confirm_range {
+        Some((from, to)) => (from.max(0), to.max(0)),
+        // `0, 0` is inert on both sides: `max(confirmed_offset, 0)` cannot
+        // move the cursor, whatever the guard decides.
+        None => (0, 0),
+    };
     // `0`, never NULL: SQLite's scalar `max()` returns NULL if *any* argument
     // is NULL, which would blank the column instead of leaving it alone.
     let confirm_if_settled = clamp(u.confirm_if_settled);
@@ -210,7 +240,14 @@ pub fn upsert(db: &Db, bank_id: &str, u: &SessionUpdate) -> Result<Session> {
              -- row. Mutating only the DO UPDATE branch is not a collapse of
              -- the two cursors, because a session's first write is always
              -- this insert.
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, max(?11, ?16), ?12, ?13, ?14, ?14, ?15)
+             -- On a brand-new row the range guard has nothing in front of it
+             -- to be blocked by, so it applies exactly when the job starts at
+             -- 0. A job starting mid-transcript against a row that does not
+             -- exist is a gap by definition: 0..from was never confirmed by
+             -- anyone.
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                     max(?16, CASE WHEN ?11 = 0 THEN ?17 ELSE 0 END),
+                     ?12, ?13, ?14, ?14, ?15)
              ON CONFLICT (bank_id, session_id) DO UPDATE SET
                cwd              = coalesce(excluded.cwd, cwd),
                transcript_path  = coalesce(excluded.transcript_path, transcript_path),
@@ -223,16 +260,18 @@ pub fn upsert(db: &Db, bank_id: &str, u: &SessionUpdate) -> Result<Session> {
                turns            = max(turns, excluded.turns),
                chunk_index      = max(chunk_index, excluded.chunk_index),
                byte_offset      = max(byte_offset, excluded.byte_offset),
-               -- Two channels into one column. ?11 is the worker's
-               -- unconditional confirm; ?16 is the request path's, gated on
-               -- the row having no open gap *before* this write. Bound
-               -- positionally rather than through `excluded` on purpose:
-               -- `excluded.confirmed_offset` is `max(?11, ?16)` from the
-               -- VALUES list above, which would smuggle the conditional
-               -- value past its own guard.
+               -- Two guarded channels into one column, and neither is
+               -- unconditional. ?11/?17 is the worker's range confirm, gated
+               -- on the durable cursor having already reached this job's
+               -- start; ?16 is the request path's, gated on the row having no
+               -- open gap at all *before* this write. Bound positionally
+               -- rather than through `excluded` on purpose:
+               -- `excluded.confirmed_offset` is the VALUES expression above,
+               -- which would smuggle a guarded value past its own guard.
                confirmed_offset = max(
                                     confirmed_offset,
-                                    ?11,
+                                    CASE WHEN confirmed_offset >= ?11
+                                         THEN ?17 ELSE 0 END,
                                     CASE WHEN confirmed_offset >= byte_offset
                                          THEN ?16 ELSE 0 END),
                compactions      = max(compactions, excluded.compactions),
@@ -251,12 +290,13 @@ pub fn upsert(db: &Db, bank_id: &str, u: &SessionUpdate) -> Result<Session> {
                 retains_delta,
                 chunk_index,
                 byte_offset,
-                confirmed_offset,
+                confirm_from,
                 messages_sent_delta,
                 compactions,
                 now,
                 u.ended_at,
                 confirm_if_settled,
+                confirm_to,
             ],
         )
         .map_err(|e| map_session_err(e, bank_id))?;
@@ -483,7 +523,7 @@ mod tests {
                 turns: Some(20),
                 chunk_index: Some(3),
                 byte_offset: Some(9000),
-                confirmed_offset: Some(8000),
+                confirm_range: Some((0, 8000)),
                 compactions: Some(2),
                 ..Default::default()
             },
@@ -498,7 +538,7 @@ mod tests {
                 turns: Some(10),
                 chunk_index: Some(1),
                 byte_offset: Some(1000),
-                confirmed_offset: Some(500),
+                confirm_range: Some((0, 500)),
                 compactions: Some(1),
                 ..Default::default()
             },
@@ -540,7 +580,7 @@ mod tests {
             "b1",
             &SessionUpdate {
                 session_id: "s1",
-                confirmed_offset: Some(2000),
+                confirm_range: Some((0, 2000)),
                 ..Default::default()
             },
         )
@@ -556,7 +596,7 @@ mod tests {
             "b1",
             &SessionUpdate {
                 session_id: "s1",
-                confirmed_offset: Some(5000),
+                confirm_range: Some((2000, 5000)),
                 ..Default::default()
             },
         )
@@ -564,11 +604,12 @@ mod tests {
         assert_eq!(done.inflight_bytes(), 0);
     }
 
-    /// Review HIGH 1. The two confirm channels are not interchangeable: the
-    /// worker's is unconditional because it observed the range, the request
-    /// path's is guarded because `skipped`/`duplicate` are evidence about
-    /// this request's bytes only. With one unconditional channel, a later
-    /// accept at a higher offset silently erases an earlier open gap — the
+    /// Review HIGH 1. The two confirm channels are not interchangeable, and
+    /// **neither is unconditional**: the worker's is gated on having reached
+    /// its own job's start, the request path's on the row having no open gap
+    /// at all, because `skipped`/`duplicate` are evidence about this
+    /// request's bytes only. With any unconditional channel, a later accept
+    /// at a higher offset silently erases an earlier open gap — the
     /// instrument reading zero over lost bytes.
     #[test]
     fn a_later_settled_accept_does_not_swallow_an_earlier_gap() {
@@ -606,13 +647,14 @@ mod tests {
         );
         assert_eq!(after.inflight_bytes(), 6000);
 
-        // The worker's channel is unconditional and does close it.
+        // The worker's channel closes it, because this job *starts* at 0 —
+        // there is nothing in front of it left unsettled.
         let confirmed = upsert(
             &db,
             "b1",
             &SessionUpdate {
                 session_id: "s1",
-                confirmed_offset: Some(5000),
+                confirm_range: Some((0, 5000)),
                 ..Default::default()
             },
         )
@@ -630,7 +672,7 @@ mod tests {
             "b1",
             &SessionUpdate {
                 session_id: "s1",
-                confirmed_offset: Some(6000),
+                confirm_range: Some((5000, 6000)),
                 ..Default::default()
             },
         )
@@ -651,6 +693,201 @@ mod tests {
             next.confirmed_offset, 7000,
             "with no open gap the request path may settle"
         );
+    }
+
+    /// **The defect this channel exists for, observed in production on
+    /// 2026-08-05.** A job finished `done` with one chunk failed, so the
+    /// worker never confirmed and the durable cursor stayed behind. The next
+    /// clean job then confirmed *its own* end — and because the column merges
+    /// with `MAX`, that swallowed the earlier unsettled range whole, leaving
+    /// an instrument that reads zero over lost bytes.
+    ///
+    /// The guard is the job's **start**: a clean job may only confirm if the
+    /// durable cursor has already reached where that job began.
+    #[test]
+    fn a_clean_job_cannot_confirm_over_an_earlier_jobs_gap() {
+        let db = db_with_bank();
+        // Job A takes 0..1000 and never settles — one chunk failed.
+        upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                byte_offset: Some(1000),
+                retains_delta: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Job B takes 1000..2000 and comes out clean.
+        let after_b = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                byte_offset: Some(2000),
+                confirm_range: Some((1000, 2000)),
+                retains_delta: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            after_b.confirmed_offset, 0,
+            "job B must not confirm over job A's unsettled 0..1000"
+        );
+        assert_eq!(after_b.inflight_bytes(), 2000);
+
+        // Job A is re-sent and this time comes out clean. Now B's range is
+        // reachable, and a re-send of B settles the lot.
+        let after_a = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                confirm_range: Some((0, 1000)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(after_a.confirmed_offset, 1000);
+        assert_eq!(after_a.inflight_bytes(), 1000);
+
+        let resent_b = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                confirm_range: Some((1000, 2000)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(resent_b.confirmed_offset, 2000);
+        assert_eq!(resent_b.inflight_bytes(), 0);
+    }
+
+    /// **The trap the design note names, pinned so nobody walks into it.**
+    /// `confirm_if_settled`'s guard (`confirmed_offset >= byte_offset`) reads
+    /// the pre-update row, and the request path has already written
+    /// `byte_offset = this job's end` before the worker runs. Reusing it for
+    /// the worker would make an ordinary clean job read `0 >= 5000` -> false
+    /// and freeze the durable cursor at 0 **forever**.
+    ///
+    /// The range guard reads `confirmed_offset >= offset_from` instead, so the
+    /// same ordinary job confirms. Both halves are asserted on one row.
+    #[test]
+    fn the_range_guard_confirms_where_the_settled_guard_would_freeze() {
+        let db = db_with_bank();
+        upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                byte_offset: Some(5000),
+                retains_delta: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // What reusing the request path's channel would do: nothing, ever.
+        let frozen = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                confirm_if_settled: Some(5000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            frozen.confirmed_offset, 0,
+            "this is the freeze the design note warns about, not a bug in the test"
+        );
+
+        // What the range guard does on the very same row.
+        let confirmed = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                confirm_range: Some((0, 5000)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(confirmed.confirmed_offset, 5000);
+        assert_eq!(confirmed.inflight_bytes(), 0);
+    }
+
+    /// A caller that cannot name its start does not advance the cursor at
+    /// all. Over-reporting outstanding work is the safe direction for an
+    /// instrument whose whole job is to notice loss.
+    #[test]
+    fn a_confirm_without_a_range_leaves_the_cursor_alone() {
+        let db = db_with_bank();
+        upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                byte_offset: Some(4000),
+                retains_delta: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let row = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "s1",
+                confirm_range: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(row.confirmed_offset, 0);
+        assert_eq!(row.inflight_bytes(), 4000);
+    }
+
+    /// A job that starts mid-transcript against a row that does not exist is
+    /// a gap by definition — 0..from was never confirmed by anyone — so the
+    /// insert branch has to apply the same guard the update branch does.
+    #[test]
+    fn a_first_write_confirms_only_a_range_that_starts_at_zero() {
+        let db = db_with_bank();
+        let mid = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "mid",
+                byte_offset: Some(9000),
+                confirm_range: Some((3000, 9000)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            mid.confirmed_offset, 0,
+            "nobody confirmed 0..3000, so this row starts with a gap"
+        );
+
+        let from_zero = upsert(
+            &db,
+            "b1",
+            &SessionUpdate {
+                session_id: "zero",
+                byte_offset: Some(9000),
+                confirm_range: Some((0, 9000)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(from_zero.confirmed_offset, 9000);
     }
 
     /// The guard is evaluated against the row as it stood *before* the
@@ -907,7 +1144,11 @@ mod tests {
                                 session_id: "s1",
                                 turns: Some(n),
                                 byte_offset: Some(n * 100),
-                                confirmed_offset: Some(n * 100),
+                                // Range-guarded, and every range starts at 0
+                                // so the guard is open on all of them: this
+                                // test is about the `MAX` merge under
+                                // concurrency, not about the guard.
+                                confirm_range: Some((0, n * 100)),
                                 retains_delta: 1,
                                 messages_sent_delta: 1,
                                 ..Default::default()

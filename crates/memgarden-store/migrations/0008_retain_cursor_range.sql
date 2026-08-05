@@ -1,0 +1,32 @@
+-- MemGarden schema v8: the byte range a retain job carries.
+--
+-- Fixes the second half of the two-part cursor defect recorded in
+-- `docs/design/c4b-hook-retain.md` §Known limits, observed in production on
+-- 2026-08-05: a job finished `done chunks 2/3 failed=1 facts=12` and left
+-- `confirmed_offset` at 0 with `byte_offset` at 3,459,173.
+--
+-- The worker confirmed the durable cursor **unconditionally** on a clean run,
+-- and `sessions.confirmed_offset` merges with `MAX` — so a later clean job
+-- covering 1008399..2163159 would set the cursor to 2,163,159 even though an
+-- earlier job left 0..1008399 unsettled, erasing the evidence of the gap it
+-- did not cover.
+--
+-- The guard that fixes it needs the job's **start**, which no persisted row
+-- had: `confirm_if_settled`'s existing guard (`confirmed_offset >=
+-- byte_offset`) cannot be reused, because the request path has already
+-- written `byte_offset = this job's end` before the worker runs, so an
+-- ordinary clean job reads `0 >= 5000` -> false and would freeze the durable
+-- cursor at 0 forever.
+--
+-- Both ends are stored, not just the start. The start is what the guard needs;
+-- the end is what makes a job row able to answer "which bytes did you carry?"
+-- without joining anything — which is the question a shadow run asks the
+-- moment it sees a gap, and which `sessions.inflight_bytes` can only
+-- lower-bound.
+--
+-- DEFAULT 0 on both: existing rows are historical, every one of them belongs
+-- to a job that has already settled or already failed, and a zero range makes
+-- them read as "unknown" rather than as a claim about bytes.
+
+ALTER TABLE retain_jobs ADD COLUMN offset_from INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE retain_jobs ADD COLUMN offset_to   INTEGER NOT NULL DEFAULT 0;
