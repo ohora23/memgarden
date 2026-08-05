@@ -49,7 +49,7 @@ async fn harness() -> Harness {
         last_request.clone(),
     );
     let stub = axum::Router::new().route(
-        "/api/chat",
+        "/api/generate",
         axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
             let (r, c, g, lr) = (r.clone(), c.clone(), g.clone(), lr.clone());
             async move {
@@ -59,7 +59,7 @@ async fn harness() -> Harness {
                     let _ = rx.await;
                 }
                 let body = r.lock().unwrap().clone();
-                axum::Json(json!({ "message": { "content": body } }))
+                axum::Json(json!({ "response": body }))
             }
         }),
     );

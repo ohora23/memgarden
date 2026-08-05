@@ -41,7 +41,7 @@ async fn spawn_stub_ollama(fail_on: Vec<usize>) -> (String, Arc<AtomicUsize>) {
         fail_on: Arc::new(fail_on),
     };
     let app = axum::Router::new()
-        .route("/api/chat", axum::routing::post(stub_chat))
+        .route("/api/generate", axum::routing::post(stub_chat))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -72,7 +72,7 @@ async fn stub_chat(
               "fact_kind": "conversation" },
         ]
     });
-    axum::Json(json!({ "message": { "content": facts.to_string() } })).into_response()
+    axum::Json(json!({ "response": facts.to_string() })).into_response()
 }
 
 // ---------------------------------------------------------------------------
