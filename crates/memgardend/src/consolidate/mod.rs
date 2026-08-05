@@ -488,7 +488,7 @@ mod tests {
         }
     }
 
-    /// A stub `/api/chat` that counts calls, records the last user prompt,
+    /// A stub `/api/generate` that counts calls, records the last user prompt,
     /// and answers with `body`.
     struct Stub {
         client: OllamaClient,
@@ -501,14 +501,14 @@ mod tests {
         let last_user = Arc::new(std::sync::Mutex::new(String::new()));
         let (c, u) = (calls.clone(), last_user.clone());
         let app = axum::Router::new().route(
-            "/api/chat",
+            "/api/generate",
             axum::routing::post(move |axum::Json(req): axum::Json<Value>| {
                 let (c, u) = (c.clone(), u.clone());
                 async move {
                     c.fetch_add(1, Ordering::SeqCst);
-                    let user = req["messages"][1]["content"].as_str().unwrap_or("");
+                    let user = req["prompt"].as_str().unwrap_or("");
                     *u.lock().unwrap() = user.to_string();
-                    axum::Json(json!({ "message": { "content": body } }))
+                    axum::Json(json!({ "response": body }))
                 }
             }),
         );

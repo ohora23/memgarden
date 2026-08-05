@@ -1006,20 +1006,20 @@ fn temporal_arm_bench() {
 /// `NODES` / `REQUESTS` are overridable so the same test can be run against
 /// a bigger bank without a recompile:
 ///   MEMGARDEN_BENCH_NODES=3000 MEMGARDEN_BENCH_REQUESTS=2000 cargo test ...
-/// A stub `/api/chat` for the consolidation bench: one CREATE per batch, so
+/// A stub `/api/generate` for the consolidation bench: one CREATE per batch, so
 /// every round really does embed, write and adjudicate. Returns its base URL.
 #[allow(clippy::await_holding_lock)]
 async fn consolidation_stub() -> String {
     let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let app = axum::Router::new().route(
-        "/api/chat",
+        "/api/generate",
         axum::routing::post(move |axum::Json(_): axum::Json<Value>| {
             let counter = counter.clone();
             async move {
                 let n = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // The dedup adjudicator and the batch consolidator share this
                 // endpoint; a body carrying both shapes' keys satisfies each.
-                axum::Json(json!({ "message": { "content": json!({
+                axum::Json(json!({ "response": json!({
                     "action": "keep",
                     "text": "",
                     "reason": "stub",
@@ -1030,7 +1030,7 @@ async fn consolidation_stub() -> String {
                     }],
                     "updates": [],
                     "deletes": [],
-                }).to_string() } }))
+                }).to_string() }))
             }
         }),
     );

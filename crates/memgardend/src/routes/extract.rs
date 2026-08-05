@@ -91,7 +91,12 @@ pub async fn dry_run_extract(
             // Permanent upstream refusal (e.g. 404 model-not-found; not
             // retried, see ollama.rs) or garbage across all retries — 502:
             // the upstream misbehaved, retrying blindly won't fix it.
-            OllamaError::Http { .. } | OllamaError::Parse(_) => ApiError::bad_gateway(message),
+            // A truncation is upstream misbehaviour too, and specifically one
+            // that a blind retry cannot fix — the caller's input was simply
+            // bigger than the model's output budget for it.
+            OllamaError::Http { .. } | OllamaError::Parse(_) | OllamaError::Truncated { .. } => {
+                ApiError::bad_gateway(message)
+            }
         }
     })?;
 

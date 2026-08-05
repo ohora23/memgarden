@@ -8,15 +8,33 @@ use serde_json::{Value, json};
 
 use crate::ollama::{OllamaClient, OllamaError};
 
-/// The literal JSON schema restated in `format` (Ollama ignores it for
-/// `/api/chat` — see `ollama.rs` — but it's cheap and it's what the plan's
-/// verification runs used).
+/// The most facts one chunk may produce, **enforced by the decoding grammar**
+/// rather than hoped for.
+///
+/// A 3,000-character chunk yields 8-10 facts in practice (measured: 57 facts
+/// over 6 chunks). This is ~2.5x that, so it bounds a runaway without
+/// truncating an ordinary chunk.
+///
+/// It exists because a runaway is not hypothetical: on the first real retain
+/// of the shadow run a 3,000-character chunk produced a **24,525-character**
+/// reply that stopped at `num_predict` (8,192 tokens) mid-object, and the
+/// whole chunk's facts were lost. A cap loses the tail of an unusually rich
+/// chunk; the truncation lost all of it. `maxItems` is honoured by the
+/// grammar — verified live: a schema capped at 3 answered "list twenty
+/// fruits" with exactly 3.
+const MAX_FACTS_PER_CHUNK: usize = 24;
+
+/// The JSON schema sent as `format`, and — since the transport moved to
+/// `/api/generate` — **actually enforced**. See `ollama.rs::try_chat`: the
+/// same schema on `/api/chat` is silently ignored, which is what made a
+/// malformed reply a normal outcome rather than an anomaly.
 fn output_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
             "facts": {
                 "type": "array",
+                "maxItems": MAX_FACTS_PER_CHUNK,
                 "items": {
                     "type": "object",
                     "properties": {

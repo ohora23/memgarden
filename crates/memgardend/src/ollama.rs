@@ -45,6 +45,30 @@ pub enum OllamaError {
     Http { status: u16, body: String },
     #[error("failed to parse ollama response as JSON after retries: {0}")]
     Parse(String),
+    /// The model stopped because it ran out of output budget, so the reply is
+    /// a **prefix** of valid JSON rather than malformed JSON.
+    ///
+    /// Distinguished from [`OllamaError::Parse`] because the two need opposite
+    /// handling: a malformed reply is worth retrying (sampling may land
+    /// elsewhere), a truncation is not — at this temperature the retry reruns
+    /// the same computation and stops at the same token. Measured on the first
+    /// real retain of the shadow run: four attempts, one column.
+    #[error(
+        "ollama reply was truncated at the output limit after {eval_count:?} tokens          ({chars} chars) — the JSON is a prefix, not malformed"
+    )]
+    Truncated {
+        eval_count: Option<u64>,
+        chars: usize,
+    },
+}
+
+/// One `/api/chat` reply, with the envelope fields a failure needs to be
+/// diagnosable. Before this existed `try_chat` returned the content alone, so
+/// a truncation and a garbage reply produced the same log line.
+struct Reply {
+    content: String,
+    done_reason: Option<String>,
+    eval_count: Option<u64>,
 }
 
 pub struct OllamaClient {
@@ -194,16 +218,56 @@ impl OllamaClient {
             let mut last_err = OllamaError::Parse("no attempts made".to_string());
 
             for attempt in 0..outer_attempts {
-                match self.try_chat(system, user, schema, num_predict, num_ctx).await {
-                    Ok(raw) => match serde_json::from_str::<T>(&raw) {
+                match self
+                    .try_chat(system, user, schema, num_predict, num_ctx)
+                    .await
+                {
+                    Ok(reply) => match serde_json::from_str::<T>(&reply.content) {
                         Ok(parsed) => return Ok(parsed),
                         Err(e) => {
-                            // Security review L1: `raw` is LLM output steered
-                            // by caller text — escape (Debug) and truncate
-                            // before it touches the log stream.
-                            let snippet: String = raw.chars().take(512).collect();
-                            tracing::warn!(attempt, error = %e, raw = ?snippet, "ollama response failed to parse");
-                            last_err = OllamaError::Parse(e.to_string());
+                            let truncated = reply.done_reason.as_deref() == Some("length");
+                            // Security review L1: the reply is LLM output
+                            // steered by caller text — escape (Debug) and
+                            // truncate before it touches the log stream.
+                            //
+                            // **Both ends, not just the head.** A truncated
+                            // reply's only informative part is where it was
+                            // cut, and logging the first 512 characters threw
+                            // exactly that away: the same log line was emitted
+                            // whether the model produced garbage at the start
+                            // or perfect JSON that simply stopped.
+                            let head: String = reply.content.chars().take(320).collect();
+                            let tail: String = {
+                                let n = reply.content.chars().count();
+                                reply.content.chars().skip(n.saturating_sub(192)).collect()
+                            };
+                            tracing::warn!(
+                                attempt,
+                                error = %e,
+                                truncated,
+                                done_reason = ?reply.done_reason,
+                                eval_count = ?reply.eval_count,
+                                chars = reply.content.chars().count(),
+                                head = ?head,
+                                tail = ?tail,
+                                "ollama response failed to parse"
+                            );
+                            last_err = if truncated {
+                                OllamaError::Truncated {
+                                    eval_count: reply.eval_count,
+                                    chars: reply.content.chars().count(),
+                                }
+                            } else {
+                                OllamaError::Parse(e.to_string())
+                            };
+                            // Retrying an output-budget truncation reruns the
+                            // same computation at temperature 0.1 and fails at
+                            // the same place — measured: four attempts, one
+                            // column. Fail fast and free the permit instead of
+                            // spending the GPU three more times.
+                            if truncated {
+                                return Err(last_err);
+                            }
                         }
                     },
                     Err(e) => {
@@ -247,7 +311,7 @@ impl OllamaClient {
         schema: &Value,
         num_predict: Option<u32>,
         num_ctx: Option<u32>,
-    ) -> Result<String, OllamaError> {
+    ) -> Result<Reply, OllamaError> {
         let mut options = json!({
             "temperature": self.cfg.temperature,
             // A per-call ceiling, never a raise: a config already asking
@@ -258,19 +322,39 @@ impl OllamaClient {
         if let Some(ctx) = num_ctx {
             options["num_ctx"] = json!(ctx);
         }
+        // **`/api/generate`, not `/api/chat`, and the difference is the whole
+        // reason this function is worth reading.**
+        //
+        // Ollama honours the `format` JSON schema on `/api/generate` and
+        // **silently ignores it on `/api/chat`** — measured on 0.21.2, both
+        // endpoints, same schema, same model: `/api/chat` answered a
+        // schema-constrained request with free prose, `/api/generate` answered
+        // the identical request with `{"n": 1}`.
+        //
+        // On `/api/chat` the schema was therefore decoration and the only
+        // thing asking for JSON was the prompt — which makes a malformed reply
+        // a normal outcome rather than an anomaly. It stopped being
+        // theoretical on the first real retain of the shadow run: one chunk's
+        // reply was unparseable at column 4681, four attempts running, and the
+        // job finished `done` with a chunk's facts permanently lost.
+        //
+        // Here the grammar constrains decoding, so a structurally invalid
+        // reply is not producible. Truncation at the output budget remains —
+        // that is what `done_reason` is read for above.
+        //
+        // The two-message chat is expressed as `system` + `prompt`, which
+        // Ollama renders through the same model template.
         let body = json!({
             "model": self.cfg.model,
-            "messages": [
-                { "role": "system", "content": system },
-                { "role": "user", "content": user },
-            ],
+            "system": system,
+            "prompt": user,
             "stream": false,
             "format": schema,
             "options": options,
             "keep_alive": self.cfg.keep_alive,
         });
 
-        let url = format!("{}/api/chat", self.cfg.base_url.trim_end_matches('/'));
+        let url = format!("{}/api/generate", self.cfg.base_url.trim_end_matches('/'));
         let resp = self
             .http
             .post(&url)
@@ -300,14 +384,26 @@ impl OllamaClient {
             prompt_eval_count = count("prompt_eval_count"),
             eval_count = count("eval_count"),
             total_duration_ms = count("total_duration").map(|n| n / 1_000_000),
-            "ollama /api/chat round trip"
+            "ollama /api/generate round trip"
         );
-        parsed
-            .get("message")
-            .and_then(|m| m.get("content"))
+        let content = parsed
+            .get("response")
             .and_then(|c| c.as_str())
             .map(str::to_string)
-            .ok_or_else(|| OllamaError::Transport("response missing message.content".to_string()))
+            .ok_or_else(|| OllamaError::Transport("response missing `response`".to_string()))?;
+        Ok(Reply {
+            content,
+            // `"length"` means the model stopped because it ran out of output
+            // budget, not because it finished — so the content is a *prefix*
+            // and no amount of retrying the same request will complete it.
+            // Nothing read this before, which is why a truncation and a
+            // genuinely malformed reply were indistinguishable in the logs.
+            done_reason: parsed
+                .get("done_reason")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            eval_count: count("eval_count"),
+        })
     }
 
     /// `GET /api/version` — used only by the background prober

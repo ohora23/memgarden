@@ -32,7 +32,7 @@ use tower::ServiceExt;
 async fn stub_chat() -> axum::response::Response {
     use axum::response::IntoResponse;
     axum::Json(json!({
-        "message": { "content": json!({
+        "response": json!({
             "facts": [
                 { "what": "the daemon lost its ollama connection",
                   "fact_type": "world", "fact_kind": "conversation",
@@ -42,13 +42,13 @@ async fn stub_chat() -> axum::response::Response {
                   "entities": ["ollama"],
                   "causal_relations": [{ "target_index": 0, "relation_type": "caused_by" }] },
             ]
-        }).to_string() }
+        }).to_string()
     }))
     .into_response()
 }
 
 async fn spawn_stub_ollama() -> String {
-    let app = axum::Router::new().route("/api/chat", axum::routing::post(stub_chat));
+    let app = axum::Router::new().route("/api/generate", axum::routing::post(stub_chat));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
