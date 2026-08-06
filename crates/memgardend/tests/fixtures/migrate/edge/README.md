@@ -15,9 +15,11 @@ four non-empty banks on 2026-08-06:
 | `edge::legal-but-absent` | duplicate `(document_id, fact_index)` source pairs | **real, but in the wrong bank** — 86 of them, all in `claude-code::bank-b`, none in the `bank-a` slice `real/` is taken from |
 | `edge::null-original-text` | `original_text: null` | `schema.py:125` types it `str \| None`; 24/24 live documents are non-null |
 | `edge::observation-scopes` | `observation_scopes: "per_tag"` | null in all 1,747 live observations |
+| `edge::two-documents` | the **same** entity named with different casing in two documents, plus a near pair that must stay apart | every committed real slice is a **single document**, so `entities::resolve_fact`'s cross-document behaviour — the thing MG-1 step 4 changed from `recall_bench`'s raw-name path — had no coverage at all. With one document `load_resolution_context` returns an empty candidate list and the resolver degenerates to `normalize` |
 
-The first bank must **pass** `assert_integrity` — legal-but-unusual is not a
-refusal. The other two must fail, each on its own named error.
+`edge::legal-but-absent` and `edge::two-documents` must **pass**
+`assert_integrity` — legal-but-unusual is not a refusal. The other two must
+fail, each on its own named error.
 
 The counterpart is `../real/`, a redacted slice of the live
 `claude-code::bank-a` archive, which carries the shapes a generator

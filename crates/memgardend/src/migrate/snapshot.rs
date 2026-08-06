@@ -235,10 +235,10 @@ async fn get_json<T: serde::de::DeserializeOwned>(
 /// `claude-code::bank e` — a space, which is not a legal path
 /// character; `Url::path_segments_mut` is what makes that survive the wire
 /// without hand-rolling an encoder.
-fn endpoint(segments: &[&str], query: &[(&str, &str)]) -> Url {
-    let mut url = Url::parse(LEGACY_BASE).expect("LEGACY_BASE is a valid absolute URL");
+fn endpoint(base: &str, segments: &[&str], query: &[(&str, &str)]) -> Url {
+    let mut url = Url::parse(base).expect("the base is a valid absolute URL");
     url.path_segments_mut()
-        .expect("LEGACY_BASE has a path")
+        .expect("the base has a path")
         .extend(segments);
     if !query.is_empty() {
         url.query_pairs_mut().extend_pairs(query.iter().copied());
@@ -259,12 +259,25 @@ fn endpoint(segments: &[&str], query: &[(&str, &str)]) -> Url {
 /// **1.62 s measured** (21 GETs, 1.94 MB zipped / 23 MB unpacked, four `unzip`
 /// invocations and a 23 MB sha256 pass), and rerunning it costs nothing.
 pub async fn run(out: &Path) -> Result<Vec<String>> {
+    run_from(LEGACY_BASE, out).await
+}
+
+/// [`run`] against an arbitrary base URL.
+///
+/// The override exists for one reason and it is written down in D1's own
+/// deferred list: **`run` had no automated coverage at all.** Every pure
+/// function under it was unit-tested, and the wiring between them — which is
+/// where a one-directional reconciliation hid until code review found it —
+/// was covered only by a manual run against the live daemon. `LEGACY_BASE`
+/// stays the production constant and no caller outside a test passes anything
+/// else.
+pub async fn run_from(base: &str, out: &Path) -> Result<Vec<String>> {
     std::fs::create_dir_all(out).map_err(|e| MigrateError::io(out, e))?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|source| MigrateError::Http {
-            url: LEGACY_BASE.to_string(),
+            url: base.to_string(),
             source,
         })?;
 
@@ -272,7 +285,7 @@ pub async fn run(out: &Path) -> Result<Vec<String>> {
     //    mission is the one string that would otherwise be lost by not
     //    migrating the empty banks, so the file preserves every mission even
     //    though four of the banks do not survive.
-    let banks_url = endpoint(&["v1", "default", "banks"], &[]);
+    let banks_url = endpoint(base, &["v1", "default", "banks"], &[]);
     let banks_bytes = get(&client, &banks_url).await?;
     write_file(&out.join("banks.json"), &banks_bytes)?;
     let banks: BankListResponse = serde_json::from_slice(&banks_bytes)
@@ -288,7 +301,7 @@ pub async fn run(out: &Path) -> Result<Vec<String>> {
         let id = bank.bank_id.as_str();
         let stats: BankStats = get_json(
             &client,
-            &endpoint(&["v1", "default", "banks", id, "stats"], &[]),
+            &endpoint(base, &["v1", "default", "banks", id, "stats"], &[]),
         )
         .await?;
 
@@ -323,6 +336,7 @@ pub async fn run(out: &Path) -> Result<Vec<String>> {
         let zip_bytes = get(
             &client,
             &endpoint(
+                base,
                 &["v1", "default", "banks", id, "document-transfer"],
                 &[("include_observations", "true")],
             ),
@@ -334,6 +348,7 @@ pub async fn run(out: &Path) -> Result<Vec<String>> {
         let documents: ListDocumentsResponse = get_json(
             &client,
             &endpoint(
+                base,
                 &["v1", "default", "banks", id, "documents"],
                 &[("limit", DOCUMENTS_PAGE_LIMIT)],
             ),
@@ -342,6 +357,7 @@ pub async fn run(out: &Path) -> Result<Vec<String>> {
         let live: MemoriesListPage = get_json(
             &client,
             &endpoint(
+                base,
                 &["v1", "default", "banks", id, "memories", "list"],
                 &[("limit", "1")],
             ),
@@ -354,6 +370,7 @@ pub async fn run(out: &Path) -> Result<Vec<String>> {
         let invalidated: MemoriesListPage = get_json(
             &client,
             &endpoint(
+                base,
                 &["v1", "default", "banks", id, "memories", "list"],
                 &[("limit", "1"), ("state", "invalidated")],
             ),
@@ -1278,6 +1295,7 @@ mod tests {
     #[test]
     fn endpoint_percent_encodes_the_bank_id() {
         let url = endpoint(
+            LEGACY_BASE,
             &[
                 "v1",
                 "default",
@@ -1296,6 +1314,7 @@ mod tests {
     #[test]
     fn endpoint_appends_the_query_the_archive_needs() {
         let url = endpoint(
+            LEGACY_BASE,
             &["v1", "default", "banks", "b", "document-transfer"],
             &[("include_observations", "true")],
         );
@@ -1306,5 +1325,250 @@ mod tests {
     fn load_bank_dir_reads_the_bank_id_from_the_manifest_not_the_directory() {
         let archive = load_bank_dir(&real_fixture().join("claude-code__bank-a")).unwrap();
         assert_eq!(archive.bank_id, "claude-code::bank-a");
+    }
+}
+
+/// `run()`'s own coverage, which D1 shipped without.
+///
+/// Every pure function under `run` had a test; the *wiring* between them had
+/// none, and that is where the one-directional reconciliation lived until code
+/// review found it. The stub below is a real `axum` server answering the five
+/// real URLs — built with [`endpoint`] itself, so a change to how a bank id is
+/// encoded breaks the test rather than passing it — serving the committed
+/// fixtures back as legacy would.
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+    use crate::migrate::test_support::fixture;
+
+    const JCODE: &str = "claude-code::bank-a";
+    const CMS: &str = "claude-code::bank-b";
+
+    /// A stub legacy daemon: a routing table keyed on the exact URLs
+    /// [`endpoint`] builds, and nothing else answered.
+    struct Legacy {
+        base: String,
+        _scratch: tempfile::TempDir,
+    }
+
+    impl Legacy {
+        /// `banks` is `(bank id, fixture directory, bank slug)`. A `None`
+        /// directory serves a ZIP with no `manifest.json` in it — the shape
+        /// `load_dir` skips **in silence**.
+        async fn start(banks: &[(&str, Option<&str>)]) -> Legacy {
+            let scratch = tempfile::tempdir().unwrap();
+            let mut routes: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+            let mut listed = Vec::new();
+
+            for (index, (bank, from)) in banks.iter().enumerate() {
+                let (stats, documents, zip) = match from {
+                    Some(from) => Legacy::bank_from(scratch.path(), index, bank, from),
+                    None => Legacy::bank_without_a_manifest(scratch.path(), index, bank),
+                };
+                listed.push(serde_json::json!({"bank_id": bank, "name": bank}));
+                routes.insert(key(bank, &["stats"], &[]), stats);
+                routes.insert(
+                    key(
+                        bank,
+                        &["document-transfer"],
+                        &[("include_observations", "true")],
+                    ),
+                    zip,
+                );
+                routes.insert(
+                    key(bank, &["documents"], &[("limit", DOCUMENTS_PAGE_LIMIT)]),
+                    documents,
+                );
+                routes.insert(
+                    key(bank, &["memories", "list"], &[("limit", "1")]),
+                    br#"{"total":0}"#.to_vec(),
+                );
+                routes.insert(
+                    key(
+                        bank,
+                        &["memories", "list"],
+                        &[("limit", "1"), ("state", "invalidated")],
+                    ),
+                    br#"{"total":0}"#.to_vec(),
+                );
+            }
+            routes.insert(
+                "/v1/default/banks".to_string(),
+                serde_json::to_vec(&serde_json::json!({"banks": listed})).unwrap(),
+            );
+
+            let routes = std::sync::Arc::new(routes);
+            let app = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+                let routes = routes.clone();
+                async move {
+                    let key = match uri.query() {
+                        Some(q) => format!("{}?{q}", uri.path()),
+                        None => uri.path().to_string(),
+                    };
+                    match routes.get(&key) {
+                        Some(body) => (axum::http::StatusCode::OK, body.clone()),
+                        None => (
+                            axum::http::StatusCode::NOT_FOUND,
+                            format!(r#"{{"detail":"no stub route for {key}"}}"#).into_bytes(),
+                        ),
+                    }
+                }
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await });
+            Legacy {
+                base,
+                _scratch: scratch,
+            }
+        }
+
+        /// `/stats`, `/documents` and the transfer ZIP for one bank, all
+        /// derived from a committed fixture so the numbers reconcile.
+        fn bank_from(
+            scratch: &Path,
+            index: usize,
+            bank: &str,
+            from: &str,
+        ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+            let dir = fixture(from);
+            let recorded: BTreeMap<String, Stats> =
+                super::super::archive::read_json(&dir.join("stats.json")).unwrap();
+            let recorded = &recorded[bank];
+            let slug = slug(bank);
+            (
+                serde_json::to_vec(&recorded.stats).unwrap(),
+                serde_json::to_vec(&serde_json::json!({
+                    "items": recorded.documents,
+                    "total": recorded.documents_total,
+                }))
+                .unwrap(),
+                zip_dir(&dir.join(&slug), &scratch.join(format!("{index}.zip"))),
+            )
+        }
+
+        /// The failure `assert_every_bank_loaded` exists for: a ZIP that
+        /// unpacks cleanly and leaves no `manifest.json`, so `load_dir` never
+        /// sees the bank and reconciling archive -> oracle cannot notice.
+        fn bank_without_a_manifest(
+            scratch: &Path,
+            index: usize,
+            bank: &str,
+        ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+            let empty = scratch.join(format!("empty-{index}"));
+            std::fs::create_dir_all(&empty).unwrap();
+            std::fs::write(empty.join("notes.txt"), b"not an archive\n").unwrap();
+            (
+                serde_json::to_vec(&serde_json::json!({
+                    "bank_id": bank, "total_nodes": 1, "total_documents": 1,
+                    "total_observations": 0, "nodes_by_fact_type": {"world": 1},
+                    "links_by_link_type": {"caused_by": 0},
+                }))
+                .unwrap(),
+                serde_json::to_vec(&serde_json::json!({"items": [], "total": 0})).unwrap(),
+                zip_dir(&empty, &scratch.join(format!("{index}.zip"))),
+            )
+        }
+    }
+
+    /// The routing key for one bank endpoint, built with [`endpoint`] itself
+    /// — so a change to how a bank id is percent-encoded breaks these tests
+    /// rather than quietly passing them.
+    fn key(bank: &str, tail: &[&str], query: &[(&str, &str)]) -> String {
+        let mut segments = vec!["v1", "default", "banks", bank];
+        segments.extend_from_slice(tail);
+        let url = endpoint("http://stub", &segments, query);
+        match url.query() {
+            Some(q) => format!("{}?{q}", url.path()),
+            None => url.path().to_string(),
+        }
+    }
+
+    /// `zip(1)`, for the same reason `unpack` shells out to `unzip(1)`: no
+    /// crate in this workspace speaks the ZIP container, and a test is not the
+    /// place to add one.
+    fn zip_dir(dir: &Path, zip: &Path) -> Vec<u8> {
+        let status = std::process::Command::new("zip")
+            .args(["-q", "-r", "-X"])
+            .arg(zip)
+            .arg(".")
+            .current_dir(dir)
+            .status()
+            .expect("zip(1) on PATH, as unzip(1) already is");
+        assert!(status.success(), "zip exited with {status}");
+        std::fs::read(zip).unwrap()
+    }
+
+    #[tokio::test]
+    async fn run_reads_five_endpoints_freezes_them_and_reconciles() {
+        let legacy = Legacy::start(&[(JCODE, Some("real")), (CMS, Some("real-cms"))]).await;
+        let out = tempfile::tempdir().unwrap();
+        let lines = run_from(&legacy.base, out.path())
+            .await
+            .expect("reconciles");
+
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("86 facts + 79 obs == 165 nodes"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("70 facts + 65 obs == 135 nodes"))
+        );
+
+        // Everything downstream reads is on disk, and the checksums cover it.
+        for relative in [
+            "banks.json",
+            "stats.json",
+            "SHA256SUMS",
+            "claude-code__bank-a.zip",
+            "claude-code__bank-a/manifest.json",
+            "claude-code__bank-b/observations.json",
+        ] {
+            assert!(out.path().join(relative).is_file(), "missing {relative}");
+        }
+        verify_sha256sums(out.path()).expect("the snapshot verifies itself");
+
+        // The frozen oracle round-trips through `BankStats`'s flattened map,
+        // which is what `import` and `verify` will read rather than the
+        // responses just parsed.
+        let oracle = crate::migrate::load_stats(out.path()).unwrap();
+        assert_eq!(oracle[JCODE].stats.total_nodes, 165);
+        assert_eq!(oracle[CMS].documents.len(), 1);
+    }
+
+    /// The reconciliation that runs oracle -> archive, and the only one that
+    /// can see a bank *disappear*. Without it this run is one fewer `ok` line,
+    /// checksums written and verified, exit 0.
+    #[tokio::test]
+    async fn a_bank_whose_archive_never_arrived_fails_the_run() {
+        let legacy = Legacy::start(&[(JCODE, Some("real")), (CMS, None)]).await;
+        let out = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            run_from(&legacy.base, out.path()).await,
+            Err(MigrateError::ArchiveMissing { .. })
+        ));
+    }
+
+    /// Legacy answers 4xx with `{"detail": …}` (`api/http.py:5849`), so the
+    /// body is the diagnosis and a bare status code is not.
+    #[tokio::test]
+    async fn an_endpoint_that_answers_404_names_the_url_and_the_body() {
+        let legacy = Legacy::start(&[]).await;
+        let out = tempfile::tempdir().unwrap();
+        // `/v1/default/banks` is the one route an empty stub still serves, so
+        // the 404 has to come from somewhere else: point the run at a path
+        // that has no route at all.
+        let err = run_from(&format!("{}/nope", legacy.base), out.path())
+            .await
+            .unwrap_err();
+        let MigrateError::HttpStatus { status, body, .. } = err else {
+            panic!("expected an HTTP status error, got {err}");
+        };
+        assert_eq!(status, 404);
+        assert!(body.contains("no stub route"), "the body is the diagnosis");
     }
 }
