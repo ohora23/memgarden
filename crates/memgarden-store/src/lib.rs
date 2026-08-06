@@ -85,3 +85,199 @@ impl Db {
 pub(crate) fn store_err(e: impl std::fmt::Display) -> Error {
     Error::Storage(e.to_string())
 }
+
+#[cfg(test)]
+mod heap_corruption_repro {
+    //! The minimal reproducer for the intermittent SIGSEGV documented in
+    //! `book/src/roadmap.md` — **committed rather than described**, because
+    //! the conclusion it supports is "the corruption is the store's, not the
+    //! migration's", and a measurement nobody can re-run is not evidence.
+    //!
+    //! It is `#[ignore]`d because it does not fail on its own: the corruption
+    //! needs concurrent load, so the harness is *outside* the test —
+    //!
+    //! ```text
+    //! cargo test -p memgarden-store --lib --no-run
+    //! BIN=$(ls -t target/debug/deps/memgarden_store-* | grep -v '\.d$' | head -1)
+    //! for r in 1 2 3 4; do
+    //!   for i in $(seq 8); do $BIN --ignored --test-threads=32 heap_corruption_repro & done
+    //!   wait
+    //! done
+    //! ```
+    //!
+    //! Measured on a Ryzen 7 9800X3D (16 threads): **6 of 32 processes died**,
+    //! with SIGSEGV inside FTS5's index merge or SQLite's allocator. There is
+    //! no `migrate` code here, no links, and no reopen — a file-backed `Db`
+    //! and one large `insert_batch` of FTS5-bearing rows is the whole shape.
+    //!
+    //! This is the input an ASAN build needs. Delete it when the defect is
+    //! closed, not before.
+    use memgarden_core::types::FactType;
+
+    fn one(seed: usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::Db::open(dir.path().join("p.db")).unwrap();
+        crate::banks::create(&db, "b", None, None).unwrap();
+        let texts: Vec<String> = (0..150)
+            .map(|r| format!("db {seed} row {r} lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis nostrud"))
+            .collect();
+        let items: Vec<crate::nodes::NewNodeWithTags> = texts
+            .iter()
+            .map(|t| crate::nodes::NewNodeWithTags {
+                node: crate::models::NewNode::new("b", FactType::World, t),
+                tags: &[],
+            })
+            .collect();
+        assert_eq!(crate::nodes::insert_batch(&db, &items).unwrap().len(), 150);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn a1() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn a2() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn a3() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn a4() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn a5() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn a6() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn a7() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn a8() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn a9() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn b1() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn b2() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn b3() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn b4() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn b5() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn b6() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn b7() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn b8() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn b9() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn c1() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn c2() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn c3() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn c4() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn c5() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn c6() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn c7() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn c8() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn c9() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn d1() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn d2() {
+        one(2);
+    }
+    #[test]
+    #[ignore = "needs the concurrent-process harness in this module's docs"]
+    fn d3() {
+        one(2);
+    }
+}

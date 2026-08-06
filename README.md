@@ -82,6 +82,15 @@ format, re-embedded here, with temporal and semantic adjacency rebuilt by our ru
 than copied. What that means and what it costs is in
 [`docs/design/mg-1-migration.md`](docs/design/mg-1-migration.md).
 
+**One open defect, and it is not where it looked.** `cargo test --workspace` intermittently
+dies with a SIGSEGV inside SQLite (FTS5 index merge, and the allocator) under concurrent load
+— measured 0 of 8 runs before Phase D's importer tests, 2 of 8 after. A 25-line reproducer in
+`memgarden-store` with no migration code in it crashes the same way, so it is the store's
+behaviour when dozens of file-backed databases build FTS5 indexes at once, not the importer's.
+**The daemon's shape is not implicated** (one database, 16 threads, 6,400 inserts: 10/10
+clean). Closing it needs an ASAN build; until then a PR's test tally carries that caveat.
+[Details and the reproducer](book/src/roadmap.md).
+
 **Next up, in order:** MG-2, the AC-3 verifier (three-tier count reconciliation + the
 50-sample content diff) · collect the AC-1 shadow evidence · the web UI.
 

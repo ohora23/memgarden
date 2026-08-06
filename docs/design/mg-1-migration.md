@@ -236,7 +236,7 @@ Three comparisons over data already in hand now close it:
 | **Four of the eight banks are not migrated** | Zero nodes, zero documents, zero links, and `hook session-start`'s `POST /v1/banks` (`session_start.rs:159-166`) recreates any of them on first use. `banks.json` preserves every mission verbatim — including `codex`'s hand-written 149-character one — so the string survives the bank not doing so |
 | **D2: `memory_nodes.uuid` is a fresh v7**, not a legacy uuid (contrast `recall_bench.rs:222-238`) | The archive carries no ids by design (`export.py:171-193`). A uuid-shaped value that is not a legacy uuid is worse than an honest v7, and `(document_id, fact_index)` in `metadata` is the join key instead |
 | **D2: only `caused_by` is copied; `temporal` and `semantic` are recomputed; `entity` is written by neither system** | A semantic edge is a function of the vector space and legacy's vectors are neither exported nor ours; legacy's temporal neighbour query applies no window where `links.rs:69` does. `entity` is exact parity — `counts.py:47-49` derives legacy's at `/stats` time |
-| **D2: entity names are re-resolved through `entities::resolve_fact`, not carried verbatim** | Legacy's canonical names are not normalized in our sense, and `write_entities` upserts on `(bank_id, canonical_name)`. Costs 77 merges in 3,917 names (2.0 %); carrying them raw would have split every one of the 3,917 the first time the daemon retained. §1 |
+| **D2: entity names are normalized and nothing more** — neither carried verbatim (the bench) nor fuzzy-resolved (retain) | Legacy's canonical names are not normalized in our sense, and `write_entities` upserts on `(bank_id, canonical_name)`; but legacy already merged its own spelling variants, so our fuzzy pass only adds false merges — measured 77 names and 22 mentions lost, 33 of them to unrelated entities. §1 |
 | **D2: observations get four date columns, a metadata key and their tags that `insert_observation` has no parameter for** | The store helper is shaped for the daemon, where an observation is created *now*. §2 |
 | **D2: `documents.created_at` and `memory_nodes.created_at` are the import time**, with legacy's preserved in `metadata` | `documents::upsert` and `nodes::insert_batch` both write `now_ms()`, and a migration does not reshape a store helper retain depends on |
 | **D2: a `disposition.mg_import` marker instead of per-bank atomicity** | Every store helper opens its own `Db::write` (`lib.rs:74-82`) and the `_tx` variants are `pub(crate)`; a migration does not get to make seven of them public |
@@ -535,32 +535,91 @@ Scorecard: §1, §2, §3, §5 and §6 are corrections to the plan and stand. §4
 correction to *this document's own first draft*. §4b is a defect in production
 code that neither the plan nor D1 knew about.
 
-### 1. Legacy's entity names are not normalized, so step 4 is retain's path and not the bench's
+### 1. Legacy's entity names are not normalized — but normalizing is the *whole* of what step 4 needs, and the first version did more
 
 The plan's step 4 cites `recall_bench.rs:241-262` **and** `retain::write_graph`
-as if they were the same call. They are not, and the difference does not show
-up until the first prompt after cutover.
+as if they were the same call. They are not, and neither of them is right.
 
-The bench hands `graph::write_entities` the legacy names raw. Measured on the
-archive, legacy's canonical names are `Agent`, `BM25`, `Claude`, `CE-9a` —
-**not lowercased**. `entities::normalize` is trim + lowercase
-(`entities.rs:30`) and `write_entities` upserts on
-`(bank_id, canonical_name)`, so a migrated `Claude` and the daemon's next
-`claude` are two rows: the graph arm's co-membership signal split in half,
-silently, with no error anywhere.
+**The bench's raw names are wrong.** It hands `graph::write_entities` legacy's
+names as they come, which is harmless for a corpus nothing ever retains into
+again. Measured on the archive, legacy's canonical names are `Agent`, `BM25`,
+`Claude`, `CE-9a` — **not lowercased**. `entities::normalize` is trim +
+lowercase (`entities.rs:30`) and `write_entities` upserts on
+`(bank_id, canonical_name)`, so raw names would put the daemon's next `claude`
+beside the migrated `Claude` as a second entity: the graph arm's co-membership
+signal split in half, silently, from the first prompt after cutover.
 
-That is harmless for the bench, whose corpus nothing ever retains into again.
-It is not harmless for a migration whose entire point is that the daemon keeps
-writing afterwards. `import` therefore uses `retain::write_graph`'s path —
-`entities::resolve_fact` against a `ResolutionContext` loaded **per document**,
-the closest analogue of retain's per-chunk load — and each fact carries its own
-date into `first_seen`/`last_seen` (`entity_processing.py:28`) rather than a
-bank-wide stamp, because a flattened 0.2 temporal term is frequently what
-carries a resolution over the 0.6 gate.
+**And retain's path is wrong too, which took a measurement to see.**
+`retain::write_graph` calls `entities::resolve_fact`, which is `normalize`
+*plus* a fuzzy pass against the bank's existing entities. The first version of
+this module did the same, on the reasoning that matching the production path
+must be right. The corpus disagreed: over the four banks the fuzzy pass
+dissolved **77 of 3,917 distinct normalized names** into other entities, taking
+22 mentions with them, and **33 of the 77 have no plausible variant to have
+merged into**:
 
-Cost, and it is real: our resolver may merge two names legacy kept apart. The
-alternative was guaranteed to split every name legacy kept together, which is
-the same loss with certainty instead of probability.
+```
+ce-4       → ce-1          phase e   → phase a       prd      → pr
+ci.yml     → cli.mjs       shell     → schedule      degraded → derived
+mindvault  → invaliddata   idx_links_to → links      linkedin_obsidian → obsidian
+```
+
+The mechanism is in the scoring. `resolution_score` is
+`ratio*0.5 + overlap*0.3 + temporal*0.2` (`entities.rs:160-176`), so two names
+sharing a fact on the same day already hold **0.5 of the 0.6 gate before their
+names are compared at all** — the effective name-similarity bar is about
+**0.2** whenever co-occurrence and recency are both satisfied, which in a bulk
+import they always are: every fact's names co-occur densely and every date is
+clustered. That is how `ci.yml` becomes `cli.mjs`.
+
+**The part the first version had backwards is that the fuzzy pass buys the
+migration nothing.** Its job is to merge spelling variants — and legacy already
+merged those, in legacy's own space, before exporting. Normalization is the
+load-bearing half; the fuzzy half is pure downside here.
+
+**Two sentences an earlier draft of this section had, which review refuted, and
+which are worth keeping as corrections rather than deleting:**
+
+* *"in ordinary retain the candidates are a handful of entities from one
+  chunk."* They are not. `load_resolution_context` is
+  `WHERE bank_id = ?1 ORDER BY last_seen DESC LIMIT 5000` (`graph.rs:54-72`) —
+  **bank-wide**. The per-chunk quantity is `nearby` (`entities.rs:224-228`).
+  So the dense regime that produced the 77 merges is not unique to the import,
+  and every retain after cutover runs against the 3,917-entity bank this
+  migration creates.
+* *"a later `CE-4` hits the same row whether or not `resolve_fact` scores it
+  over 0.6."* It does not necessarily. `retain::write_graph` calls
+  `resolve_fact` **before** `graph::write_entities` (`retain/mod.rs:600-618`),
+  so the upsert key sees the *resolved* name, and `resolve_fact` takes the
+  argmax with no exact-match short-circuit. An exact match holds `1.0*0.5` plus
+  a temporal term that is **0** once the migrated entity's `last_seen` — its
+  legacy date — is months old, so a fresher, co-occurring candidate can
+  outscore it.
+
+The second is a standing CE-7 property, not something this PR introduces or is
+entitled to change; `book/src/roadmap.md` records it with the shape of a fix
+(an exact-match short-circuit is one line) and the measurement that would
+justify one. What this PR fixes is the migration's own use of it.
+
+So step 4 normalizes, dedups within the fact, and stops — through
+`entities::normalized_mentions`, which `resolve_fact` now calls for its own
+first half, so "these two agree" is held by the compiler rather than by a doc
+comment. Two things it deliberately does not do that retain's path does: the
+fuzzy resolution above, and `parse::MAX_ENTITY_CHARS`' 256-character cap, so a
+long legacy name becomes a `canonical_name` our own extraction could not have
+produced. Longest name in the corpus is under 64 characters.
+
+The result is exact rather than approximate:
+
+| | archive | database |
+|---|---|---|
+| distinct normalized entity names | 3,917 | **3,917** |
+| entity mentions | 10,379 | **10,379** |
+
+Which is worth more than the correctness: **it turns entities from something
+MG-2 could only report into something it can gate on.** And it cut the import
+from 207 s to 167 s, because the resolver was O(mentions × candidates) over a
+candidate list that grew all the way to 2,491.
 
 ### 2. `insert_observation` writes six things fewer than the archive carries, and the plan never mentions any of them
 
@@ -886,12 +945,12 @@ $ mg_migrate import --snapshot <scratch>/snapshot-d2 --db <scratch>/rehearsal.db
 
 | bank | docs | nodes | `caused_by` | obs | `node_sources` | temporal (fact / obs) | entities | pending | watermark |
 |---|---|---|---|---|---|---|---|---|---|
-| `bank-b` | 22 == **22** | 3,198 == **3,198** | 64 == **64** | 1,177 | 1,417 | 63,522 | 2,414 | 0 | 3,198 |
+| `bank-b` | 22 == **22** | 3,198 == **3,198** | 64 == **64** | 1,177 | 1,417 | 63,522 | 2,491 | 0 | 3,198 |
 | `bank-c` | 1 == **1** | 953 == **953** | 113 == **113** | 132 | 170 | 19,060 | 286 | 0 | 4,151 |
 | `bank-a` | 1 == **1** | 536 == **536** | 4 == **4** | 258 | 294 | 10,652 | 585 | 0 | 4,687 |
 | `memgarden` | — | — | — | — | — | — | — | — | *skipped, empty* |
 | `bank-d` | 1 == **1** | 601 == **601** | 19 == **19** | 180 | 233 | 11,782 | 555 | 0 | 5,288 |
-| **total** | **25 == 25** | **5,288 == 5,288** | **200 == 200** | **1,747** | **2,114** | **105,016** = 70,212 + 34,804 | **3,840** | **0** | — |
+| **total** | **25 == 25** | **5,288 == 5,288** | **200 == 200** | **1,747** | **2,114** | **105,016** = 70,212 + 34,804 | **3,917 == 3,917** | **0** | — |
 
 Bold is legacy's own `/stats`, **read back from `snapshot-d2/stats.json`** —
 the snapshot this run imported, not the plan-era one. That distinction is not
@@ -910,14 +969,23 @@ and reported 2,939 for the 22-document bank, which is the same
 overstates-what-was-verified failure the empty-bank skip exists to avoid. Every
 fixture is single-document, so no test could have caught it.
 
-**The entity merge rate, measured** — §1's stated cost, quantified rather than
-left as a worry. 3,917 distinct normalized names across the four banks against
-**3,840** entity rows: **77 merged, 2.0 %, every one of them in
-`bank-b`.** The other three banks are single-document, so
-`load_resolution_context` hands `resolve_fact` an empty candidate list and it
-degenerates to `normalize` — 286/286, 585/585, 555/555, exact. The trade is
-real and it is small, and `edge::two-documents` is the fixture that fails if a
-resolver change starts collapsing names that should stay apart.
+**The entity graph is exact**, and §1 explains why that took two attempts:
+3,917 distinct normalized names in the archive against **3,917** entity rows,
+10,379 mentions against **10,379** `node_entities` edges. The first version ran
+`entities::resolve_fact`'s fuzzy pass and lost 77 names and 22 mentions to
+merges like `ce-4` → `ce-1`.
+
+**Two fixtures, because one of them was not a guard.** `edge::two-documents`
+pins that legacy's raw names are *not* carried — case variants must collapse.
+It does **not** catch the fuzzy pass coming back, and an earlier version of
+this note claimed it did: its `Postgres`/`SQLite` pair shares no co-occurring
+partner, so it scores under the gate either way, and review found that
+reverting the fix left the whole suite green. `edge::fuzzy-merge-bait` is the
+fixture that discriminates — two documents sharing a date, one naming `CE-1`
+and `Phase A`, the other `CE-4` and `Phase A`, where `ce-4` scores
+`0.375 + 0.3 + 0.2 = 0.875` and collapses. Verified both ways: reverting
+`write_entities` to `resolve_fact` turns it red with
+`["ce-1", "phase a"]` against `["ce-1", "ce-4", "phase a"]`.
 
 Post-conditions MG-2 will gate on, queried against the same database:
 
@@ -936,13 +1004,11 @@ consolidation_runs, one per migrated bank, status done, watermark = MAX(id)   4
 banks.disposition.mg_import.state                                    done x 4
 ```
 
-Wall time **207 s** in a `dev` build (211 s and 245 s on two earlier runs of
-the same profile; `user` time is ~11 min, because the embedding is
-multi-threaded, and the variance is the machine's not the importer's). The
-plan's ~90 s estimate is a release-build figure and excludes the entity
-resolver, which is O(mentions × candidates) and is the step that grew — it is
-the price of §1 above. `--defer-embeddings` moves the embedding half out of the
-maintenance window entirely.
+Wall time **167 s** in a `dev` build — down from 207 s once §1's fuzzy resolver
+came out, which was O(mentions × candidates) against a candidate list that grew
+to 2,491. The plan's ~90 s estimate is a release-build figure.
+`--defer-embeddings` moves the embedding half out of the maintenance window
+entirely.
 
 `ss -ltnp` unchanged before and after; the legacy daemon (pid 13097) and
 memdash (pid 2120) were never signalled, and every request this PR issues is a
@@ -975,6 +1041,9 @@ possible.
 * **`semantic edges FROM an observation = 0` is parity, not a divergence.**
   Legacy stores none either (4,603 == 4,603, §4). Assert the post-condition;
   do not file a `parity-gaps.md` row for it.
+* **Entities can be a Tier-1 equality**, which the plan did not expect: 3,917
+  distinct normalized archive names == 3,917 rows, 10,379 mentions == 10,379
+  `node_entities` edges. §1.
 * `proof_count` disagrees with legacy in 43 of `real-cms/`'s 65 observations,
   the same construction that produces 93 of 1,747 across the corpus. Tier 2.
 * The database now holds **both** sides of the `node_sources` arithmetic:

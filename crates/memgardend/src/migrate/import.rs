@@ -1038,26 +1038,69 @@ fn node_metadata(fact: &TransferFact, document_id: &str, fact_index: usize) -> S
     Value::Object(object).to_string()
 }
 
-/// Step 4, and it is **not** `recall_bench.rs:241-262`.
+/// Step 4: **normalize, and stop there.**
 ///
-/// The plan's step 4 cites the bench and `retain::write_graph` as if they were
-/// the same call; they are not, and the difference is load-bearing. The bench
-/// hands `graph::write_entities` the legacy names raw, which is harmless for a
-/// corpus nothing ever retains into again. **Legacy's canonical names are not
-/// normalized in our sense** — measured on the archive: `Agent`, `BM25`,
-/// `Claude`, `CE-9a`. `entities::normalize` is trim + lowercase
-/// (`entities.rs:30`) and `write_entities` upserts on
-/// `(bank_id, canonical_name)`, so importing them raw would leave every future
-/// retain's `claude` landing beside the migrated `Claude` as a **second
-/// entity** — the graph arm's co-membership signal split in half, silently,
-/// from the first prompt after cutover.
+/// Three paths were on the table and the middle one is the right one, which
+/// took a measurement to establish.
 ///
-/// So this is `retain::write_graph`'s path (`retain/mod.rs:599-618`) and not
-/// the bench's: `entities::resolve_fact` against a `ResolutionContext` loaded
-/// per document, which is the closest analogue of retain's per-chunk load.
+/// `recall_bench.rs:241-262` hands `graph::write_entities` the legacy names
+/// **raw**. That is harmless for a corpus nothing ever retains into again, and
+/// wrong here: legacy's canonical names are not normalized in our sense —
+/// measured on the archive, `Agent`, `BM25`, `Claude`, `CE-9a` — while
+/// `entities::normalize` is trim + lowercase (`entities.rs:30`) and
+/// `write_entities` upserts on `(bank_id, canonical_name)`. Raw names would
+/// leave every future retain's `claude` beside the migrated `Claude` as a
+/// second entity, splitting the graph arm's co-membership signal from the
+/// first prompt after cutover.
+///
+/// `retain::write_graph` (`retain/mod.rs:599-618`) goes further and calls
+/// `entities::resolve_fact`, which is `normalize` **plus** a fuzzy pass
+/// against the bank's existing entities. The first version of this function
+/// did the same, on the reasoning that matching retain's path must be right.
+/// It is not, and the corpus says so: over the four banks the fuzzy pass
+/// dissolved **77 of 3,917 distinct normalized names** into other entities,
+/// and 33 of those 77 have no plausible variant to have merged into —
+/// `ce-4` into `ce-1`, `phase e` into `phase a`, `prd` into `pr`, `ci.yml`
+/// into `cli.mjs`, `shell` into `schedule`. 22 mentions vanished with them.
+///
+/// The mechanism is in the scoring: `resolution_score` is
+/// `ratio*0.5 + overlap*0.3 + temporal*0.2` (`entities.rs:160-176`), so two
+/// names sharing a fact on the same day already hold **0.5 of the 0.6 gate
+/// before their names are compared at all** — the effective name-similarity
+/// bar is about 0.2 whenever co-occurrence and recency are both satisfied,
+/// which in a bulk import they always are: every fact's names co-occur densely
+/// and every date is clustered.
+///
+/// **And the fuzzy pass buys the migration nothing**, which is the part the
+/// first version got backwards. Its job is to merge spelling variants — and
+/// legacy already merged those, in legacy's own space, before exporting.
+/// Normalization is the whole of what this migration needs.
+///
+/// Two things this deliberately does **not** claim, both of which an earlier
+/// version of this comment did and review refuted:
+///
+/// * that the fuzzy pass is only dangerous here because retain's candidate set
+///   is small. It is not small: `load_resolution_context` is
+///   `WHERE bank_id = ?1 ORDER BY last_seen DESC LIMIT 5000`
+///   (`graph.rs:54-72`) — **bank-wide**. The per-chunk quantity is `nearby`
+///   (`entities.rs:224-228`), not the candidates. So the dense regime that
+///   produced the 77 merges is not unique to the import;
+/// * that a later `CE-4` is *guaranteed* to land on the migrated `ce-4` row.
+///   `retain::write_graph` calls `resolve_fact` **before**
+///   `graph::write_entities` (`retain/mod.rs:600-618`), so the upsert key sees
+///   the resolved name rather than the normalized one, and `resolve_fact`
+///   takes the argmax with no exact-match short-circuit. An exact match holds
+///   `1.0*0.5` plus a temporal term that is **0** once the migrated entity's
+///   `last_seen` — its legacy date — is months old, so a fresher, co-occurring
+///   candidate can outscore it.
+///
+/// The second is a standing CE-7 property that this PR does not change and is
+/// not entitled to change; `book/src/roadmap.md` records it with the one-line
+/// shape of a fix and the measurement that would justify it.
+///
 /// Each fact carries its **own** date into `first_seen`/`last_seen`
-/// (`entity_processing.py:28`), since a bank-wide stamp would flatten the 0.2
-/// temporal term that frequently carries a resolution over the 0.6 gate.
+/// (`entity_processing.py:28`) — a bank-wide stamp would flatten the 0.2
+/// temporal term that retain's resolutions depend on.
 fn write_entities(
     db: &Db,
     bank_id: &str,
@@ -1066,30 +1109,27 @@ fn write_entities(
     ids: &[i64],
 ) -> Result<()> {
     let now = now();
-    let mut offset = 0usize;
-    for document in &archive.documents {
-        let context = graph::load_resolution_context(db, bank_id).map_err(store)?;
-        let resolved: Vec<graph::EntityMentions> = document
-            .facts
-            .iter()
-            .enumerate()
-            .filter(|(_, fact)| !fact.entities.is_empty())
-            .map(|(index, fact)| {
-                let draft = &drafts[offset + index];
-                (
-                    ids[offset + index],
-                    entities::resolve_fact(&fact.entities, draft.event_date, &context),
-                    draft.event_date.unwrap_or(now),
-                )
-            })
-            .filter(|(_, names, _)| !names.is_empty())
-            .collect();
-        offset += document.facts.len();
-        if resolved.is_empty() {
-            continue;
-        }
-        graph::write_entities(db, bank_id, &resolved, now).map_err(store)?;
-    }
+    let mentions: Vec<graph::EntityMentions> = archive
+        .documents
+        .iter()
+        .flat_map(|d| d.facts.iter())
+        .zip(drafts)
+        .zip(ids)
+        .filter(|((fact, _), _)| !fact.entities.is_empty())
+        .map(|((fact, draft), id)| {
+            (
+                *id,
+                entities::normalized_mentions(&fact.entities),
+                draft.event_date.unwrap_or(now),
+            )
+        })
+        .filter(|(_, names, _)| !names.is_empty())
+        .collect();
+    // One call for the bank rather than one per document. `write_entities`
+    // folds mention counts and co-occurrence pairs across whatever it is
+    // given, and the pairs are per node either way, so the batching changes
+    // nothing but the number of transactions.
+    graph::write_entities(db, bank_id, &mentions, now).map_err(store)?;
     Ok(())
 }
 
@@ -1784,18 +1824,49 @@ mod tests {
         );
     }
 
-    /// Entity names arrive **normalized**, which is the difference between
-    /// following `retain::write_graph` and following `recall_bench.rs:241-262`.
+    /// Entity names arrive **normalized and otherwise untouched**.
+    ///
     /// Legacy's canonical names are not lowercased (`Agent`, `BM25`,
-    /// `Claude`), and `write_entities` upserts on `(bank_id, canonical_name)`
-    /// — so importing them raw would split every entity in two the first time
-    /// the daemon retained after cutover.
+    /// `Claude`) and `write_entities` upserts on `(bank_id, canonical_name)`,
+    /// so carrying them raw would split every entity in two the first time the
+    /// daemon retained after cutover. Going the other way and running
+    /// `entities::resolve_fact`'s fuzzy pass over them dissolved 77 of 3,917
+    /// names into other entities — so the count assertion below is exact, and
+    /// it is the one that fails if either half comes back.
     #[tokio::test]
-    async fn entities_are_resolved_our_way_not_carried_verbatim() {
+    async fn entities_are_normalized_and_nothing_else() {
         let fixture = Fixture::real();
         let reports = fixture.import().await.unwrap();
-        assert!(reports[0].entities > 0);
         let db = fixture.open();
+
+        // Every distinct normalized name in the slice gets its own row, and
+        // every mention its own `node_entities` edge. Both are exact — an
+        // entity graph that merely "looks reasonable" is what let 77 wrong
+        // merges through the first time.
+        let archive = crate::migrate::archive::load_dir(fixture.snapshot.path()).unwrap();
+        let mut names: std::collections::BTreeSet<String> = Default::default();
+        let mut mentions = 0i64;
+        for fact in archive[0].documents.iter().flat_map(|d| d.facts.iter()) {
+            let normalized = entities::normalized_mentions(&fact.entities);
+            mentions += normalized.len() as i64;
+            names.extend(normalized);
+        }
+        // The `> 0` guards the first version of this test dropped. `real/` is
+        // a *redacted* slice and the redaction pass is exactly what would
+        // strip an `entities` array, at which point every equality below
+        // becomes `0 == 0` and the test goes green over an empty entity graph
+        // — the shape this repo's review gate keeps naming: the equality
+        // catches disagreement, the `> 0` catches disappearance.
+        assert!(
+            mentions > 0 && !names.is_empty(),
+            "the slice names entities"
+        );
+        assert_eq!(reports[0].entities, names.len());
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM entities"),
+            names.len() as i64
+        );
+        assert_eq!(count(&db, "SELECT count(*) FROM node_entities"), mentions);
         assert_eq!(
             count(
                 &db,
@@ -1804,7 +1875,6 @@ mod tests {
             0,
             "an unnormalized name is one the daemon's own resolver can never match"
         );
-        assert!(count(&db, "SELECT count(*) FROM node_entities") > 0);
         assert_eq!(
             count(&db, "SELECT count(*) FROM entities WHERE mention_count < 1"),
             0
@@ -1959,6 +2029,32 @@ mod tests {
             ),
             0
         );
+        // Entities are scoped by `(bank_id, canonical_name)`, which is the key
+        // the whole of step 4 rests on — and the two slices genuinely overlap:
+        // 8 normalized names appear in both (`bm25`, `recall`, `llm`,
+        // `prompt`, `master`, `assistant`, `tool_use`, `tool_result`). A
+        // regression dropping the `bank_id` predicate collapses 369 rows to
+        // 361 and nothing else in the suite would notice.
+        let per_bank = |bank: &str| {
+            count(
+                &db,
+                &format!("SELECT count(*) FROM entities WHERE bank_id='{bank}'"),
+            )
+        };
+        assert_eq!((per_bank(JCODE), per_bank(CMS)), (203, 166));
+        assert_eq!(count(&db, "SELECT count(*) FROM entities"), 369);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM node_entities ne
+                 JOIN memory_nodes n ON n.id = ne.node_id
+                 JOIN entities e ON e.id = ne.entity_id
+                 WHERE n.bank_id <> e.bank_id"
+            ),
+            0,
+            "no mention may attach to another bank's entity"
+        );
+
         // Each bank's watermark is its own MAX(id), not the database's.
         let marks: Vec<i64> = {
             let conn = db.read().unwrap();
@@ -2608,6 +2704,58 @@ mod tests {
             7,
             "all seven mentions still attach to their own node; only the names merged"
         );
+
+        // Joined back to a *specific* node, because the aggregate counts above
+        // are all invariant under a mis-zipped `(fact, draft, id)` — review
+        // checked, and reversing `fact_ids` leaves every one of them
+        // unchanged. This is the only assertion that catches it.
+        let of_second_fact = strings(
+            &db,
+            "SELECT e.canonical_name FROM entities e
+             JOIN node_entities ne ON ne.entity_id = e.id
+             JOIN memory_nodes n ON n.id = ne.node_id
+             WHERE n.text LIKE 'Postgres is not SQLite%' ORDER BY 1",
+        );
+        assert_eq!(of_second_fact, vec!["postgres", "sqlite"]);
+
+        // And the co-occurrence pairs, which nothing in the migration path
+        // asserted at all — a change that emitted none would have been silent.
+        // Two pairs: (bm25, recall) on both documents' first facts, and
+        // (postgres, sqlite) on one.
+        let pairs = strings(
+            &db,
+            "SELECT a.canonical_name || '+' || b.canonical_name || '=' || c.cooccurrence_count
+             FROM entity_cooccurrences c
+             JOIN entities a ON a.id = c.entity_id_1
+             JOIN entities b ON b.id = c.entity_id_2 ORDER BY 1",
+        );
+        assert_eq!(pairs, vec!["bm25+recall=2", "postgres+sqlite=1"]);
+    }
+
+    /// **The fixture that discriminates**, and the one this PR did not have
+    /// until review pointed out that reverting the fix left the suite green.
+    ///
+    /// `edge::fuzzy-merge-bait` is two documents sharing a date, one naming
+    /// `CE-1` and `Phase A`, the other `CE-4` and `Phase A`. Under
+    /// `entities::resolve_fact`, `ce-4` scores
+    /// `ratio("ce-4","ce-1")*0.5 (= 0.375) + overlap 1/1 * 0.3 + same-day 0.2
+    /// = 0.875` against the 0.6 gate and collapses into `ce-1` — the live
+    /// corpus's headline failure, in three facts. Normalizing and stopping
+    /// keeps them apart.
+    #[tokio::test]
+    async fn two_similar_names_sharing_a_partner_and_a_day_stay_apart() {
+        let fixture = Fixture::new(Snapshot::edge(
+            "edge__fuzzy-merge-bait",
+            "edge::fuzzy-merge-bait",
+        ));
+        fixture.import().await.unwrap();
+        let db = fixture.open();
+        assert_eq!(
+            strings(&db, "SELECT canonical_name FROM entities ORDER BY 1"),
+            vec!["ce-1", "ce-4", "phase a"],
+            "the fuzzy pass merges ce-4 into ce-1 here; normalization does not"
+        );
+        assert_eq!(count(&db, "SELECT count(*) FROM node_entities"), 4);
     }
 
     /// Legacy's `event_date` is NOT NULL as exactly this case's fallback

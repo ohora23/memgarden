@@ -89,6 +89,77 @@ PR discipline) are tracked but do not gate the shutdown.
 
 Ordered by what blocks what.
 
+### `resolve_fact` runs against the whole migrated bank after cutover — CE-7, established by MG-1b and not fixed by it
+
+MG-1b measured what `entities::resolve_fact`'s fuzzy pass does over a dense
+candidate set: **77 of 3,917 distinct names dissolved into others, 33 of them
+into names with no plausible similarity** — `ce-4` into `ce-1`, `ci.yml` into
+`cli.mjs`, `shell` into `schedule`. It removed the pass from the *importer*,
+which is a one-time bulk operation legacy had already canonicalized for.
+
+It did not remove it from retain, and cannot: that is the path the resolver
+was written for. But two facts make the same condition recur after cutover:
+
+* `load_resolution_context` is `WHERE bank_id = ?1 ORDER BY last_seen DESC
+  LIMIT 5000` (`graph.rs:54-72`) — **bank-wide**, not per chunk. The migrated
+  `bank-b` holds 2,491 entities, under the cap, so every retain
+  scores every mention against all of them;
+* `resolution_score` is `ratio*0.5 + overlap*0.3 + temporal*0.2`
+  (`entities.rs:160-176`), so a co-occurring same-day pair holds 0.5 of the
+  0.6 gate before names are compared.
+
+And a second-order effect specific to a migrated bank: `resolve_fact` takes the
+argmax with **no exact-match short-circuit**, while a migrated entity's
+`last_seen` is its *legacy* date. Months after cutover an exactly-matching
+migrated candidate holds `1.0*0.5 + overlap*0.3 + 0`, and a fresher,
+co-occurring near-match can outscore it — so a later `CE-4` can be routed into
+`ce-1` rather than onto the migrated `ce-4` row.
+
+**Shape of a fix:** one line in `resolve_fact` — an exact `canonical_name`
+match is the best possible match by definition and can short-circuit the
+argmax. **What would justify it:** an AX-2 run showing the recall effect, for
+the same reason MG-1b did not change it on the way past. A migration does not
+get to reshape CE-7 while nobody is measuring.
+
+### The test suite corrupts memory under concurrent load — `memgarden-store`, not the migration
+
+`cargo test --workspace` intermittently dies with SIGSEGV or abort in the
+`memgardend` test binary. Measured, same harness: **0 of 8 runs at `bccaed9`
+(before Phase D's importer tests), 2 of 8 at `9fd1930`.** Under a synthetic
+load of 8 concurrent test processes at 32 threads each, the importer tests
+crash **13 times in 32 processes**.
+
+Three distinct backtraces, all heap corruption **inside SQLite**: FTS5's index
+merge writing a varint through a stale buffer pointer
+(`fts5IndexMergeLevel` → `sqlite3Fts5PutVarint`), an FTS5 varint read from
+`0xec9117eb9cd4eabf`, and the allocator itself
+(`sqlite3MemSize(pPrior=0x1008)` under `pcache1Alloc`). SQLite is
+`THREADSAFE=1`, `MUTEX_PTHREADS`, 3.53.2.
+
+**It is not the migration code, and the reproducer is what says so.** Twenty-five
+lines in `memgarden-store` — open a file-backed `Db`, `nodes::insert_batch` of
+150 long-text nodes, drop — with no `migrate` involvement, no links and no
+reopen, crashes **6 times in 32 processes** under the same load. Phase D's
+tests were simply the first suite to hold dozens of file-backed databases with
+substantial FTS5 content open at once.
+
+Ruled out, each measured rather than argued: thread stack size
+(`RUST_MIN_STACK=32M` changes nothing), `mmap_size` (0 changes nothing),
+`sqlite-vec` (removing the `vec_nodes` insert changes nothing), and serializing
+pool construction (changes nothing). A contributing factor, not the cause: the
+per-**connection** `cache_size` of 64 MiB and `mmap_size` of 256 MiB multiply by
+every live pool, and cutting the cache to 2 MiB moves 13/32 to 9/32.
+
+**The daemon's shape is not implicated.** One file-backed database, 16 threads,
+6,400 FTS5-bearing inserts: 10 runs, 0 failures. Thirty short-lived databases
+with 250 small inserts each at 64 threads: 20 runs, 0 failures. It takes many
+concurrent databases *and* substantial FTS5 index building together.
+
+**What it costs today:** `cargo test --workspace` is not a trustworthy gate
+under load, so a PR's test tally has to be read with that caveat until this is
+closed. **What would close it:** an ASAN build, which needs a nightly toolchain
+this repo does not pin — the minimal reproducer above is the input for it.
+
 ### ~~The cursor gap~~ — fixed (HK-1g)
 
 A retain job finishing `done` with a failed chunk used to open a gap between

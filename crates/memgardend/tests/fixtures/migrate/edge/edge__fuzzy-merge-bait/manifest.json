@@ -1,0 +1,14 @@
+{
+ "schema_version": 1,
+ "source_bank_id": "edge::fuzzy-merge-bait",
+ "exported_at": "2026-08-06T00:00:00Z",
+ "document_count": 2,
+ "fact_count": 2,
+ "observation_count": 0,
+ "archive_type": "documents",
+ "mental_model_count": 0,
+ "directive_count": 0,
+ "webhook_count": 0,
+ "includes_history": false,
+ "bank_rows_json_encoding": null
+}
