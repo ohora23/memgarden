@@ -552,14 +552,14 @@ mod tests {
         let hold = ACQUIRE_TIMEOUT + Duration::from_secs(1);
         let stub_calls = calls.clone();
         let app = axum::Router::new().route(
-            "/api/chat",
+            "/api/generate",
             axum::routing::post(move || {
                 let calls = stub_calls.clone();
                 async move {
                     if calls.fetch_add(1, Ordering::SeqCst) == 0 {
                         tokio::time::sleep(hold).await;
                     }
-                    axum::Json(json!({ "message": { "content": "{\"ok\":true}" } }))
+                    axum::Json(json!({ "response": "{\"ok\":true}" }))
                 }
             }),
         );
@@ -594,9 +594,22 @@ mod tests {
         // finds a *free* permit, succeeds, and the assertion inverts. A once-
         // seen, never-reproduced failure is the worst kind to own — this
         // removes the margin rather than widening it.
-        while calls.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
+        //
+        // **Bounded.** The poll above was correct in mechanism and unbounded in
+        // time, which turned a red test into a hung one: any failure of the
+        // holder to reach the stub — a spawn that dies, a stub that never
+        // binds — spins here forever with no diagnostic. It does not merely
+        // stall CI; it leaves a spinning `memgardend` test binary behind on
+        // every local `cargo test --workspace`, and several were found alive
+        // hours after the run that started them. Five seconds is ~1,600x the
+        // observed connect time and still finite.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while calls.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the holder never reached the stub; it cannot be holding the permit");
 
         let interactive = client.chat_json::<Value>("s", "u", &json!({})).await;
         assert!(
