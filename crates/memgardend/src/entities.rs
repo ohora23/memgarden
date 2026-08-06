@@ -191,6 +191,28 @@ fn can_clear_threshold(len_a: usize, len_b: usize) -> bool {
     resolution_score(ratio_ceiling, 1, 1, Some(0.0)) > RESOLUTION_THRESHOLD
 }
 
+/// [`resolve_fact`]'s first half on its own: trim + lowercase, empties
+/// dropped, duplicates within the fact dropped.
+///
+/// `pub` because MG-1's importer wants exactly this and *not* the fuzzy pass
+/// that follows it — legacy already merged its own spelling variants, so
+/// scoring already-canonical names against each other only produces false
+/// merges (`migrate::import::write_entities`). It was six duplicated lines
+/// there until review pointed out that the invariant "these two agree" was
+/// held by a doc comment; now it is held by the compiler.
+///
+/// The dedup is load-bearing on both paths: a fact naming the same entity
+/// twice must not inflate `mention_count` or fabricate a self-pair in
+/// `entity_cooccurrences`, whose CHECK would reject `a = a` anyway.
+pub fn normalized_mentions(mentions: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    mentions
+        .iter()
+        .map(|m| normalize(m))
+        .filter(|m| !m.is_empty() && seen.insert(m.clone()))
+        .collect()
+}
+
 /// Resolves one fact's entity mentions to canonical names: each mention
 /// either matches an existing entity (score `> 0.6`) and adopts its canonical
 /// name, or keeps its own normalized name and becomes a new entity when the
@@ -204,14 +226,7 @@ pub fn resolve_fact(
     event_date_ms: Option<i64>,
     ctx: &ResolutionContext,
 ) -> Vec<String> {
-    let normalized: Vec<String> = {
-        let mut seen = HashSet::new();
-        mentions
-            .iter()
-            .map(|m| normalize(m))
-            .filter(|m| !m.is_empty() && seen.insert(m.clone()))
-            .collect()
-    };
+    let normalized = normalized_mentions(mentions);
     if normalized.is_empty() {
         return vec![];
     }

@@ -567,23 +567,49 @@ mindvault  → invaliddata   idx_links_to → links      linkedin_obsidian → o
 The mechanism is in the scoring. `resolution_score` is
 `ratio*0.5 + overlap*0.3 + temporal*0.2` (`entities.rs:160-176`), so two names
 sharing a fact on the same day already hold **0.5 of the 0.6 gate before their
-names are compared at all**. In ordinary retain that is fine — the candidates
-are a handful of entities from one chunk, and the co-occurrence signal is
-informative. In a bulk import every fact's names co-occur densely and every
-date is clustered, so the effective name-similarity bar collapses to about
-**0.2** and `ci.yml` becomes `cli.mjs`.
+names are compared at all** — the effective name-similarity bar is about
+**0.2** whenever co-occurrence and recency are both satisfied, which in a bulk
+import they always are: every fact's names co-occur densely and every date is
+clustered. That is how `ci.yml` becomes `cli.mjs`.
 
 **The part the first version had backwards is that the fuzzy pass buys the
 migration nothing.** Its job is to merge spelling variants — and legacy already
-merged those, in legacy's own space, before exporting. What makes a *future*
-retain land on a migrated entity is not the fuzzy score but `write_entities`'
-upsert key: a later `CE-4` normalizes to `ce-4` and hits the same row whether
-or not `resolve_fact` scores it over 0.6. Normalization is load-bearing; the
-fuzzy half is pure downside here, and it stays in CE-7 for the path it was
-written for.
+merged those, in legacy's own space, before exporting. Normalization is the
+load-bearing half; the fuzzy half is pure downside here.
 
-So step 4 normalizes, dedups within the fact, and stops. The result is exact
-rather than approximate:
+**Two sentences an earlier draft of this section had, which review refuted, and
+which are worth keeping as corrections rather than deleting:**
+
+* *"in ordinary retain the candidates are a handful of entities from one
+  chunk."* They are not. `load_resolution_context` is
+  `WHERE bank_id = ?1 ORDER BY last_seen DESC LIMIT 5000` (`graph.rs:54-72`) —
+  **bank-wide**. The per-chunk quantity is `nearby` (`entities.rs:224-228`).
+  So the dense regime that produced the 77 merges is not unique to the import,
+  and every retain after cutover runs against the 3,917-entity bank this
+  migration creates.
+* *"a later `CE-4` hits the same row whether or not `resolve_fact` scores it
+  over 0.6."* It does not necessarily. `retain::write_graph` calls
+  `resolve_fact` **before** `graph::write_entities` (`retain/mod.rs:600-618`),
+  so the upsert key sees the *resolved* name, and `resolve_fact` takes the
+  argmax with no exact-match short-circuit. An exact match holds `1.0*0.5` plus
+  a temporal term that is **0** once the migrated entity's `last_seen` — its
+  legacy date — is months old, so a fresher, co-occurring candidate can
+  outscore it.
+
+The second is a standing CE-7 property, not something this PR introduces or is
+entitled to change; `book/src/roadmap.md` records it with the shape of a fix
+(an exact-match short-circuit is one line) and the measurement that would
+justify one. What this PR fixes is the migration's own use of it.
+
+So step 4 normalizes, dedups within the fact, and stops — through
+`entities::normalized_mentions`, which `resolve_fact` now calls for its own
+first half, so "these two agree" is held by the compiler rather than by a doc
+comment. Two things it deliberately does not do that retain's path does: the
+fuzzy resolution above, and `parse::MAX_ENTITY_CHARS`' 256-character cap, so a
+long legacy name becomes a `canonical_name` our own extraction could not have
+produced. Longest name in the corpus is under 64 characters.
+
+The result is exact rather than approximate:
 
 | | archive | database |
 |---|---|---|
@@ -947,9 +973,19 @@ fixture is single-document, so no test could have caught it.
 3,917 distinct normalized names in the archive against **3,917** entity rows,
 10,379 mentions against **10,379** `node_entities` edges. The first version ran
 `entities::resolve_fact`'s fuzzy pass and lost 77 names and 22 mentions to
-merges like `ce-4` → `ce-1`. `edge::two-documents` is the fixture that fails if
-either half comes back — the case variants must still collapse, and
-`Postgres`/`SQLite` must still stay apart.
+merges like `ce-4` → `ce-1`.
+
+**Two fixtures, because one of them was not a guard.** `edge::two-documents`
+pins that legacy's raw names are *not* carried — case variants must collapse.
+It does **not** catch the fuzzy pass coming back, and an earlier version of
+this note claimed it did: its `Postgres`/`SQLite` pair shares no co-occurring
+partner, so it scores under the gate either way, and review found that
+reverting the fix left the whole suite green. `edge::fuzzy-merge-bait` is the
+fixture that discriminates — two documents sharing a date, one naming `CE-1`
+and `Phase A`, the other `CE-4` and `Phase A`, where `ce-4` scores
+`0.375 + 0.3 + 0.2 = 0.875` and collapses. Verified both ways: reverting
+`write_entities` to `resolve_fact` turns it red with
+`["ce-1", "phase a"]` against `["ce-1", "ce-4", "phase a"]`.
 
 Post-conditions MG-2 will gate on, queried against the same database:
 

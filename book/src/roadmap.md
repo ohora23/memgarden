@@ -89,6 +89,38 @@ PR discipline) are tracked but do not gate the shutdown.
 
 Ordered by what blocks what.
 
+### `resolve_fact` runs against the whole migrated bank after cutover — CE-7, established by MG-1b and not fixed by it
+
+MG-1b measured what `entities::resolve_fact`'s fuzzy pass does over a dense
+candidate set: **77 of 3,917 distinct names dissolved into others, 33 of them
+into names with no plausible similarity** — `ce-4` into `ce-1`, `ci.yml` into
+`cli.mjs`, `shell` into `schedule`. It removed the pass from the *importer*,
+which is a one-time bulk operation legacy had already canonicalized for.
+
+It did not remove it from retain, and cannot: that is the path the resolver
+was written for. But two facts make the same condition recur after cutover:
+
+* `load_resolution_context` is `WHERE bank_id = ?1 ORDER BY last_seen DESC
+  LIMIT 5000` (`graph.rs:54-72`) — **bank-wide**, not per chunk. The migrated
+  `bank-b` holds 2,491 entities, under the cap, so every retain
+  scores every mention against all of them;
+* `resolution_score` is `ratio*0.5 + overlap*0.3 + temporal*0.2`
+  (`entities.rs:160-176`), so a co-occurring same-day pair holds 0.5 of the
+  0.6 gate before names are compared.
+
+And a second-order effect specific to a migrated bank: `resolve_fact` takes the
+argmax with **no exact-match short-circuit**, while a migrated entity's
+`last_seen` is its *legacy* date. Months after cutover an exactly-matching
+migrated candidate holds `1.0*0.5 + overlap*0.3 + 0`, and a fresher,
+co-occurring near-match can outscore it — so a later `CE-4` can be routed into
+`ce-1` rather than onto the migrated `ce-4` row.
+
+**Shape of a fix:** one line in `resolve_fact` — an exact `canonical_name`
+match is the best possible match by definition and can short-circuit the
+argmax. **What would justify it:** an AX-2 run showing the recall effect, for
+the same reason MG-1b did not change it on the way past. A migration does not
+get to reshape CE-7 while nobody is measuring.
+
 ### The test suite corrupts memory under concurrent load — `memgarden-store`, not the migration
 
 `cargo test --workspace` intermittently dies with SIGSEGV or abort in the

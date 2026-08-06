@@ -110,5 +110,36 @@
   "documents_total": 2,
   "memories_invalidated": 0,
   "dropped": false
+ },
+ "edge::fuzzy-merge-bait": {
+  "bank_id": "edge::fuzzy-merge-bait",
+  "stats": {
+   "bank_id": "edge::fuzzy-merge-bait",
+   "total_nodes": 2,
+   "total_documents": 2,
+   "total_observations": 0,
+   "nodes_by_fact_type": {
+    "world": 2
+   },
+   "links_by_link_type": {
+    "caused_by": 0
+   }
+  },
+  "documents": [
+   {
+    "id": "00000000-0000-4000-8000-0000000000c1",
+    "content_hash": "a2206b74b5e28411349e5bf9d58fa60ef531c705f1c1b1e817c2ca650d7423bc",
+    "memory_unit_count": 1
+   },
+   {
+    "id": "00000000-0000-4000-8000-0000000000c4",
+    "content_hash": "dffb38a9aaf168f26e7bcc01837d630b154336f0c908637a02298add359e8820",
+    "memory_unit_count": 1
+   }
+  ],
+  "memories_total": 2,
+  "documents_total": 2,
+  "memories_invalidated": 0,
+  "dropped": false
  }
 }
