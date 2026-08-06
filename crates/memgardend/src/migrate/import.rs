@@ -445,6 +445,17 @@ fn assert_importable(archive: &BankArchive, stats: &Stats) -> Result<()> {
             });
         }
     }
+    // `includes_history` was the last of D1's deferred list: parsed, and
+    // asserted against nothing. `false` in all five banks, and nothing in
+    // `schema.py` says what a `true` adds — which is exactly why accepting one
+    // is a guess about content we would then not carry.
+    if manifest.includes_history {
+        return Err(MigrateError::UnsupportedArchiveContent {
+            bank: bank.to_string(),
+            field: "includes_history",
+            count: 1,
+        });
+    }
 
     for document in &archive.documents {
         let facts = document.facts.len() as i64;
@@ -2404,6 +2415,25 @@ mod tests {
                 "{field} was accepted"
             );
         }
+    }
+
+    /// `includes_history: true` means the archive carries an edit history no
+    /// column here can hold, and `schema.py` does not say in which files.
+    #[tokio::test]
+    async fn an_archive_that_claims_to_include_history_is_refused() {
+        let fixture = Fixture::real();
+        fixture
+            .snapshot
+            .edit("claude-code__bank-a/manifest.json", |m| {
+                m["includes_history"] = json!(true)
+            });
+        assert!(matches!(
+            fixture.import().await,
+            Err(MigrateError::UnsupportedArchiveContent {
+                field: "includes_history",
+                ..
+            })
+        ));
     }
 
     /// A `"bank"` archive carries those three in files `load_dir` never opens.

@@ -806,8 +806,11 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) -> Re
             collect_files(root, &child, out)?;
             continue;
         }
-        // The checksum file cannot list itself.
-        if child.file_name().is_some_and(|n| n == "SHA256SUMS") {
+        // The checksum file cannot list itself — but only *it*. Skipping the
+        // name at any depth left a file legacy could legally emit inside a
+        // bank directory unhashed and unverified, which is a hole of exactly
+        // the shape this module exists against: not a mismatch, an absence.
+        if child == root.join("SHA256SUMS") {
             continue;
         }
         let relative = child
@@ -1208,6 +1211,34 @@ mod tests {
     /// produced by coreutils, so a byte-identical rewrite here is what makes
     /// the runbook's `sha256sum -c SHA256SUMS` line true rather than
     /// aspirational.
+    /// Only the *root* checksum file is excluded. A file legacy could legally
+    /// emit under a bank directory with that name used to be skipped at any
+    /// depth — unhashed, unverified, and invisible.
+    #[test]
+    fn a_sha256sums_below_the_root_is_still_checksummed() {
+        let scratch = real_scratch();
+        let nested = scratch
+            .path()
+            .join("claude-code__bank-a/SHA256SUMS");
+        std::fs::write(&nested, b"legacy could legally emit this\n").unwrap();
+        write_sha256sums(scratch.path()).unwrap();
+        let body = std::fs::read_to_string(scratch.path().join("SHA256SUMS")).unwrap();
+        assert!(
+            body.contains("claude-code__bank-a/SHA256SUMS"),
+            "a nested checksum-named file must be covered:\n{body}"
+        );
+        assert!(
+            !body.lines().any(|l| l.ends_with("  SHA256SUMS")),
+            "and the root one still cannot list itself"
+        );
+        verify_sha256sums(scratch.path()).unwrap();
+        std::fs::write(&nested, b"flipped\n").unwrap();
+        assert!(matches!(
+            verify_sha256sums(scratch.path()),
+            Err(MigrateError::ChecksumMismatch { .. })
+        ));
+    }
+
     #[test]
     fn write_sha256sums_round_trips_and_never_lists_itself() {
         let scratch = real_scratch();

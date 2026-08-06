@@ -410,14 +410,28 @@ it now survives :9077.
   `mental_models` delete (§Binding decisions #5d): a legacy bank that grew a
   mental model would have had it dropped on this side *and* not carried from
   that one.
-* `manifest.archive_type` was parsed and asserted against nothing. **Now a
-  refusal**: a `"bank"` archive carries mental models, directives and webhooks
-  in files `load_dir` never opens (`schema.py:149`), so importing one would
-  move the documents and leave the rest behind in silence. `includes_history`
-  is still asserted against nothing — it is `false` in all five banks and
-  nothing in `schema.py` says what a `true` would add.
-* `collect_files` skips any file named `SHA256SUMS` at any depth, not only the
-  one at the root. **Still open**, harmless today.
+* `manifest.archive_type` and `includes_history` were parsed and asserted
+  against nothing. **Both are now refusals.** A `"bank"` archive carries mental
+  models, directives and webhooks in files `load_dir` never opens
+  (`schema.py:149`), and `includes_history: true` means an edit history
+  `schema.py` does not say where to find; either would move the documents and
+  leave the rest behind in silence.
+
+  All four of these live in `assert_importable` rather than in D1's
+  `assert_integrity`, and the line is principled rather than convenient:
+  **`snapshot` asserts that the freeze is complete and reconciles; `import`
+  asserts that we can carry what was frozen.** A `"bank"` archive is a
+  perfectly complete freeze — it just holds content this importer has no home
+  for. `import` re-runs `assert_integrity` first, so both sets fire before any
+  row is written either way.
+* `collect_files` skipped any file named `SHA256SUMS` at any depth, not only
+  the one at the root. **Fixed** — it now excludes exactly `root/SHA256SUMS`.
+  Harmless today because legacy emits no such entry, and a hole of precisely
+  the shape this module exists against if it ever does: not a mismatch, an
+  absence. `a_sha256sums_below_the_root_is_still_checksummed` plants one and
+  flips a byte in it.
+
+**D1's deferred list is now empty.**
 
 ### The discard ledger — every archive field, and where it went
 
