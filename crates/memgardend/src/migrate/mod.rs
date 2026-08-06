@@ -23,6 +23,7 @@
 //! is a refusal nobody acts on.
 
 pub mod archive;
+pub mod import;
 pub mod snapshot;
 
 use std::path::PathBuf;
@@ -298,6 +299,176 @@ pub enum MigrateError {
         nodes: i64,
         documents: i64,
     },
+
+    // --- import: the guards (§Failure posture, "`import` refuses when") -----
+    /// A daemon is listening **and** the target is the database it holds open.
+    /// See `import::assert_daemon_not_holding` for why both halves are
+    /// required — the plan states only the first, and only the first would
+    /// refuse every zero-downtime rehearsal the runbook asks for.
+    #[error("a daemon is listening on {bind} and holds {db}; stop it or import into another --db")]
+    DaemonListening { bind: String, db: PathBuf },
+
+    #[error("{bind:?} is not a socket address this binary can probe")]
+    UnparseableBind { bind: String },
+
+    /// `Db::open` migrates forward but never backward: a database written by a
+    /// newer binary keeps its `user_version` and every migration entry skips
+    /// (`migrate.rs:44-48`), so an import would write into a schema it does
+    /// not know.
+    #[error("database is at schema_version {found}, this binary writes {supported}")]
+    SchemaVersionMismatch { found: i64, supported: i64 },
+
+    /// An import must start from an empty bank or it is not reproducible —
+    /// `recall_bench.rs:180-186`'s rule, moved from the database to the bank.
+    #[error("{bank} already holds {nodes} nodes; pass --replace to purge it first")]
+    BankNotEmpty { bank: String, nodes: i64 },
+
+    /// The partial-bank guarantee. There is no per-bank transaction
+    /// (§Binding decisions #5), so a failed run leaves rows behind — and the
+    /// marker is what stops them being mistaken for a finished import.
+    #[error("{bank} carries an mg_import marker still at 'running'; only --replace may reuse it")]
+    ImportInProgress { bank: String },
+
+    /// `target_fact_index` is an ordinal into the **same document's** `facts`
+    /// array (`schema.py:35-43`), typed `int` — so a negative or past-the-end
+    /// value parses. Rejected before any write, because
+    /// `graph::insert_links` would otherwise fail on a foreign key naming
+    /// neither the document nor the fact.
+    #[error(
+        "{bank}: document {document} fact #{fact_index} points at causal target {target}, \
+         but the document has {facts} facts"
+    )]
+    CausalTargetOutOfRange {
+        bank: String,
+        document: String,
+        fact_index: usize,
+        target: i64,
+        facts: i64,
+    },
+
+    /// An observation source that names no fact in the archive.
+    /// `insert_observation` filters unresolvable ids in SQL and drops them
+    /// **silently** (`consolidate.rs:111-114`) — correct for the daemon, and a
+    /// silent loss of proof here.
+    #[error(
+        "{bank}: observation #{index} sources ({document}, {fact_index}), which is not in the archive"
+    )]
+    ObservationSourceUnresolved {
+        bank: String,
+        index: usize,
+        document: String,
+        fact_index: i64,
+    },
+
+    /// `/documents.document_metadata` and `retain_params.metadata` were equal
+    /// in all 25 live documents, and the import carries the second as the
+    /// first. It is the one field with no `schema.py` counterpart, so
+    /// `deny_unknown_fields` structurally cannot see it and only this
+    /// comparison can.
+    #[error(
+        "{bank}: document {document} metadata disagrees — archive {archive}, /documents {legacy}"
+    )]
+    DocumentMetadataMismatch {
+        bank: String,
+        document: String,
+        archive: String,
+        legacy: String,
+    },
+
+    /// A `"bank"` archive carries mental models, directives and webhooks in
+    /// files `load_dir` does not read (`schema.py:149`). Importing one would
+    /// move the documents and leave the rest behind without a word.
+    #[error(
+        "{bank}: archive_type is {archive_type}, and only a documents archive is readable here"
+    )]
+    UnsupportedArchiveType { bank: String, archive_type: String },
+
+    /// The plan puts mental models out of scope with *"there is nothing to
+    /// migrate"* — measured 0 in every manifest, and asserted here because
+    /// `--replace` **deletes** the target bank's `mental_models`
+    /// (§Binding decisions #5d). A legacy bank that grew one would have it
+    /// dropped on this side and not carried from that one.
+    #[error("{bank}: manifest.{field} is {count}, and this importer carries none of them")]
+    UnsupportedArchiveContent {
+        bank: String,
+        field: &'static str,
+        count: i64,
+    },
+
+    /// The mirror of [`MigrateError::ObservationScopesUnsupported`] on the
+    /// *fact* side, which D1's deferred list records as unchecked. Same silent
+    /// drop, same reason `deny_unknown_fields` cannot catch it: the field is
+    /// known and merely unused. Measured null in all 3,541 facts.
+    #[error(
+        "{bank}: document {document} fact #{fact_index} has observation_scopes {scopes}, \
+         which we cannot store"
+    )]
+    FactScopesUnsupported {
+        bank: String,
+        document: String,
+        fact_index: usize,
+        scopes: String,
+    },
+
+    /// `banks.json` is the only carrier of a bank's mission and disposition —
+    /// the transfer archive has neither. The mirror of
+    /// [`MigrateError::StatsMissing`] for the other frozen file, and it is a
+    /// refusal because the alternative is a bank created with a NULL mission
+    /// and nothing saying the string was lost. `codex`'s hand-written
+    /// 149-character mission is the reason `banks.json` exists at all.
+    #[error("{bank}: an archive was loaded, but banks.json has no entry for it")]
+    BankNotListed { bank: String },
+
+    /// `occurred_start.or(mentioned_at)` came out `None`, so the node would
+    /// land with no `event_date` — skipped by `temporal_links`
+    /// (`links.rs:62-68`) — while legacy's own `event_date`, which is NOT NULL
+    /// on its side precisely as this case's fallback (`schema.py:57-58`), is
+    /// discarded. Measured 0 of 3,541 facts and 0 of 1,747 observations, and
+    /// asserted for the same reason `original_text`'s 25/25 is.
+    #[error(
+        "{bank}: {document} #{index} has neither occurred_start nor mentioned_at, so event_date cannot be derived"
+    )]
+    EventDateNotDerivable {
+        bank: String,
+        document: String,
+        index: usize,
+    },
+
+    /// Legacy types `fact_type` as a free string. Ours is a three-value
+    /// `CHECK` (`0001_init.sql:33`), and defaulting an unrecognised value to
+    /// `world` would file a shape change as ordinary content.
+    #[error("{bank}: fact_type {fact_type:?} is not one of world/experience/observation")]
+    UnknownFactType { bank: String, fact_type: String },
+
+    /// A timestamp legacy emitted that we cannot read. Dropping it would cost
+    /// the node its place in the temporal graph and say nothing.
+    #[error("{bank}: {field} {value:?} is not an RFC 3339 timestamp")]
+    BadTimestamp {
+        bank: String,
+        field: &'static str,
+        value: String,
+    },
+
+    #[error("{bank}: embedding the observations failed: {message}")]
+    Embed { bank: String, message: String },
+
+    /// `drain_once` returns on the first embedder error with no retry
+    /// (`embed_task.rs:110-124`), and its "model still loading" return
+    /// (`:80-82`) is indistinguishable from a drained backlog out here. So the
+    /// drain is bounded and the backlog must shrink between calls.
+    #[error("{bank}: {pending} nodes still unembedded after {calls} drain call(s)")]
+    EmbeddingBacklogStalled {
+        bank: String,
+        pending: i64,
+        calls: usize,
+    },
+
+    /// Anything the store refused. Kept as a message rather than wrapping
+    /// `memgarden_core::Error`: this module's whole error surface is one enum
+    /// the binary prints with a cause walk, and the store's own `Display`
+    /// already names the table and the constraint.
+    #[error("{message}")]
+    Store { message: String },
 }
 
 pub type Result<T> = std::result::Result<T, MigrateError>;
@@ -379,6 +550,137 @@ pub(crate) mod test_support {
             .unwrap_or_else(|| panic!("no {bank_id} in the edge fixture"));
         let stats = load_stats(&dir).unwrap().remove(bank_id).unwrap();
         (archive, stats)
+    }
+
+    /// A writable snapshot directory assembled from one or more committed
+    /// fixtures, with `stats.json` merged and `SHA256SUMS` **regenerated**.
+    ///
+    /// [`MutableSnapshot`]'s sibling, and separate from it on purpose: that
+    /// one exists to break `assert_integrity`, which reads neither checksums
+    /// nor `banks.json`. `import::run` reads both and verifies the checksums
+    /// *before* it writes, so a mutation test that edits a file and forgets to
+    /// reseal would fail on the checksum instead of on the property under
+    /// test.
+    ///
+    /// It is also how multi-bank driving is covered without committing a third
+    /// fixture that is just the other two side by side.
+    pub struct Snapshot {
+        dir: tempfile::TempDir,
+    }
+
+    impl Snapshot {
+        /// `real/` — the redacted `claude-code::bank-a` slice.
+        pub fn real() -> Snapshot {
+            Snapshot::of(&["real"])
+        }
+
+        /// `real-cms/` — the redacted `claude-code::bank-b`
+        /// slice, and the only fixture that can carry duplicate
+        /// `(document_id, fact_index)` source pairs: all 86 in the live corpus
+        /// are in that bank.
+        pub fn real_cms() -> Snapshot {
+            Snapshot::of(&["real-cms"])
+        }
+
+        /// Both real banks in one snapshot directory.
+        pub fn both() -> Snapshot {
+            Snapshot::of(&["real", "real-cms"])
+        }
+
+        /// One bank out of the three-bank `edge/` fixture, which has neither a
+        /// `banks.json` nor a `SHA256SUMS` of its own and whose other two
+        /// banks fail `assert_integrity` by design.
+        pub fn edge(slug: &str, bank_id: &str) -> Snapshot {
+            let scratch = tempfile::tempdir().unwrap();
+            copy_dir(&fixture("edge").join(slug), &scratch.path().join(slug));
+            let mut stats: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(fixture("edge").join("stats.json")).unwrap())
+                    .unwrap();
+            let entry = stats[bank_id].take();
+            std::fs::write(
+                scratch.path().join("stats.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({ bank_id: entry })).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                scratch.path().join("banks.json"),
+                serde_json::to_vec_pretty(
+                    &serde_json::json!({"banks": [{"bank_id": bank_id, "mission": null}]}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let snapshot = Snapshot { dir: scratch };
+            snapshot.reseal();
+            snapshot
+        }
+
+        fn of(fixtures: &[&str]) -> Snapshot {
+            let scratch = tempfile::tempdir().unwrap();
+            let mut stats = serde_json::Map::new();
+            let mut banks: Vec<serde_json::Value> = Vec::new();
+            for name in fixtures {
+                let from = fixture(name);
+                for entry in std::fs::read_dir(&from).unwrap() {
+                    let path = entry.unwrap().path();
+                    let file = path.file_name().unwrap();
+                    // Each fixture's own README, stats and checksums are per
+                    // fixture; the bank directories are what compose.
+                    if matches!(
+                        file.to_str().unwrap(),
+                        "README.md" | "stats.json" | "banks.json" | "SHA256SUMS"
+                    ) {
+                        continue;
+                    }
+                    copy_dir(&path, &scratch.path().join(file));
+                }
+                let read = |file: &str| -> serde_json::Value {
+                    serde_json::from_slice(&std::fs::read(from.join(file)).unwrap()).unwrap()
+                };
+                for (bank, value) in read("stats.json").as_object().unwrap() {
+                    stats.insert(bank.clone(), value.clone());
+                }
+                banks.extend(
+                    read("banks.json")["banks"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .cloned(),
+                );
+            }
+            std::fs::write(
+                scratch.path().join("stats.json"),
+                serde_json::to_vec_pretty(&serde_json::Value::Object(stats)).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                scratch.path().join("banks.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({ "banks": banks })).unwrap(),
+            )
+            .unwrap();
+            let snapshot = Snapshot { dir: scratch };
+            snapshot.reseal();
+            snapshot
+        }
+
+        pub fn path(&self) -> &Path {
+            self.dir.path()
+        }
+
+        /// Edits one JSON file and reseals, so the mutation reaches the check
+        /// under test rather than the checksum guard in front of it.
+        pub fn edit(&self, relative: &str, f: impl FnOnce(&mut serde_json::Value)) {
+            let path = self.dir.path().join(relative);
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            f(&mut value);
+            std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+            self.reseal();
+        }
+
+        pub fn reseal(&self) {
+            super::snapshot::write_sha256sums(self.dir.path()).unwrap();
+        }
     }
 
     /// A writable copy of `real/`. Mutation tests never touch the committed

@@ -1,0 +1,52 @@
+{
+ "id": "00000000-0000-4000-8000-00000000000b",
+ "original_text": "edge fixture: second synthetic document.\n",
+ "retain_params": null,
+ "tags": [],
+ "created_at": "2026-08-05T00:00:00Z",
+ "chunks": [],
+ "facts": [
+  {
+   "text": "bm25 scores rare terms higher",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-05T00:00:00Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-05T00:00:00Z",
+   "metadata": {},
+   "tags": [],
+   "observation_scopes": null,
+   "chunk_index": 0,
+   "entities": [
+    "bm25",
+    "recall"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-05T00:00:00Z",
+   "consolidated_at": "2026-08-05T01:00:00Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "Postgres is not SQLite",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-05T00:00:00Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-05T00:00:00Z",
+   "metadata": {},
+   "tags": [],
+   "observation_scopes": null,
+   "chunk_index": 0,
+   "entities": [
+    "Postgres",
+    "SQLite"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-05T00:00:00Z",
+   "consolidated_at": "2026-08-05T01:00:00Z",
+   "consolidation_failed_at": null
+  }
+ ]
+}

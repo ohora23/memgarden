@@ -267,8 +267,23 @@ async fn import(corpus_path: &Path, db_path: &Path) -> anyhow::Result<()> {
 
     // --- Temporal links ---------------------------------------------------
     // Retain calls this per chunk against a rolling window; the whole corpus
-    // is passed as both sides here, which converges to the same edge set (a
-    // node's 20 best 24h-neighbours) without replaying the ingest order.
+    // is passed as both sides here instead, which is a *different* edge set
+    // and not merely a cheaper route to the same one.
+    //
+    // The claim that used to stand here — "converges to the same edge set (a
+    // node's 20 best 24h-neighbours) without replaying the ingest order" —
+    // was never measured and is wrong. MG-1 measured it three ways over the
+    // legacy transfer archive: a whole-corpus rebuild gives 70,192 temporal
+    // edges, a replay grouped by `chunk_index` gives 68,781, and a replay
+    // grouped by the `created_at` batch boundary gives 69,771. Ordering moves
+    // the result by 2 %, so it is not nothing — a rolling window caps each
+    // node against the neighbours it had *at the time*, and the whole corpus
+    // caps against every neighbour that ever existed.
+    //
+    // It stays whole-corpus here on purpose: this harness has to reproduce
+    // byte-identically from the snapshot, and a replay would make the edge
+    // set depend on a `chunk_index` the corpus does not carry. See
+    // `docs/design/mg-1-migration.md` §"Temporal links are not legacy's".
     let timed: Vec<TimedNode> = ids
         .iter()
         .zip(&drafts)

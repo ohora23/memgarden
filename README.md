@@ -64,7 +64,7 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 | A — Foundation | workspace/CI, SQLite schema, REST skeleton, metrics plumbing (CE-1..3, MX-1) | ✅ merged |
 | B — Core pipeline | embeddings CE-4 · Ollama extraction CE-5a · retain ingest CE-5b · hybrid recall CE-6 · entities/graph CE-7 · temporal CE-8 · consolidation CE-9 · reflect CE-10 · reranker CE-11, plus vector-space tagging AX-1 and the recall-quality harness AX-2 | ✅ merged |
 | C — Hooks | session/turn state ✅ · CLI foundation + hook-latency harness ✅ · session-start ✅ · recall ✅ · transcript delta ✅ · retain ✅ · install & cutover switch ✅ | ✅ code-complete |
-| D — Migration | Postgres → SQLite exporter, lossless-verification script | ⏳ next |
+| D — Migration | read-only legacy snapshot MG-1a ✅ · archive → SQLite importer MG-1b 🔄 · AC-3 verifier MG-2 ⏳ | 🔄 **in progress** |
 | E — UI & metrics | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views | ⏳ |
 | F — Cutover | quality-parity A/B + performance gates + lossless migration → legacy shutdown | ⏳ |
 
@@ -74,9 +74,16 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 |---|---|---|
 | **AC-1 quality** | recall quality ≥ legacy on a fixed query set, human-judged | 🔄 **collectable now** — shadow-mode install logs what MemGarden *would* have injected, prompt by prompt, while legacy still drives the session |
 | **AC-2 performance** | recall p50 ≤35ms / p95 ≤60ms, hook overhead <10ms, retain cap savings held | ✅ **met** — 7.1/7.8ms recall, **0.85ms of hook per turn**, −75…−87% savings |
-| **AC-3 lossless migration** | node/link/document counts match across 3 banks + 50-sample content diff | ❌ **not met** — needs Phase D, and one open cursor defect in front of it |
+| **AC-3 lossless migration** | node/link/document counts match across the legacy banks + 50-sample content diff | 🔄 **the migration runs; the instrument that certifies it does not yet** — 5,288 of 5,288 nodes, 25 of 25 documents and 200 of 200 authored causal links imported and reconciled against legacy's own `/stats`. AC-3 is met when MG-2 prints it, not when the importer does |
 
-**Next up, in order:** collect the AC-1 shadow evidence · close the `chunks_failed` cursor gap (a `done` job with a failed chunk opens a window the durable cursor then hides) · Phase D migration · the web UI.
+The migration is four legacy banks — **5,288 nodes, 25 documents, 1,747 consolidated
+observations, 200 authored causal links** — carried through legacy's own supported transfer
+format, re-embedded here, with temporal and semantic adjacency rebuilt by our rules rather
+than copied. What that means and what it costs is in
+[`docs/design/mg-1-migration.md`](docs/design/mg-1-migration.md).
+
+**Next up, in order:** MG-2, the AC-3 verifier (three-tier count reconciliation + the
+50-sample content diff) · collect the AC-1 shadow evidence · the web UI.
 
 ## Claude Code hooks
 
@@ -153,6 +160,7 @@ The binary is 1.58MB, links only glibc/libgcc/vdso, and its dependency closure i
 |---|---|---|
 | embedding, single | 2.41ms p50 / 3.39ms p95 | bge-small, 384-dim, fp32 ONNX, CPU |
 | embedding, corpus | 26.2s for 2,718 nodes | real drain worker including its KNN pass |
+| legacy migration, whole corpus | 207s for 5,288 nodes | dev build; snapshot 1.6s, then documents, facts, entities, observations, links and re-embedding, four banks |
 | transcript delta read | 0.46ms for a 200KB tail; 64.3ms to parse 106.9MB | byte-offset resume, so the common case never re-reads |
 | input-cap savings | **−75.3%** live, **−86.9%** over a 5.8MB transcript | written to the benefit ledger on every retain |
 | consolidation round | 151s for 50 facts | real Ollama qwen3-14b-nothink, ~50% duty cycle against a 300s interval |
@@ -175,6 +183,16 @@ Against a frozen 2,718-fact corpus with 20 graded queries and 331 judgments, mac
 
 The reranker wins ordering (+0.150 MRR) and loses coverage (−0.044 recall@10) for +13.7ms p50 / +31.8ms p95, and it drops background ingest to 89.9% of offered load. That is why it ships **off** — with a written re-entry criterion rather than a verdict.
 
+**A caveat these numbers inherited, found during Phase D.** Semantic links only ever form
+between nodes embedded in the *same* batch of 8 — `embed_task.rs` builds its `fact_type`
+lookup from the just-embedded batch and drops every neighbour outside it, so the KNN's other
+99 candidates are discarded. Measured on the migrated corpus: all 6,890 semantic edges
+connect rowids ≤ 7 apart, where a whole-corpus pass over the same vectors would emit 68,537.
+The gold corpus was built through the same worker, so **every number in this section was
+measured on a semantic arm roughly a tenth as dense as the rule intends.** It is a CE-7 fix
+with an AX-2 re-measurement behind it, not a migration one —
+[`docs/design/mg-1-migration.md`](docs/design/mg-1-migration.md) §4b.
+
 ## Documentation
 
 - **[Wiki](book/src/introduction.md)** — install, usage, how it works, extending it, roadmap. English canonical, Korean alongside. Build it locally with `mdbook serve book`.
@@ -191,6 +209,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p memgardend                      # daemon on 127.0.0.1:9100
 cargo test -p memgardend -- --ignored        # live tests (need Ollama running)
 cargo run -p memgarden-cli --bin hook_bench  # hook latency, interleaved-paired
+cargo run -p memgardend --bin mg_migrate -- snapshot --out <dir>   # freeze legacy (GETs only)
+cargo run -p memgardend --bin mg_migrate -- import --snapshot <dir> --db <path>
 ./scripts/hook-budget.sh                     # binary size, ldd set, dependency closure
 mdbook serve book                            # the wiki, at http://localhost:3000
 ```
@@ -201,7 +221,7 @@ Configuration: `config.example.toml` → `~/.config/memgarden/config.toml`, env 
 
 - `crates/memgarden-core` — types, config, lock-free metrics
 - `crates/memgarden-store` — SQLite layer (migrations, vec/FTS, banks/nodes/search/ledger)
-- `crates/memgardend` — the daemon (routes, Ollama client, extraction, retain pipeline, embed worker)
+- `crates/memgardend` — the daemon (routes, Ollama client, extraction, retain pipeline, embed worker) and `mg_migrate`, the one-way legacy migration tool
 - `crates/memgarden-cli` — the `memgarden` hook binary (loopback HTTP, session state, bank derivation, transcript delta reader, and the `settings.json` installer); dependency-closure-checked in CI, because a hook pays for its binary on every invocation
 - `gold/` — the frozen recall-quality corpus, graded queries, and the results ledger
 - `book/` — the wiki: install, usage, design, extending, roadmap (English + Korean), built with mdBook

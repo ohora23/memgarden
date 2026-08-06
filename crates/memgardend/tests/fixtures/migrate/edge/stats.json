@@ -79,5 +79,36 @@
   "documents_total": 1,
   "memories_invalidated": 0,
   "dropped": false
+ },
+ "edge::two-documents": {
+  "bank_id": "edge::two-documents",
+  "stats": {
+   "bank_id": "edge::two-documents",
+   "total_nodes": 4,
+   "total_documents": 2,
+   "total_observations": 0,
+   "nodes_by_fact_type": {
+    "world": 4
+   },
+   "links_by_link_type": {
+    "caused_by": 0
+   }
+  },
+  "documents": [
+   {
+    "id": "00000000-0000-4000-8000-00000000000a",
+    "content_hash": "4365997aa2dbfc81862f4779d0c88fcc20aba37c6d74f4c80e581fe575145714",
+    "memory_unit_count": 2
+   },
+   {
+    "id": "00000000-0000-4000-8000-00000000000b",
+    "content_hash": "9849021a91e79a593680a1e19a28dc293537dd7cccef53fe6bac087b9eb2be6b",
+    "memory_unit_count": 2
+   }
+  ],
+  "memories_total": 4,
+  "documents_total": 2,
+  "memories_invalidated": 0,
+  "dropped": false
  }
 }
