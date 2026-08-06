@@ -1,0 +1,18 @@
+[
+ {
+  "text": "an observation carrying a scope we cannot store",
+  "tags": [],
+  "event_date": "2026-08-05T00:00:00Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-05T00:00:00Z",
+  "observation_scopes": "per_tag",
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "00000000-0000-4000-8000-000000000003",
+    "fact_index": 0
+   }
+  ]
+ }
+]

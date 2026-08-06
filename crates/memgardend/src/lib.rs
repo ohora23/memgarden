@@ -9,6 +9,7 @@ pub mod links;
 pub mod mental;
 pub mod metrics_task;
 pub mod middleware;
+pub mod migrate;
 pub mod ollama;
 pub mod recall;
 pub mod rerank;

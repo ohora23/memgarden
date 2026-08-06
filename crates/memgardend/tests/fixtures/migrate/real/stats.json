@@ -1,0 +1,40 @@
+{
+ "claude-code::bank-a": {
+  "bank_id": "claude-code::bank-a",
+  "stats": {
+   "bank_id": "claude-code::bank-a",
+   "total_nodes": 165,
+   "total_documents": 1,
+   "total_observations": 79,
+   "nodes_by_fact_type": {
+    "world": 84,
+    "experience": 2,
+    "observation": 79
+   },
+   "links_by_link_type": {
+    "caused_by": 4,
+    "temporal": 0,
+    "semantic": 0,
+    "entity": 0
+   }
+  },
+  "documents": [
+   {
+    "id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "content_hash": "85ffd68ac09de598f1d0fcb2d83639970977ad95071eecc01e3acfe1d9e60eda",
+    "memory_unit_count": 86,
+    "document_metadata": {
+     "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+     "retained_at": "2026-08-03T16:49:32Z",
+     "message_count": "237",
+     "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+    },
+    "text_length": 243
+   }
+  ],
+  "memories_total": 165,
+  "documents_total": 1,
+  "memories_invalidated": 0,
+  "dropped": false
+ }
+}
