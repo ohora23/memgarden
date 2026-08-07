@@ -103,9 +103,15 @@ data, and severs `retain_jobs.document_id` through `ON DELETE SET NULL`. This
 is the only thing that preserves either. `--dump-only` performs no comparison,
 so it works against a database that has not been migrated yet.
 
-`purge` prints the row count it is about to delete, so an operator who skipped
-this step finds out while the terminal still says how much there was — but the
-program cannot enforce a runbook step, which is why this line is here.
+**It exits 2, on purpose.** A dump verifies nothing, so its report carries
+`"mode": "dump"`, an empty `tier1` and a verdict of `REVIEW` — a run that
+exited 0 with an all-green `tier1` would sit in `docs/evidence/` looking
+exactly like a passed migration. Under `set -e`, expect to have to say
+`|| true` here and nowhere else.
+
+`purge` also prints the row count it is about to delete, so an operator who
+skipped this step finds out while the terminal still says how much there was —
+but the program cannot enforce a runbook step, which is why this line is here.
 
 ### 3.4 Reset the hook's client-side cursors. **Not optional.**
 
@@ -164,6 +170,13 @@ mg_migrate verify --snapshot migration/<fresh>/ \
 `verify` writes nothing and is safe with the daemon up. Exit **0** pass, **1** a
 Tier-1 mismatch or a content difference, **2** a Tier-2 review stop, **3**
 usage.
+
+**Running it after the daemon has started is fine**, and that ordering is
+deliberate: every Tier-1 equality is scoped to the nodes the import wrote
+(`metadata.$.legacy`), so a retain that lands between 3.6 and 3.7 — and one
+will, because 3.4 just reset the cursors — does not move a single expected
+count. An earlier version was unscoped and turned the smallest possible retain
+into `documents 1 != 2` and a `sentence` reading "AC-3 is NOT met".
 
 If `--defer-embeddings` was used, run this **after** the daemon has drained —
 until then `embedding coverage` is non-zero for a reason that is not a

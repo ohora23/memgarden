@@ -48,21 +48,23 @@ drift.
 
 ## Tier 1 — equality, and every one of them fails the run
 
-Sixteen checks. Each carries **where its expected value came from**, because
+Eighteen checks. Each carries **where its expected value came from**, because
 three different things produce one and a column headed "legacy" for a check
 legacy has no opinion about would be the dishonest version of this table.
 
 | check | expected from | note |
 |---|---|---|
-| banks, documents, nodes, `nodes.{world,experience,observation}`, `caused_by` | legacy's frozen `/stats` | the counts that *can* be equal |
+| `banks` | the snapshot | the migrated archives, not a `/stats` figure |
+| documents, nodes, `nodes.{world,experience,observation}`, `caused_by` | legacy's frozen `/stats` | the counts that *can* be equal |
+| documents with the right fact count | the archive, per document | `/documents.memory_unit_count`, frozen by D1 and read by nothing until review — the aggregate node count structurally cannot see a fact filed under the **wrong** document |
 | `node_sources` | the archive, **distinct** `(document_id, fact_index)` pairs | 2,200 raw collapse to **2,114**; `link_sources_tx` is `INSERT OR IGNORE` against the `(observation_id, source_id)` PK (`consolidate.rs:638-650`) |
 | `node_tags` | the archive | distinct per node, matching `INSERT OR IGNORE` |
-| `entities`, `node_entities` | the archive, normalized | **exact, and the plan did not expect it** — see below |
+| `entities`, `node_entities` | the archive, folded by **this module's own** trim+lowercase | **exact, and the plan did not expect it** — see below |
 | import marker | our own rule | `state = done` **and** `snapshot` = this snapshot's hash, so a bank imported from a different snapshot is caught rather than counted |
-| consolidation watermark | our own rule | one `done` run per bank at `watermark = MAX(memory_nodes.id)`; without it the daemon re-consolidates the whole migrated corpus within one poll of restart (`consolidate.rs:314-330`) |
-| embedding coverage | our own rule | 0 rows with a NULL or foreign `embedding_model`; non-zero after `--defer-embeddings` until the daemon has drained |
-| orphan facts | our own rule | 0 non-observations without a document |
-| semantic edges from observations | our own rule | 0 — **parity, not a divergence**; see below |
+| consolidation watermark | our own rule | one `done` run per bank whose `watermark >= MAX(id)` **over the migrated nodes**; without it the daemon re-consolidates the whole migrated corpus within one poll of restart (`consolidate.rs:314-330`) |
+| embedding coverage | our own rule | 0 migrated rows with a NULL or foreign `embedding_model`; non-zero after `--defer-embeddings` until the daemon has drained |
+| orphan facts | our own rule | 0 migrated non-observations without a document |
+| semantic edges from observations | our own rule | 0 — **parity, not a divergence**; see below. Structural rather than diagnostic: no migration defect can put a semantic edge on an observation, because `insert_observation` embeds inline and `on_batch_embedded` is the only writer of `semantic` rows. Kept as a stated post-condition, and the honest reading is that it can only ever fire on a daemon-side change |
 | temporal self-consistency | our own rule, re-run | the check that catches a broken import; see below |
 
 ### Entities became a Tier-1 equality, which the plan did not expect
@@ -73,6 +75,16 @@ MG-1b's correction — normalize and stop — made them exact: **3,917 distinct
 normalized archive names to 3,917 rows, 10,379 mentions to 10,379
 `node_entities` edges**. An exact count is a gate; an approximate one is a
 paragraph. `docs/design/mg-1-migration.md` §1 has the measurement.
+
+**And the first version of the gate was a tautology.** It computed the expected
+side with `entities::normalized_mentions` — *the same function the importer fed
+the writer* — so both sides moved together and no change to the rule could ever
+make it fire. Review measured it: truncating `entities::normalize` to three
+characters loses **65 of 203 entities and 7 mentions** on the `real/` slice, and
+`verify` still printed PASS with every Tier-1 check green and no content
+difference. A verifier that calls the code it verifies is not a verifier. The
+rule — trim and lowercase — is now re-stated in `verify.rs::fold_names`, the
+same way the temporal reference run re-states `links.rs:62-92`.
 
 ### "Observations have no semantic edges" is parity, not a divergence
 
@@ -229,6 +241,7 @@ corpus could miss a bank entirely.
 | field | comparison |
 |---|---|
 | `text` | byte-equal |
+| `sources` (observations) / `caused_by` (facts) | the archive's `(document_id, fact_index)` endpoints, read back through `metadata.$.legacy` — cardinality is not adjacency, and both Tier-1 counts stay exact if every edge points one fact off |
 | `fact_type` | equal |
 | `context` | equal, with `""` ≡ `NULL` — legacy emits empty strings and `NewNode.context` filters them |
 | `occurred_start`, `occurred_end`, `mentioned_at` | equal as epoch ms |
@@ -239,19 +252,31 @@ corpus could miss a bank entirely.
 `proof_count` is **not** compared: it cannot be equal by construction and is
 Tier 2.
 
-### The join that matched nothing
+### The join key took three attempts
 
-Facts join on `(document_id, fact_index)` out of `memory_nodes.metadata`;
-observations join on `(text, mentioned_at)`, measured 0 duplicates over all
-1,747 where `text` alone collides 3 times.
+Facts join on `(document_id, fact_index)` out of `memory_nodes.metadata`.
+Observations join on **their provenance**, `metadata.$.legacy.observation_of`
+— the archive's `sources` array verbatim, which `import` writes for exactly
+this purpose and which nothing read until now.
 
-The first version bound `mentioned_at` as **text** and compared it to
-`coalesce(mentioned_at, '')`. `coalesce` strips the column's INTEGER affinity,
-so SQLite never converted the operand, and **every observation in the sample
-came back "no matching node"** — 18 false content differences and an exit 1 on
-a database that was correct. A join key that silently matches nothing is worse
-than no join key, because it reads as a migration failure.
-`every_observation_in_the_sample_finds_its_node` is the test.
+1. `(text, mentioned_at)` with the epoch bound as **text** against
+   `coalesce(mentioned_at, '')`. `coalesce` strips the column's INTEGER
+   affinity, SQLite never converted the operand, and **every observation in the
+   sample came back "no matching node"** — 18 false content differences and an
+   exit 1 on a database that was correct.
+2. The same key bound correctly. It works, and it makes `text` and
+   `mentioned_at` the **key** rather than compared fields, so a difference in
+   either surfaces as "no matching node" — indistinguishable from the affinity
+   bug above and from "the observations were never imported at all". Measured:
+   tampering with all 79 observations' `text` produced 79 lines saying `node`
+   and not one saying `text`.
+3. Provenance. Both become fields the diff can name.
+
+A join key that silently matches nothing is worse than no join key, because it
+reads as a migration failure.
+`every_observation_in_the_sample_finds_its_node` and
+`a_tampered_observation_reports_the_field_and_not_a_missing_node` are the
+tests.
 
 ---
 
@@ -271,9 +296,38 @@ before doing anything (`migrate.rs:44-48`).
 `sqlite_master` before and after and compares it, rather than asserting the
 absence of a statement nobody can grep for at runtime.
 
+## Everything is scoped to what the import wrote
+
+`metadata.$.legacy` is stamped on every node `import` writes and by nothing
+else. **Every Tier-1 node predicate carries it**, and that is not tidiness:
+the runbook starts the daemon (step 3.6) before it runs `verify` (step 3.7),
+and step 3.4 has just reset the hook cursors so every session re-retains from
+offset 0 — one retain lands before the operator finishes typing the command.
+
+Unscoped, review measured the smallest possible retain (one document, one node,
+one tag) turning a correct migration into `documents 1 != 2`, `nodes 165 != 166`,
+`node_tags 660 != 661`, exit 1, and a `sentence` reading *"AC-3 is NOT met"*.
+Phase F pastes that sentence into the cutover note. Only the temporal check had
+the scope; the count equalities did not, which was the whole of the defect.
+
+The `consolidation watermark` predicate had the same shape and a worse form: it
+asked `watermark = MAX(id)` over the *bank*, true only in the instant between
+`import` step 9 and the next row anyone wrote — and never again, because the
+daemon writes `consolidation_runs` rows whose watermark is the last **fact** it
+processed while `apply_plan` has since inserted observations with higher ids.
+It now asks the property the docstring names: `watermark >= MAX(id)` over the
+**migrated** nodes.
+
 ---
 
 ## `--dump-only`
+
+Reports `"mode": "dump"`, an empty `tier1`, a `census` of row counts, and a
+verdict of **`REVIEW`** — not `PASS`. The first version emitted eleven
+`Tier1Check`s with `expected == actual` and `verdict: PASS`, which is shaped
+exactly like a passed migration; the runbook writes both files into
+`docs/evidence/`, so anything keying on `.verdict` or `.tier1[].ok` would have
+read a census as evidence.
 
 The runbook's step 3a, and the only thing that preserves the shadow run's
 `sessions` before `import --replace` deletes them. No comparison, no snapshot

@@ -196,6 +196,12 @@ pub struct SampleReport {
     pub n: usize,
     pub seed: u64,
     pub drawn: usize,
+    /// How many records existed to draw from. `drawn < n` is fine when it
+    /// equals this; it is an under-fill only when records were available and
+    /// were not taken, and AC-3's "50-record diff" quietly becoming a 47-record
+    /// one is the thing worth seeing.
+    #[serde(default)]
+    pub available: usize,
     /// Stratified by bank in proportion to node count, so the largest bank
     /// contributes ~30 of 50 and the smallest ~5, rather than a uniform draw
     /// that could miss a bank entirely.
@@ -216,11 +222,22 @@ pub struct SnapshotInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
+    /// `"verify"` or `"dump"`. **A machine-readable discriminator, added in
+    /// review**: `--dump-only` used to emit eleven `Tier1Check`s with
+    /// `expected == actual` and `verdict: PASS`, which is byte-shaped exactly
+    /// like a passed migration. The runbook writes both files into
+    /// `docs/evidence/`, and anything keying on `.verdict` or `.tier1[].ok`
+    /// would have read the dump as evidence.
+    pub mode: String,
     pub snapshot: SnapshotInfo,
     /// Empty means the frozen `/stats` and the frozen archive agree with each
     /// other. A non-empty list is a *snapshot* failure, not a migration one.
     pub integrity: Vec<String>,
     pub tier1: Vec<Tier1Check>,
+    /// `--dump-only`'s row counts. Deliberately **not** `tier1`: a census is
+    /// not a check.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub census: BTreeMap<String, i64>,
     pub tier2: Vec<Tier2Metric>,
     pub tier3: BTreeMap<String, serde_json::Value>,
     pub sample: SampleReport,
@@ -276,9 +293,12 @@ impl Report {
     pub fn table(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!(
-            "snapshot {} ({} banks)\n",
-            self.snapshot.sha256, self.snapshot.banks
+            "mode {} · snapshot {} ({} banks)\n",
+            self.mode, self.snapshot.sha256, self.snapshot.banks
         ));
+        for (table, n) in &self.census {
+            out.push_str(&format!("  census {table:<20} {n:>8}\n"));
+        }
         if self.integrity.is_empty() {
             out.push_str("integrity  ok   the frozen /stats and the frozen archive agree\n");
         } else {
@@ -339,8 +359,16 @@ impl Report {
             out.push_str(&format!("  n/a  {name}: {value}\n"));
         }
         out.push_str(&format!(
-            "\nSAMPLE — {} of {} requested, seed {}, stratified {:?}\n",
-            self.sample.drawn, self.sample.n, self.sample.seed, self.sample.per_bank
+            "\nSAMPLE — {} of {} requested{}, seed {}, stratified {:?}\n",
+            self.sample.drawn,
+            self.sample.n,
+            if self.sample.drawn < self.sample.n && self.sample.drawn < self.sample.available {
+                "  ** UNDER-FILLED **"
+            } else {
+                ""
+            },
+            self.sample.seed,
+            self.sample.per_bank
         ));
         for mismatch in &self.sample.mismatches {
             out.push_str(&format!(
@@ -426,6 +454,14 @@ pub fn run(opts: &Options<'_>) -> Result<Report> {
     if opts.dump_only {
         return dump(info, &db);
     }
+    if migrated.is_empty() {
+        // `quoted(&[])` is `""`, so every scoped query would become `IN ()` —
+        // a SQLite syntax error surfacing as `near ")"`. Reachable whenever
+        // every archive under the snapshot is content-free.
+        return Err(MigrateError::NoArchives {
+            dir: opts.snapshot.to_path_buf(),
+        });
+    }
 
     let mut integrity = Vec::new();
     for archive in &migrated {
@@ -460,9 +496,11 @@ pub fn run(opts: &Options<'_>) -> Result<Report> {
     let clean = integrity.is_empty() && sample.mismatches.is_empty();
 
     let mut report = Report {
+        mode: "verify".to_string(),
         snapshot: info,
         integrity,
         tier1,
+        census: BTreeMap::new(),
         tier2,
         tier3: tier3(&oracle),
         sample,
@@ -496,7 +534,7 @@ pub fn run(opts: &Options<'_>) -> Result<Report> {
 
 /// `--dump-only`: what the database holds, with no snapshot comparison.
 fn dump(info: SnapshotInfo, db: &Db) -> Result<Report> {
-    let mut tier1 = Vec::new();
+    let mut census = BTreeMap::new();
     for (table, sql) in [
         ("banks", "SELECT count(*) FROM banks"),
         ("documents", "SELECT count(*) FROM documents"),
@@ -513,30 +551,29 @@ fn dump(info: SnapshotInfo, db: &Db) -> Result<Report> {
             "SELECT count(*) FROM consolidation_runs",
         ),
     ] {
-        let n = read_i64(db, sql, [])?;
-        tier1.push(Tier1Check {
-            name: table.to_string(),
-            expected: n,
-            actual: n,
-            source: "the database, as it stands".to_string(),
-            ok: true,
-            detail: None,
-        });
+        census.insert(table.to_string(), read_i64(db, sql, [])?);
     }
     Ok(Report {
+        mode: "dump".to_string(),
         snapshot: info,
         integrity: Vec::new(),
-        tier1,
+        tier1: Vec::new(),
+        census,
         tier2: Vec::new(),
         tier3: BTreeMap::new(),
         sample: SampleReport {
             n: 0,
             seed: 0,
             drawn: 0,
+            available: 0,
             per_bank: BTreeMap::new(),
             mismatches: Vec::new(),
         },
-        verdict: Verdict::Pass,
+        // Not `Pass`: a dump verifies nothing, and a verdict that says PASS is
+        // the thing a reader keys on. `Review` is the honest one — a human
+        // asked for this and a human reads it — and its exit 2 keeps it out of
+        // any gate that treats 0 as evidence.
+        verdict: Verdict::Review,
         sentence: "Dump only: no comparison was performed. This is the runbook's step 3a, \
                    which preserves the shadow run's sessions and retain_jobs before \
                    `import --replace` deletes them."
@@ -557,30 +594,55 @@ fn tier1(
 ) -> Result<Vec<Tier1Check>> {
     let mut checks = Vec::new();
     let banks: Vec<&str> = migrated.iter().map(|a| a.bank_id.as_str()).collect();
-    let scope = format!(
-        "WHERE bank_id IN ({})",
-        banks
-            .iter()
-            .map(|b| format!("'{}'", b.replace('\'', "''")))
-            .collect::<Vec<_>>()
-            .join(",")
-    );
+    // **Every node predicate is scoped to what the import wrote**, and this is
+    // not tidiness. The runbook starts the daemon (step 3.6) before it runs
+    // `verify` (step 3.7), and step 3.4 has just reset the hook cursors so
+    // every session re-retains from offset 0 — so one retain lands before the
+    // operator finishes typing the command. Unscoped, the smallest possible
+    // retain (one document, one node, one tag) turns a correct migration into
+    // `documents 1 != 2`, `nodes 165 != 166`, `node_tags 660 != 661` and a
+    // `sentence` that says AC-3 is not met. Measured in review.
+    //
+    // `temporal self-consistency` was given this scope from the start and the
+    // count equalities were not, which is the whole of the defect.
+    let scope = format!("WHERE bank_id IN ({}) AND {MIGRATED}", quoted(&banks));
 
     // --- what legacy counted -------------------------------------------------
     let stats =
         |f: fn(&Stats) -> i64| -> i64 { banks.iter().filter_map(|b| oracle.get(*b)).map(f).sum() };
 
+    // `banks` is the one row with no node scope to apply — it has no
+    // `metadata` column and every migrated bank must simply exist.
     checks.push(Tier1Check::new(
         "banks",
         "the snapshot",
         migrated.len() as i64,
-        read_i64(db, &format!("SELECT count(*) FROM banks {scope}"), [])?,
+        read_i64(
+            db,
+            &format!(
+                "SELECT count(*) FROM banks WHERE bank_id IN ({})",
+                quoted(&banks)
+            ),
+            [],
+        )?,
     ));
+    let doc_keys: Vec<&str> = migrated
+        .iter()
+        .flat_map(|a| a.documents.iter().map(|d| d.id.as_str()))
+        .collect();
     checks.push(Tier1Check::new(
         "documents",
         "legacy /stats",
         stats(|s| s.stats.total_documents),
-        read_i64(db, &format!("SELECT count(*) FROM documents {scope}"), [])?,
+        read_i64(
+            db,
+            &format!(
+                "SELECT count(*) FROM documents WHERE bank_id IN ({}) AND doc_key IN ({})",
+                quoted(&banks),
+                quoted(&doc_keys)
+            ),
+            [],
+        )?,
     ));
     checks.push(Tier1Check::new(
         "nodes",
@@ -616,8 +678,12 @@ fn tier1(
         read_i64(
             db,
             &format!(
-                "SELECT count(*) FROM links l JOIN memory_nodes n ON n.id = l.from_node_id
-                 WHERE l.link_type = 'caused_by' AND n.bank_id IN ({})",
+                "SELECT count(*) FROM links l
+                 JOIN memory_nodes f ON f.id = l.from_node_id
+                 JOIN memory_nodes t ON t.id = l.to_node_id
+                 WHERE l.link_type = 'caused_by' AND f.bank_id IN ({})
+                   AND json_extract(f.metadata, '$.legacy') IS NOT NULL
+                   AND json_extract(t.metadata, '$.legacy') IS NOT NULL",
                 quoted(&banks)
             ),
             [],
@@ -630,6 +696,7 @@ fn tier1(
     let mut tags = 0i64;
     let mut entity_names: BTreeSet<(String, String)> = BTreeSet::new();
     let mut mentions = 0i64;
+    let mut per_document: BTreeMap<&str, i64> = BTreeMap::new();
     for archive in migrated {
         for observation in &archive.observations {
             let distinct: BTreeSet<(&str, i64)> = observation
@@ -641,11 +708,14 @@ fn tier1(
             raw_sources += observation.sources.len() as i64;
             tags += distinct_tags(&observation.tags);
         }
-        for fact in archive.documents.iter().flat_map(|d| d.facts.iter()) {
-            tags += distinct_tags(&fact.tags);
-            let names = crate::entities::normalized_mentions(&fact.entities);
-            mentions += names.len() as i64;
-            entity_names.extend(names.into_iter().map(|n| (archive.bank_id.clone(), n)));
+        for document in &archive.documents {
+            per_document.insert(document.id.as_str(), document.facts.len() as i64);
+            for fact in &document.facts {
+                tags += distinct_tags(&fact.tags);
+                let names = fold_names(&fact.entities);
+                mentions += names.len() as i64;
+                entity_names.extend(names.into_iter().map(|n| (archive.bank_id.clone(), n)));
+            }
         }
     }
     checks.push(
@@ -656,8 +726,9 @@ fn tier1(
             read_i64(
                 db,
                 &format!(
-                    "SELECT count(*) FROM node_sources s JOIN memory_nodes n ON n.id = s.observation_id
-                     WHERE n.bank_id IN ({})",
+                    "SELECT count(*) FROM node_sources s
+                     JOIN memory_nodes n ON n.id = s.observation_id
+                     WHERE n.bank_id IN ({}) AND json_extract(n.metadata, '$.legacy') IS NOT NULL",
                     quoted(&banks)
                 ),
                 [],
@@ -677,7 +748,7 @@ fn tier1(
             db,
             &format!(
                 "SELECT count(*) FROM node_tags t JOIN memory_nodes n ON n.id = t.node_id
-                 WHERE n.bank_id IN ({})",
+                 WHERE n.bank_id IN ({}) AND json_extract(n.metadata, '$.legacy') IS NOT NULL",
                 quoted(&banks)
             ),
             [],
@@ -688,11 +759,23 @@ fn tier1(
             "entities",
             "the archive, normalized",
             entity_names.len() as i64,
-            read_i64(db, &format!("SELECT count(*) FROM entities {scope}"), [])?,
+            read_i64(
+                db,
+                &format!(
+                    "SELECT count(DISTINCT e.id) FROM entities e
+                     JOIN node_entities ne ON ne.entity_id = e.id
+                     JOIN memory_nodes n ON n.id = ne.node_id
+                     WHERE e.bank_id IN ({}) AND json_extract(n.metadata, '$.legacy') IS NOT NULL",
+                    quoted(&banks)
+                ),
+                [],
+            )?,
         )
         .with_detail(
-            "exact because MG-1b normalizes and stops — the fuzzy pass it removed dissolved \
-             77 of 3,917 names (migrate/import.rs::write_entities)"
+            "expected folded by this module's own trim+lowercase, not by \
+             entities::normalize — a verifier that calls the code it verifies cannot fire. \
+             An `entities` row carries no $.legacy key of its own, so it is scoped through \
+             the mentions that reach it"
                 .to_string(),
         ),
     );
@@ -704,20 +787,52 @@ fn tier1(
             db,
             &format!(
                 "SELECT count(*) FROM node_entities ne JOIN memory_nodes n ON n.id = ne.node_id
-                 WHERE n.bank_id IN ({})",
+                 WHERE n.bank_id IN ({}) AND json_extract(n.metadata, '$.legacy') IS NOT NULL",
                 quoted(&banks)
             ),
             [],
         )?,
     ));
 
+    // The aggregate `nodes` equality structurally cannot see a fact that
+    // landed under the *wrong* document — the total is the same either way.
+    // `/documents.memory_unit_count` is frozen in every snapshot and was read
+    // by nothing until review pointed at it.
+    let mut misplaced = 0i64;
+    for (document, expected) in &per_document {
+        let actual = read_i64(
+            db,
+            "SELECT count(*) FROM memory_nodes n
+             JOIN documents d ON d.id = n.document_id
+             WHERE d.doc_key = ?1 AND json_extract(n.metadata, '$.legacy') IS NOT NULL",
+            [document],
+        )?;
+        if actual != *expected {
+            misplaced += 1;
+        }
+    }
+    checks.push(
+        Tier1Check::new(
+            "documents with the right fact count",
+            "the archive, per document",
+            per_document.len() as i64,
+            per_document.len() as i64 - misplaced,
+        )
+        .with_detail(
+            "the aggregate node count cannot see a fact filed under the wrong document; \
+             this can"
+                .to_string(),
+        ),
+    );
+
     // --- post-conditions only we can state ----------------------------------
     let marked = read_i64(
         db,
         &format!(
-            "SELECT count(*) FROM banks {scope}
+            "SELECT count(*) FROM banks WHERE bank_id IN ({})
              AND json_extract(disposition, '$.{}.state') = 'done'
              AND json_extract(disposition, '$.{}.snapshot') = '{snapshot_id}'",
+            quoted(&banks),
             super::import::MARKER_KEY,
             super::import::MARKER_KEY
         ),
@@ -736,12 +851,22 @@ fn tier1(
                 .to_string(),
         ),
     );
+    // `>=`, over the **migrated** nodes, not `=` over the bank. The first
+    // version was true only in the instant between `import` step 9 and the
+    // next row anyone wrote — and never again, because the daemon writes
+    // `consolidation_runs` rows of its own whose watermark is the last *fact*
+    // it processed while `apply_plan` has since inserted observations with
+    // higher ids (`consolidate/round.rs:349`). The property the docstring
+    // names is "nothing the import wrote is due for re-consolidation", and
+    // this is that property.
     let watermarks = read_i64(
         db,
         &format!(
-            "SELECT count(*) FROM consolidation_runs r
+            "SELECT count(DISTINCT r.bank_id) FROM consolidation_runs r
              WHERE r.bank_id IN ({}) AND r.status = 'done'
-               AND r.watermark = (SELECT MAX(id) FROM memory_nodes n WHERE n.bank_id = r.bank_id)",
+               AND r.watermark >= (SELECT COALESCE(MAX(id), 0) FROM memory_nodes n
+                                   WHERE n.bank_id = r.bank_id
+                                     AND json_extract(n.metadata, '$.legacy') IS NOT NULL)",
             quoted(&banks)
         ),
         [],
@@ -816,21 +941,27 @@ fn tier1(
 
     // --- the one that catches a broken import ------------------------------
     let (stored, reference, extra, missing, covered) = temporal_self_consistency(db, &banks)?;
-    checks.push(
-        Tier1Check::new(
-            "temporal self-consistency",
-            "our own rule, re-run",
-            reference,
-            stored,
-        )
-        .with_detail(format!(
-            "links.rs:62-92 replayed over the migrated nodes' own (fact_type, event_date): \
+    let mut consistency = Tier1Check::new(
+        "temporal self-consistency",
+        "our own rule, re-run",
+        reference,
+        stored,
+    );
+    // **Set equality, not count equality.** `Tier1Check::new` compares
+    // cardinalities, and an equal-cardinality corruption — one genuine edge
+    // deleted, one the rule would never emit inserted — passed with the check
+    // printing "1 stored edges the rule would not emit, 1 the rule emits that
+    // are not stored" in its own detail line. Reachable without malice: a
+    // change to `temporal_links`' cap tie-break (`links.rs:81-87`) between the
+    // binary that imported and the one that verifies produces exactly that.
+    consistency.ok = extra == 0 && missing == 0;
+    checks.push(consistency.with_detail(format!(
+        "links.rs:62-92 replayed over the migrated nodes' own (fact_type, event_date): \
              {extra} stored edges the rule would not emit, {missing} the rule emits that are \
              not stored, over {covered} of {} banks. This replaces the equality against legacy \
              that can never hold",
-            banks.len()
-        )),
-    );
+        banks.len()
+    )));
 
     Ok(checks)
 }
@@ -1099,12 +1230,18 @@ fn sample(db: &Db, migrated: &[&BankArchive], want: usize, seed: u64) -> Result<
         // Stratified in proportion to node count, so the largest bank
         // contributes ~30 of 50 and the smallest ~5. A uniform draw over the
         // pooled corpus could miss a bank entirely.
-        let quota = if total == 0 {
+        // `.max(1)`: a bank under 1 % of the corpus rounds to zero and used to
+        // be dropped with no `per_bank` entry at all — the table printed a
+        // stratification map with the bank simply absent, which is the
+        // "a uniform draw could miss a bank entirely" failure the
+        // stratification exists to prevent. Not hypothetical:
+        // `claude-code::memgarden` appeared between D1 and D2.
+        let quota = if total == 0 || nodes == 0 {
             0
         } else {
-            ((want * nodes) as f64 / total as f64).round() as usize
+            (((want * nodes) as f64 / total as f64).round() as usize).max(1)
         };
-        if quota == 0 || nodes == 0 {
+        if quota == 0 {
             continue;
         }
         // Deterministic order first, then a seeded draw over it — the archive's
@@ -1145,6 +1282,7 @@ fn sample(db: &Db, migrated: &[&BankArchive], want: usize, seed: u64) -> Result<
         n: want,
         seed,
         drawn,
+        available: total,
         per_bank,
         mismatches,
     })
@@ -1159,9 +1297,13 @@ fn compare(db: &Db, bank: &str, record: &Record<'_>, out: &mut Vec<Mismatch>) ->
         Record::Observation(o) => (
             format!(
                 "observation:{}",
-                &o.text.chars().take(40).collect::<String>()
+                o.sources
+                    .iter()
+                    .map(|s| format!("{}#{}", s.document_id, s.fact_index))
+                    .collect::<Vec<_>>()
+                    .join(",")
             ),
-            observation_by_text(db, bank, &o.text, o.mentioned_at.as_deref())?,
+            observation_by_provenance(db, bank, o)?,
         ),
     };
     let Some(row) = row else {
@@ -1266,6 +1408,44 @@ fn compare(db: &Db, bank: &str, record: &Record<'_>, out: &mut Vec<Mismatch>) ->
         format!("{ours_tags:?}"),
     );
 
+    // Cardinality is not adjacency. `node_sources` and `caused_by` are counted
+    // in Tier 1, and a mis-keyed lookup in `import` would wire every
+    // observation to the wrong facts or point every causal edge one fact off
+    // with both counts still exact. The archive carries the pairs and the
+    // database carries the join key, so for the sampled records the comparison
+    // is available — and it is the one that backs the sentence's claim that no
+    // *authored causal relation* was lost.
+    match record {
+        Record::Observation(o) => {
+            let want: BTreeSet<String> = o
+                .sources
+                .iter()
+                .map(|s| format!("{}#{}", s.document_id, s.fact_index))
+                .collect();
+            let ours = legacy_keys_of(
+                db,
+                "SELECT n.metadata FROM node_sources s JOIN memory_nodes n ON n.id = s.source_id
+                 WHERE s.observation_id = ?1",
+                id,
+            )?;
+            diff("sources", format!("{want:?}"), format!("{ours:?}"));
+        }
+        Record::Fact(document, _, f) => {
+            let want: BTreeSet<String> = f
+                .causal_relations
+                .iter()
+                .map(|c| format!("{}#{}", document, c.target_fact_index))
+                .collect();
+            let ours = legacy_keys_of(
+                db,
+                "SELECT t.metadata FROM links l JOIN memory_nodes t ON t.id = l.to_node_id
+                 WHERE l.from_node_id = ?1 AND l.link_type = 'caused_by'",
+                id,
+            )?;
+            diff("caused_by", format!("{want:?}"), format!("{ours:?}"));
+        }
+    }
+
     if matches!(record, Record::Fact(..)) {
         let ours_entities: BTreeSet<String> = strings(
             db,
@@ -1356,12 +1536,42 @@ fn sentence(report: &Report) -> String {
 // small reads
 // ---------------------------------------------------------------------------
 
+/// The predicate that says "this node came out of `mg-migrate import`".
+///
+/// `metadata.$.legacy` is stamped by `import::node_metadata` and
+/// `import::observation_metadata` on every node the migration writes, and by
+/// nothing else — `retain::NodeDraft` writes no such key. It is what lets
+/// every Tier-1 equality stay exact after the daemon starts writing again.
+const MIGRATED: &str = "json_extract(metadata, '$.legacy') IS NOT NULL";
+
 fn quoted(banks: &[&str]) -> String {
     banks
         .iter()
         .map(|b| format!("'{}'", b.replace('\'', "''")))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// `entities::normalize`'s rule — **trim and lowercase** — written out here
+/// rather than called.
+///
+/// This is a second implementation on purpose, and the reason is the sharpest
+/// finding of D3's review. The first version computed the expected entity
+/// counts with `entities::normalized_mentions`, *the same function the
+/// importer fed the writer*, so both sides moved together and no change to it
+/// could ever make the gate fire. Measured on the `real/` slice: truncating
+/// `normalize` to three characters lost **65 of 203 entities and 7 mentions**
+/// and `verify` still printed PASS with every Tier-1 check green and no
+/// content difference.
+///
+/// A verifier that calls the code it verifies is not a verifier. This is the
+/// same shape as the temporal reference run, and the rule is five lines, so
+/// re-stating it is the whole cost.
+fn fold_names(raw: &[String]) -> BTreeSet<String> {
+    raw.iter()
+        .map(|name| name.trim().to_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 fn distinct_tags(tags: &[String]) -> i64 {
@@ -1424,38 +1634,69 @@ fn node_by_legacy_key(db: &Db, bank: &str, document: &str, index: i64) -> Result
         .map_err(sql)
 }
 
-/// Observations join on `(text, mentioned_at)` — measured 0 duplicates over
-/// all 1,747, where `text` alone collides 3 times.
+/// Observations join on **their provenance**, `metadata.$.legacy.observation_of`
+/// — the archive's `sources` array verbatim, which `import` writes for exactly
+/// this purpose and which nothing read until now.
 ///
-/// `mentioned_at` is bound as an **integer** and matched with `IS`, not with
-/// `=` against a string. The first version bound the epoch as text and
-/// compared it to `coalesce(mentioned_at, '')`: `coalesce` strips the column's
-/// INTEGER affinity, so SQLite never converted the operand and *every*
-/// observation in the sample came back "no matching node" — 18 false content
-/// differences and an exit 1 on a database that was correct. A join key that
-/// silently matches nothing is worse than no join key, because it reads as a
-/// migration failure.
-fn observation_by_text(
+/// Two earlier keys were worse, and both were found by running it:
+///
+/// * `(text, mentioned_at)` with `mentioned_at` bound as **text** against
+///   `coalesce(mentioned_at, '')`. `coalesce` strips the column's INTEGER
+///   affinity, SQLite never converted the operand, and *every* observation in
+///   the sample came back "no matching node" — 18 false content differences
+///   and an exit 1 on a database that was correct;
+/// * `(text, mentioned_at)` bound correctly. It works, but it makes `text` and
+///   `mentioned_at` the **key** rather than compared fields, so a difference in
+///   either surfaces as "no matching node" — indistinguishable from the
+///   affinity bug above and from "the observations were never imported".
+///   Measured: tampering with all 79 observations' `text` produced 79 lines of
+///   `field: node` and not one saying `text`.
+///
+/// Keyed on provenance, both become fields the diff can name.
+fn observation_by_provenance(
     db: &Db,
     bank: &str,
-    text: &str,
-    mentioned_at: Option<&str>,
+    observation: &TransferObservation,
 ) -> Result<Option<NodeRow>> {
     use rusqlite::OptionalExtension;
-    let at = ms_i64(&mentioned_at.map(str::to_string));
+    let sources = serde_json::to_string(
+        &observation
+            .sources
+            .iter()
+            .map(|s| serde_json::json!({"document_id": s.document_id, "fact_index": s.fact_index}))
+            .collect::<Vec<_>>(),
+    )
+    .expect("sources serialize");
     db.read()
         .map_err(store)?
         .query_row(
             &format!(
                 "SELECT {NODE_COLUMNS} FROM memory_nodes
-                 WHERE bank_id = ?1 AND fact_type = 'observation' AND text = ?2
-                   AND mentioned_at IS ?3"
+                 WHERE bank_id = ?1 AND fact_type = 'observation'
+                   AND json_extract(metadata, '$.legacy.observation_of') = ?2"
             ),
-            rusqlite::params![bank, text, at],
+            rusqlite::params![bank, sources],
             node_row,
         )
         .optional()
         .map_err(sql)
+}
+
+/// The `(document uuid, fact_index)` keys of whatever rows a query returns
+/// `metadata` for — the archive's own coordinates, read back out of ours.
+fn legacy_keys_of(db: &Db, sql_text: &str, id: i64) -> Result<BTreeSet<String>> {
+    Ok(strings(db, sql_text, id)?
+        .into_iter()
+        .filter_map(|metadata| {
+            let value: serde_json::Value = serde_json::from_str(&metadata).ok()?;
+            let legacy = value.get("legacy")?;
+            Some(format!(
+                "{}#{}",
+                legacy.get("document_id")?.as_str()?,
+                legacy.get("fact_index")?
+            ))
+        })
+        .collect())
 }
 
 fn strings(db: &Db, sql_text: &str, id: i64) -> Result<BTreeSet<String>> {
@@ -1869,6 +2110,221 @@ mod tests {
         assert!(!report.sample.mismatches.is_empty());
     }
 
+    /// The scope, end to end: a bank the daemon has retained into since the
+    /// import must still **pass the whole run**, not merely one check.
+    ///
+    /// Review measured the unscoped version against the smallest possible
+    /// retain — one document, one node, one tag — and got
+    /// `documents 1 != 2`, `nodes 165 != 166`, `node_tags 660 != 661`,
+    /// `consolidation watermark 1 != 0`, exit 1, and a `sentence` reading
+    /// "AC-3 is NOT met". The runbook makes that certain rather than likely:
+    /// step 3.4 resets the hook cursors so every session re-retains, step 3.6
+    /// starts the daemon, and step 3.7 runs this.
+    #[tokio::test]
+    async fn a_bank_the_daemon_retained_into_still_passes_the_whole_run() {
+        let m = Migrated::real().await;
+        m.as_if_drained();
+        assert_eq!(m.verify().verdict, Verdict::Pass);
+
+        // Exactly what a retain writes: a document, a node with no $.legacy
+        // key, its tag, and a temporal edge from the new node into the
+        // migrated set.
+        m.write(&format!(
+            "INSERT INTO documents (bank_id, doc_key, metadata, created_at, updated_at)
+               VALUES ('{JCODE}', 'a-session-after-the-cutover', '{{}}', 1, 1);
+             INSERT INTO memory_nodes
+               (uuid, bank_id, document_id, fact_type, text, event_date, created_at, updated_at,
+                embedding, embedding_model)
+               VALUES ('retained-after-import', '{JCODE}',
+                       (SELECT MAX(id) FROM documents), 'world', 'a fact the daemon retained',
+                       (SELECT MIN(event_date) FROM memory_nodes WHERE event_date IS NOT NULL),
+                       1, 1, zeroblob(1536), '{}');
+             INSERT INTO node_tags (node_id, tag)
+               VALUES ((SELECT MAX(id) FROM memory_nodes), 'file:new.rs');
+             INSERT INTO links (from_node_id, to_node_id, link_type, entity_id, weight, created_at)
+               SELECT (SELECT MAX(id) FROM memory_nodes),
+                      (SELECT MIN(id) FROM memory_nodes), 'temporal', 0, 0.9, 1;",
+            memgarden_core::EMBEDDING_MODEL_ID
+        ));
+
+        let report = m.verify();
+        assert_eq!(
+            failed(&report),
+            Vec::<&str>::new(),
+            "every equality is scoped to what the import wrote"
+        );
+        assert_eq!(report.verdict, Verdict::Pass);
+    }
+
+    /// Set equality, not cardinality. One genuine edge removed and one the
+    /// rule would never emit inserted leaves the count identical, and the
+    /// first version passed while its own detail line said
+    /// "1 stored edges the rule would not emit, 1 the rule emits that are not
+    /// stored".
+    #[tokio::test]
+    async fn an_equal_count_but_wrong_temporal_set_still_fails() {
+        let m = Migrated::real().await;
+        m.as_if_drained();
+        let before = m.verify();
+        assert!(before.tier1.iter().all(|c| c.ok));
+        let stored = before
+            .tier1
+            .iter()
+            .find(|c| c.name == "temporal self-consistency")
+            .unwrap()
+            .actual;
+
+        m.write(
+            "CREATE TEMP TABLE victim AS
+               SELECT from_node_id, to_node_id FROM links WHERE link_type = 'temporal'
+               ORDER BY from_node_id, to_node_id LIMIT 1;
+             DELETE FROM links WHERE link_type = 'temporal'
+               AND from_node_id = (SELECT from_node_id FROM victim)
+               AND to_node_id = (SELECT to_node_id FROM victim);
+             INSERT INTO links (from_node_id, to_node_id, link_type, entity_id, weight, created_at)
+             SELECT (SELECT MIN(id) FROM memory_nodes WHERE fact_type <> 'observation'),
+                    (SELECT MAX(id) FROM memory_nodes WHERE fact_type = 'observation'),
+                    'temporal', 0, 0.3, 1;",
+        );
+        let after = m.verify();
+        let check = after
+            .tier1
+            .iter()
+            .find(|c| c.name == "temporal self-consistency")
+            .unwrap();
+        assert_eq!(check.actual, stored, "the cardinality is unchanged");
+        assert!(
+            !check.ok,
+            "and the check still fails, because the set is not"
+        );
+        assert_eq!(after.verdict, Verdict::Fail);
+    }
+
+    /// Cardinality is not adjacency: `node_sources` and `caused_by` can both
+    /// be exact while every edge points at the wrong fact.
+    #[tokio::test]
+    async fn provenance_rewired_to_the_wrong_facts_is_caught_by_the_sample() {
+        for (sql, field) in [
+            (
+                "UPDATE node_sources SET source_id =
+                   (SELECT MAX(id) FROM memory_nodes WHERE fact_type <> 'observation')
+                 WHERE observation_id = (SELECT MIN(observation_id) FROM node_sources)
+                   AND source_id <> (SELECT MAX(id) FROM memory_nodes WHERE fact_type <> 'observation')",
+                "sources",
+            ),
+            (
+                "UPDATE links SET to_node_id =
+                   (SELECT MAX(id) FROM memory_nodes WHERE fact_type <> 'observation')
+                 WHERE link_type = 'caused_by'",
+                "caused_by",
+            ),
+        ] {
+            let m = Migrated::real().await;
+            m.as_if_drained().write(sql);
+            let report = run(&Options {
+                sample: 10_000,
+                ..m.options()
+            })
+            .unwrap();
+            assert!(
+                report.sample.mismatches.iter().any(|d| d.field == field),
+                "{field} rewiring was not caught; fields were {:?}",
+                report
+                    .sample
+                    .mismatches
+                    .iter()
+                    .map(|d| d.field.as_str())
+                    .collect::<BTreeSet<_>>()
+            );
+            assert_eq!(report.verdict, Verdict::Fail);
+        }
+    }
+
+    /// Keyed on provenance, so a tampered `text` or `mentioned_at` is a named
+    /// field rather than "no matching node" — which is what the two earlier
+    /// keys produced, and is indistinguishable from "never imported".
+    #[tokio::test]
+    async fn a_tampered_observation_reports_the_field_and_not_a_missing_node() {
+        for (sql, field) in [
+            (
+                "UPDATE memory_nodes SET text = 'tampered' WHERE fact_type = 'observation'",
+                "text",
+            ),
+            (
+                "UPDATE memory_nodes SET mentioned_at = 1 WHERE fact_type = 'observation'",
+                "mentioned_at",
+            ),
+        ] {
+            let m = Migrated::real().await;
+            m.as_if_drained().write(sql);
+            let report = run(&Options {
+                sample: 10_000,
+                ..m.options()
+            })
+            .unwrap();
+            let fields: BTreeSet<&str> = report
+                .sample
+                .mismatches
+                .iter()
+                .map(|d| d.field.as_str())
+                .collect();
+            assert!(fields.contains(field), "{field}: got {fields:?}");
+            assert!(!fields.contains("node"), "{field}: got {fields:?}");
+        }
+    }
+
+    /// A bank under 1 % of the corpus rounds to a quota of zero and used to
+    /// vanish from the stratification map entirely — the failure the
+    /// stratification exists to prevent.
+    #[tokio::test]
+    async fn no_bank_can_round_out_of_the_sample() {
+        let m = Migrated::of(Snapshot::both()).await;
+        m.as_if_drained();
+        for want in [1usize, 2, 50] {
+            let sample = run(&Options {
+                sample: want,
+                ..m.options()
+            })
+            .unwrap()
+            .sample;
+            assert_eq!(
+                sample.per_bank.len(),
+                2,
+                "sample={want} dropped a bank: {:?}",
+                sample.per_bank
+            );
+            assert!(sample.per_bank.values().all(|n| *n >= 1));
+        }
+    }
+
+    /// The verifier's own fold, stated here so a drift in
+    /// `entities::normalize` shows up as a Tier-1 mismatch instead of moving
+    /// both sides of the equality together.
+    #[test]
+    fn the_entity_oracle_states_the_rule_rather_than_calling_it() {
+        let folded = fold_names(&[
+            "CE-1".to_string(),
+            "  ce-1 ".to_string(),
+            "CE-4".to_string(),
+            "   ".to_string(),
+        ]);
+        assert_eq!(
+            folded,
+            ["ce-1", "ce-4"].iter().map(|s| s.to_string()).collect()
+        );
+        // The property that matters: this is trim + lowercase and nothing
+        // else. An over-aggressive normalizer — the PR's own history has one
+        // that dissolved 77 of 3,917 names — would disagree with it here.
+        assert_eq!(
+            fold_names(&["Phase A".to_string()]),
+            fold_names(&["phase a".to_string()])
+        );
+        assert_ne!(
+            fold_names(&["ce-1".to_string()]),
+            fold_names(&["ce-4".to_string()])
+        );
+    }
+
     // --- tier 2 -------------------------------------------------------------
 
     /// A Tier-2 ratio outside the band is a **review stop**, not a failure:
@@ -2026,8 +2482,8 @@ mod tests {
     async fn the_report_round_trips_and_its_verdict_agrees_with_the_exit_code() {
         let m = Migrated::real().await;
         let report = m.as_if_drained().verify();
-        let json = serde_json::to_string(&report).unwrap();
-        let back: Report = serde_json::from_str(&json).unwrap();
+        let encoded = serde_json::to_string(&report).unwrap();
+        let back: Report = serde_json::from_str(&encoded).unwrap();
         assert_eq!(back.verdict, report.verdict);
         assert_eq!(back.tier1.len(), report.tier1.len());
         assert_eq!(back.sentence, report.sentence);
@@ -2152,11 +2608,20 @@ mod tests {
             ..m.options()
         })
         .unwrap();
-        assert_eq!(report.verdict, Verdict::Pass, "a dump cannot fail a gate");
+        // **Not `Pass`, and not `tier1`.** A dump verifies nothing, and the
+        // runbook writes it into the same `docs/evidence/` directory as the
+        // real report — so anything keying on `.verdict` or `.tier1[].ok`
+        // would have read a census as a passed migration. `mode` is the
+        // machine-readable discriminator; `Review` keeps its exit code out of
+        // any gate that treats 0 as evidence.
+        assert_eq!(report.mode, "dump");
+        assert_eq!(report.verdict, Verdict::Review);
+        assert!(report.tier1.is_empty(), "a census is not a check");
         assert!(report.tier2.is_empty() && report.sample.mismatches.is_empty());
-        let names: Vec<&str> = report.tier1.iter().map(|c| c.name.as_str()).collect();
-        assert!(names.contains(&"sessions") && names.contains(&"retain_jobs"));
+        assert!(report.census.contains_key("sessions"));
+        assert!(report.census.contains_key("retain_jobs"));
         assert!(report.sentence.contains("step 3a"));
+        assert!(report.table().contains("mode dump"));
     }
 
     fn json(v: i64) -> serde_json::Value {
