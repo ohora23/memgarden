@@ -25,6 +25,7 @@
 pub mod archive;
 pub mod import;
 pub mod snapshot;
+pub mod verify;
 
 use std::path::PathBuf;
 

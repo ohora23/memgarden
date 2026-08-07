@@ -14,7 +14,7 @@ is allowed to replace the system it is copying.
 | **A — Foundation** | workspace + CI, SQLite schema (vec + FTS5 + graph + temporal), REST skeleton, metrics plumbing | ✅ merged |
 | **B — Core pipeline** | embeddings · Ollama extraction · retain ingest · hybrid recall · entities/graph · temporal · consolidation · reflect · reranker, plus vector-space tagging and the recall-quality harness | ✅ merged |
 | **C — Hooks** | session/turn state · CLI foundation + latency harness · session-start · recall · transcript delta reader · retain · the cutover switch | ✅ code-complete |
-| **D — Migration** | read-only legacy snapshot (MG-1a) ✅ · archive → SQLite importer (MG-1b) 🔄 · the AC-3 verifier (MG-2) ⏳ | 🔄 in progress |
+| **D — Migration** | read-only legacy snapshot (MG-1a) ✅ · archive → SQLite importer (MG-1b) ✅ · the AC-3 verifier (MG-2) ✅ | ✅ code-complete |
 | **E — UI & metrics** | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views | ⏳ |
 | **F — Cutover** | run the AC-1..3 gates → shut the legacy system down → final record in the legacy repo | ⏳ |
 
@@ -50,7 +50,7 @@ The hook figure is `recall` + `retain` on one turn, interleaved-paired against
 the same binary doing nothing. For context, the legacy Python hooks cost
 **33 ms on their disabled path** — more to do nothing than these cost to work.
 
-### AC-3 — lossless migration — 🔄 **the migration runs; the instrument that certifies it does not yet**
+### AC-3 — lossless migration — ✅ **met on a rehearsal, by the instrument**
 
 Node, link and document counts must match across the existing banks, plus a
 50-sample content diff.
@@ -62,11 +62,18 @@ own frozen `/stats`, **four banks**: 25 == 25 documents, **5,288 == 5,288
 nodes**, 200 == 200 authored causal links, 1,747 observations with 2,114
 provenance edges.
 
-**That is not AC-3 met.** AC-3 is a *verification* criterion, and MG-2 — the
-three-tier reconciliation and the 50-sample content diff — has not been
-written. Counts printed by the thing that wrote the rows are not evidence that
-the rows are right; that is the whole reason the verifier is a separate PR with
-a separate oracle. Phase F reads AC-3 from MG-2's report or not at all.
+**And MG-2 now says so, which is the part that counts.** `mg-migrate verify`
+reads three oracles — legacy's frozen `/stats`, the frozen archive, and the
+database — and exits **0** on the four-bank rehearsal: every Tier-1 equality
+green (25 documents, 5,288 nodes, 200 authored causal edges, 2,114 provenance
+edges, 3,917 entities, 10,379 mentions), temporal self-consistency exact at
+105,016 with zero edges in either direction of disagreement, and **no content
+difference in the 50-sample diff**.
+
+Phase F re-runs it against the cutover import, which is the run that decides.
+Counts printed by the thing that wrote the rows are not evidence that the rows
+are right — which is the whole reason the verifier is a separate program with a
+separate oracle.
 
 Two things the migration establishes that Phase F will need:
 
@@ -78,7 +85,11 @@ Two things the migration establishes that Phase F will need:
   links exist in neither system's storage;
 * **the migration is rehearsable at zero cost.** `--db <scratch>` builds a
   complete migrated database beside the live one with both daemons untouched,
-  which is how the numbers above were taken.
+  which is how the numbers above were taken;
+* **a Tier-2 review stop has a way out that is not "ignore it".**
+  `verify --accept-tier2 <hash>` records a human acknowledgement of one
+  specific result. A phase that always exits 2 teaches the reader to ignore
+  exit 1 within two runs.
 
 Four further criteria (AC-4 graph viewer, AC-5 dashboard, AC-6 metrics, AC-7
 PR discipline) are tracked but do not gate the shutdown.
