@@ -4,3 +4,13 @@
 
 # Stray image drops in the repo root (hero art lives in assets/)
 /*.png
+
+# The AX-2 corpus and labels are exported from a real memory bank — working
+# history, file paths, identities. Generate your own; see gold/README.md.
+/gold/corpus.jsonl
+/gold/corpus.sha256
+/gold/queries.jsonl
+/gold/*.pool.json
+
+# Snapshots and evidence from a live migration carry real bank content.
+/migration/

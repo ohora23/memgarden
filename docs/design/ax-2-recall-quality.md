@@ -23,12 +23,16 @@ Origin: plan `.omc/plans/phase-b-impl.md`, "AX-2 상세 — 회수 품질 하네
 | Path | What |
 |---|---|
 | `gold/export_legacy_corpus.py` | Read-only snapshot of the legacy bank (two GETs, no mutation). |
-| `gold/corpus.jsonl` | The snapshot itself — 2718 facts, committed. |
-| `gold/corpus.sha256` | `sha256sum -c`-compatible checksum. |
-| `gold/queries.jsonl` | 20 queries, 331 graded judgments, one rationale per label. |
-| `gold/results.jsonl` | Append-only results ledger. **Line 8 is the current baseline** (q17's labels ratified by `fix/q17-labels`); lines 1 and 5 were, and are kept. |
-| `gold/results.pool.json` | The top-20 the last run produced, with text — the labelling pool and its audit trail. Rewritten each run, unlike the ledger. |
+| `gold/corpus.jsonl` | The snapshot itself — 2718 facts. **Not committed**, gitignored: see `gold/README.md`. |
+| `gold/corpus.sha256` | `sha256sum -c`-compatible checksum. Not committed, for the same reason. |
+| `gold/queries.jsonl` | 20 queries, 331 graded judgments, one rationale per label. **Not committed** — the rationales quote the facts they grade. `gold/queries.example.jsonl` carries the schema. |
+| `gold/results.jsonl` | Append-only results ledger — metrics, query ids and result uuids, no text, so it is committed. **Line 8 is the current baseline** (q17's labels ratified by `fix/q17-labels`); lines 1 and 5 were, and are kept. |
+| `gold/results.pool.json` | The top-20 the last run produced, with text — the labelling pool and its audit trail. Rewritten each run, unlike the ledger. Not committed. |
 | `crates/memgardend/src/bin/recall_bench.rs` | `import` + `bench`. |
+
+Everything below describes the corpus this project measured against. It is the
+reasoning that still applies to a corpus you export yourself; the numbers are
+ours and are not reproducible from this repository alone.
 
 ## The corpus — the most important decision here
 

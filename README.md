@@ -18,7 +18,7 @@ The name is the design. Memory here is not a bucket you throw things into; it is
 - **Honest about its own value.** Every retain records what the input caps saved (**−75.3%** on a live extraction, **−86.9%** over a whole 5.8MB transcript) into a benefit ledger. Metrics collection costs **88ns per request** — 0.00025% of the latency budget — so measuring the system can never distort what it measures.
 - **Korean works properly.** CJK has no word boundaries, so a naive full-text index silently returns nothing — measured: a 5-token Korean prompt retrieved **0** hits before the fix and 100 after. The FTS layer is built for it (unicode61 + prefix indexing + prefix-suffixed terms) and a guard test fails the build if that ever regresses.
 - **Bounded everywhere it touches untrusted input.** Transcripts, tool payloads, entity names, prompt sizes, and queue depth all have caps with tests — because in the previous system each of those, uncapped, produced a real incident.
-- **Recall quality is measured, not asserted.** A committed 2,718-fact corpus and 20 graded gold queries produce recall@k / MRR / nDCG, so a ranking change reports a delta instead of a feeling. It has already paid for itself: the embedded reranker looked like a +0.077 nDCG win until a temporal bug was fixed, after which the same measurement showed **+0.013 nDCG@10 with recall@10 going 0.044 negative** — which is why it ships off.
+- **Recall quality is measured, not asserted.** A frozen 2,718-fact corpus and 20 graded gold queries produce recall@k / MRR / nDCG, so a ranking change reports a delta instead of a feeling. The harness ships; that corpus does not, because it is a real memory bank — [`gold/README.md`](gold/README.md) is how you export your own. It has already paid for itself: the embedded reranker looked like a +0.077 nDCG win until a temporal bug was fixed, after which the same measurement showed **+0.013 nDCG@10 with recall@10 going 0.044 negative** — which is why it ships off.
 - **Reviewed like it matters.** Every change lands as a PR through a three-way review (functional / security / code), and fixes are confirmed by **mutation-testing them** — reverting the fix has to fail a test, or the test does not count. That discipline is also how the suite's own blind spot was found: a lock regression whose mutation survived every test, because every test ran one hook at a time.
 
 ## Why rebuild
@@ -206,7 +206,7 @@ One `record` call is **74.3ns**; the full set a `POST /recall` touches — four 
 
 ### Recall quality
 
-Against a frozen 2,718-fact corpus with 20 graded queries and 331 judgments, macro-averaged, Burges/TREC nDCG:
+Against a frozen 2,718-fact corpus with 20 graded queries and 331 judgments, macro-averaged, Burges/TREC nDCG. That corpus is a real memory bank and is not in this repository, so these are **our** before/after record rather than a benchmark to compare against — recall@k is a property of the corpus and its labels ([`gold/README.md`](gold/README.md)):
 
 | | recall@1 | recall@5 | recall@10 | MRR | nDCG@10 |
 |---|---|---|---|---|---|
