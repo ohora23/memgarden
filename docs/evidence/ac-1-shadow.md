@@ -3,6 +3,11 @@
 Measured 2026-08-08. What the shadow run had produced, why it could not be
 judged, and what was done about it.
 
+Bank ids here and in `ac-3.json` are **pseudonyms** (`bank-a` … `bank-g`),
+matching the rename in `crates/memgardend/tests/fixtures/migrate/`. The live
+system still uses its own ids; only the record is renamed. Counts, ratios and
+verdicts are untouched.
+
 ## The instrument was running; the bank behind it was not filling
 
 `hooks status` reported both systems wired, shadow mode, `memgardend` up. The
