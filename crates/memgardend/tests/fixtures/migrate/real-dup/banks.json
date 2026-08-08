@@ -1,0 +1,15 @@
+{
+ "banks": [
+  {
+   "bank_id": "claude-code::bank-b",
+   "name": "claude-code::bank-b",
+   "disposition": {
+    "skepticism": 3,
+    "literalism": 3,
+    "empathy": 3
+   },
+   "mission": "You are a coding assistant with long-term memory of this project's engineering history: decisions, bug fixes, conventions, and workflows.",
+   "fact_count": 135
+  }
+ ]
+}

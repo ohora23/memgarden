@@ -748,7 +748,7 @@ retain_cap_saving: raw=367118 capped=48010 saved=319108 ratio=0.8692  ->  -86.9%
 ```
 
 **−86.9 %**, inside the **−55 % / −87 %** band from
-`/home/user/z_Setup/bank-b/docs/measurement.md` and next to that
+`<legacy-repo>/docs/measurement.md` and next to that
 file's "Build session, 1,193 msgs → −87 %" row. Over the whole 5,793,165-byte
 real transcript, one forced retain.
 

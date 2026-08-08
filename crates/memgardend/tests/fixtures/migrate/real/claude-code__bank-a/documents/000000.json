@@ -1,0 +1,2835 @@
+{
+ "id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+ "original_text": "[redacted] The original document text is a 180,516-character Claude Code transcript and is deliberately not committed. Every other field is the live claude-code::bank-a archive verbatim, sliced to facts 125..210 and re-indexed from 0.\n",
+ "retain_params": {
+  "context": "claude-code",
+  "metadata": {
+   "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+   "retained_at": "2026-08-03T16:49:32Z",
+   "message_count": "237",
+   "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+  }
+ },
+ "tags": [
+  "file:/home/user/.claude/omc-gate/test_gate.py",
+  "file:/home/user/.claude/omc-gate/gate.py",
+  "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+  "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+ ],
+ "created_at": "2026-08-03T16:50:40.419890Z",
+ "chunks": [
+  {
+   "chunk_index": 35,
+   "chunk_text": "[redacted chunk text]"
+  },
+  {
+   "chunk_index": 36,
+   "chunk_text": "[redacted chunk text]"
+  }
+ ],
+ "facts": [
+  {
+   "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (fact 000)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:52:25.053837Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:52:25.053837Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 25,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:54:32.971535Z",
+   "consolidated_at": "2026-08-03T17:04:41.764973Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 001)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.079577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.079577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 38,
+   "entities": [
+    "jcode-base",
+    "memory_rerank.rs",
+    "reranking"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:18.376200Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "관측은 출처를 별도 행으로 들고 다닌다 (fact 002)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.109577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.109577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 44,
+   "entities": [
+    "벤치 하네스",
+    "CE-9b",
+    "n≥5"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:01.046297Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 003)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.079577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.079577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 35,
+   "entities": [
+    "Bash",
+    "command schema",
+    "ORCA",
+    "Python"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:18.376200Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 004)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.079577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.079577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 40,
+   "entities": [
+    "github.com/1jehuang/jcode",
+    "jcode-as-design-source.md",
+    "user"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:29.258745Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 005)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.089577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.089577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 37,
+   "entities": [
+    "MEMORY.md",
+    "prompt",
+    "user"
+   ],
+   "causal_relations": [
+    {
+     "relation_type": "caused_by",
+     "target_fact_index": 22
+    }
+   ],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:17.848753Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 006)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.099577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.099577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 38,
+   "entities": [
+    "memory_recall_bench.rs",
+    "MRR",
+    "nDCG",
+    "recall@k"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:30.124242Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "커서는 확정된 전송에만 전진한다 (fact 007)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.079577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.079577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 45,
+   "entities": [
+    "Claude",
+    "compaction-core",
+    "compaction strategy",
+    "jcode-compaction-core",
+    "token budget"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:46.959727Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (fact 008)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.089577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.089577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 41,
+   "entities": [
+    "감쇠 모델",
+    "created_at"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:38.804395Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "훅은 데몬을 기동하지 않고 실패하면 조용히 빠진다 (fact 009)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.109577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.109577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 41,
+   "entities": [
+    "모델",
+    "벡터",
+    "embedding_model"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:50.796054Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "관측은 출처를 별도 행으로 들고 다닌다 (fact 010)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.089577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.089577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 45,
+   "entities": [
+    "Claude",
+    "import-core",
+    "jcode-import-core",
+    "session persistence"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:46.959727Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 011)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.089577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.089577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 38,
+   "entities": [
+    "deduplication",
+    "duplicate_candidates",
+    "memory.rs",
+    "prompt.rs"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:18.376200Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "통합 실행은 워터마크를 남겨 재시작이 코퍼스를 다시 훑지 않게 한다 (fact 012)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T00:00:00.020000Z",
+   "occurred_start": "2026-08-03T00:00:00.020000Z",
+   "occurred_end": "2026-08-03T00:00:00.020000Z",
+   "mentioned_at": "2026-08-03T16:54:33.099577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 43,
+   "entities": [
+    "응답",
+    "프롬프트",
+    "num_predict",
+    "reason 필드"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:46.959727Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 013)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.079577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.079577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 36,
+   "entities": [
+    "command",
+    "ORCA",
+    "terminal",
+    "worktree"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:46.959727Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 014)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.079577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.079577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 46,
+   "entities": [
+    "COMPACTION_THRESHOLD",
+    "CRITICAL_THRESHOLD",
+    "DEFAULT_TOKEN_BUDGET"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:29.258745Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "커서는 확정된 전송에만 전진한다 (fact 015)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T00:00:00.050000Z",
+   "occurred_start": "2026-08-03T00:00:00.050000Z",
+   "occurred_end": "2026-08-03T00:00:00.050000Z",
+   "mentioned_at": "2026-08-03T16:54:33.129577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 43,
+   "entities": [
+    "중앙값",
+    "배치 컨솔리데이션",
+    "홉 병합",
+    "CE-9b",
+    "n≥5"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:09:06.698770Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (fact 016)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T00:00:00Z",
+   "occurred_start": "2026-08-03T00:00:00Z",
+   "occurred_end": "2026-08-03T00:00:00Z",
+   "mentioned_at": "2026-08-03T16:54:33.079577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 43,
+   "entities": [
+    "CE-9a",
+    "CI",
+    "master",
+    "PR #12"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:30.124242Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "훅은 데몬을 기동하지 않고 실패하면 조용히 빠진다 (fact 017)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.079577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.079577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 44,
+   "entities": [
+    "세션",
+    "메시지",
+    "CE-9b",
+    "executor"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:01.046297Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "관측은 출처를 별도 행으로 들고 다닌다 (fact 018)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.089577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.089577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 39,
+   "entities": [
+    "메모리 그래프",
+    "자가 정비",
+    "Agent"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:07.261108Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "시간 인접성은 복사하지 않고 규칙으로 다시 만든다 (fact 019)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.129577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.129577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 41,
+   "entities": [
+    "메모리 시스템",
+    "orca terminal send"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:30.124242Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "통합 실행은 워터마크를 남겨 재시작이 코퍼스를 다시 훑지 않게 한다 (fact 020)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T00:00:00.070000Z",
+   "occurred_start": "2026-08-03T00:00:00.070000Z",
+   "occurred_end": "2026-08-03T00:00:00.070000Z",
+   "mentioned_at": "2026-08-03T16:54:33.149577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 43,
+   "entities": [
+    "랭킹",
+    "코사인 하한선",
+    "감쇠 모델",
+    "Agent Memory System",
+    "BM25",
+    "created_at",
+    "embedding_model",
+    "jcode",
+    "하이브리드 RRF",
+    "strength"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:09:06.698770Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "예산 필터가 건너뛰지 않고 멈추면 뒤가 통째로 잘린다 (fact 021)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T00:00:00.010000Z",
+   "occurred_start": "2026-08-03T00:00:00.010000Z",
+   "occurred_end": "2026-08-03T00:00:00.010000Z",
+   "mentioned_at": "2026-08-03T16:54:33.089577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 43,
+   "entities": [
+    "가드",
+    "상한",
+    "테스트",
+    "code-reviewer"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:30.124242Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 022)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.079577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.079577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 37,
+   "entities": [
+    "ORCA",
+    "terminal",
+    "user",
+    "worktree"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:17.848753Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "커서는 확정된 전송에만 전진한다 (fact 023)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.119577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.119577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 44,
+   "entities": [
+    "세션",
+    "에이전트",
+    "CE-9b"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:11.830021Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (fact 024)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.079577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.079577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 41,
+   "entities": [
+    "메모리 시스템",
+    "회수 벤치 하네스",
+    "embedding_model",
+    "하이브리드 RRF"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:38.804395Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 025)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.089577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.089577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 40,
+   "entities": [
+    "github.com/1jehuang/jcode",
+    "jcode-as-design-source.md",
+    "user"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:29.258745Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "관측은 출처를 별도 행으로 들고 다닌다 (fact 026)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.099577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.099577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 39,
+   "entities": [
+    "메모리 그래프",
+    "건강 지표",
+    "MemoryGraphHealth"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:07.261108Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "시간 인접성은 복사하지 않고 규칙으로 다시 만든다 (fact 027)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T00:00:00.060000Z",
+   "occurred_start": "2026-08-03T00:00:00.060000Z",
+   "occurred_end": "2026-08-03T00:00:00.060000Z",
+   "mentioned_at": "2026-08-03T16:54:33.139577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 43,
+   "entities": [
+    "상한",
+    "테스트",
+    "배치 프롬프트",
+    "8/2 사고",
+    "const"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:09:06.698770Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "통합 실행은 워터마크를 남겨 재시작이 코퍼스를 다시 훑지 않게 한다 (fact 028)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T00:00:00.040000Z",
+   "occurred_start": "2026-08-03T00:00:00.040000Z",
+   "occurred_end": "2026-08-03T00:00:00.040000Z",
+   "mentioned_at": "2026-08-03T16:54:33.119577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 43,
+   "entities": [
+    "리뷰어",
+    "벡터 행",
+    "벡터 검색"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:50.796054Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 029)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.099577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.099577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 46,
+   "entities": [
+    "message_char_count",
+    "safe_compaction_cutoff",
+    "truncate_str_boundary"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:38.804395Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 030)",
+   "fact_type": "experience",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.089577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.089577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 42,
+   "entities": [
+    "assistant",
+    "document receipt verification",
+    "term_b284e847-116c-44a0-a393-de43898d605c"
+   ],
+   "causal_relations": [
+    {
+     "relation_type": "caused_by",
+     "target_fact_index": 35
+    }
+   ],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:11.830021Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "커서는 확정된 전송에만 전진한다 (fact 031)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.099577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.099577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 41,
+   "entities": [
+    "BM25",
+    "dense",
+    "하이브리드 RRF"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:38.804395Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (fact 032)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T00:00:00.030000Z",
+   "occurred_start": "2026-08-03T00:00:00.030000Z",
+   "occurred_end": "2026-08-03T00:00:00.030000Z",
+   "mentioned_at": "2026-08-03T16:54:33.109577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 43,
+   "entities": [
+    "dedup_threshold",
+    "LLM",
+    "wgpu"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:50.796054Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 033)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.089577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.089577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 46,
+   "entities": [
+    "EMERGENCY_TOOL_RESULT_MAX_CHARS",
+    "IMAGE_TOKEN_COST",
+    "PAYLOAD_IMAGE_CHAR_BUDGET"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:29.258745Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "관측은 출처를 별도 행으로 들고 다닌다 (fact 034)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.129577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.129577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 44,
+   "entities": [
+    "컴팩션",
+    "메모리 시스템",
+    "하네스 레이어",
+    "세션 임포트"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:11.830021Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 035)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.079577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.079577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 42,
+   "entities": [
+    "Agent Memory System",
+    "jcode",
+    "jcode-memory-findings.md",
+    "memory system session",
+    "user"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:07:18.376200Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "통합 실행은 워터마크를 남겨 재시작이 코퍼스를 다시 훑지 않게 한다 (fact 036)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.089577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.089577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 44,
+   "entities": [
+    "dedup_threshold",
+    "jcode",
+    "LLM",
+    "STORAGE_DEDUP_THRESHOLD"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:01.046297Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "예산 필터가 건너뛰지 않고 멈추면 뒤가 통째로 잘린다 (fact 037)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.099577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.099577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 44,
+   "entities": [
+    "벡터 경로",
+    "BM25",
+    "하이브리드 RRF"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:01.046297Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "임베딩 생산자를 태그해 두면 남의 벡터가 조용히 섞이지 않는다 (fact 038)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.119577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.119577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 41,
+   "entities": [
+    "메모리 시스템",
+    "감쇠 기준",
+    "effective_confidence",
+    "reinforce"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:50.796054Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "커서는 확정된 전송에만 전진한다 (fact 039)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:54:33.079577Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:54:33.079577Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 39,
+   "entities": [
+    "중복",
+    "메모리",
+    "STORAGE_DEDUP_THRESHOLD"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:56:27.232382Z",
+   "consolidated_at": "2026-08-03T17:08:11.830021Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (fact 040)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.327723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.327723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 58,
+   "entities": [
+    "assess_tests.rs",
+    "jcode",
+    "test_gate.py"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:18.746172Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "훅은 데몬을 기동하지 않고 실패하면 조용히 빠진다 (fact 041)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 57,
+   "entities": [
+    "메모리 시스템",
+    "bypassPermissions",
+    "issue #604",
+    "jcode",
+    "permission_mode",
+    "PreToolUse"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:36.770077Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "관측은 출처를 별도 행으로 들고 다닌다 (fact 042)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.347723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.347723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "Catastrophic",
+    "Confirm",
+    "Low",
+    "Safe"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:11:29.449422Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "시간 인접성은 복사하지 않고 규칙으로 다시 만든다 (fact 043)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.347723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.347723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 58,
+   "entities": [
+    "버그",
+    "수정"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:18.746172Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "통합 실행은 워터마크를 남겨 재시작이 코퍼스를 다시 훑지 않게 한다 (fact 044)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.387723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.387723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "바이트 페이로드",
+    "실패 모드",
+    "토큰 예산"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:11:39.927246Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "예산 필터가 건너뛰지 않고 멈추면 뒤가 통째로 잘린다 (fact 045)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.377723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.377723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "트랜스크립트",
+    "safe_compaction_cutoff"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:11:39.927246Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "임베딩 생산자를 태그해 두면 남의 벡터가 조용히 섞이지 않는다 (fact 046)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.357723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.357723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "가드",
+    "메모리 시스템",
+    "Catastrophic"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:11:29.449422Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "커서는 확정된 전송에만 전진한다 (fact 047)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.367723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.367723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:53.429291Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the retain cursor advances only on a confirmed post (fact 048)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.337723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.337723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 50,
+   "entities": [
+    "justification",
+    "reflection gate",
+    "struct",
+    "text"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:44.747452Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 049)",
+   "fact_type": "experience",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.337723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.337723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 48,
+   "entities": [
+    "Bash",
+    "jcode-command-risk",
+    "user"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:36.770077Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "관측은 출처를 별도 행으로 들고 다닌다 (fact 050)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 47,
+   "entities": [
+    "cutoff",
+    "messages",
+    "safe_compaction_cutoff",
+    "tool_result",
+    "tool_use"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:11:16.118738Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "시간 인접성은 복사하지 않고 규칙으로 다시 만든다 (fact 051)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.347723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.347723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [
+    "as_memory_entry",
+    "MemoryEntry"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:47.445801Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 052)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.327723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.327723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 51,
+   "entities": [
+    "cycle budget",
+    "resource budget",
+    "tokens remaining",
+    "user usage rate",
+    "window resets"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:30.864129Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 053)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.327723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.327723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 50,
+   "entities": [
+    "enum",
+    "GateOutcome",
+    "justification",
+    "prompt"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:30.864129Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 054)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 59,
+   "entities": [
+    "CATASTROPHIC_TARGETS",
+    "gate.py",
+    "omc-gate"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:44.747452Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "커서는 확정된 전송에만 전진한다 (fact 055)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.327723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.327723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "결정적 분류기",
+    "반영 게이트",
+    "2단 캐스케이드"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:11:16.118738Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (fact 056)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.337723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.337723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [
+    "extract_file_mentions",
+    "looks_like_file_reference"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:47.445801Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "훅은 데몬을 기동하지 않고 실패하면 조용히 빠진다 (fact 057)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.327723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.327723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 47,
+   "entities": [
+    "Bash",
+    "command-risk",
+    "crates/jcode-command-risk/src/lib.rs",
+    "grep"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:11:16.118738Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 058)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.327723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.327723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 48,
+   "entities": [
+    "find /home/u -delete",
+    "RiskLevel::Catastrophic",
+    "rm -rf /",
+    "rm -rf ~",
+    "rm -rf $HOME"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:36.770077Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 059)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.357723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.357723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 55,
+   "entities": [
+    "resume",
+    "SessionStart"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:18.662358Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 060)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.347723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.347723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 50,
+   "entities": [
+    "ambient budget",
+    "Bash",
+    "import targets",
+    "skills-as-memories"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:44.747452Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "예산 필터가 건너뛰지 않고 멈추면 뒤가 통째로 잘린다 (fact 061)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.357723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.357723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [
+    "schedule_ambient"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:53.429291Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "임베딩 생산자를 태그해 두면 남의 벡터가 조용히 섞이지 않는다 (fact 062)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.327723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.327723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 54,
+   "entities": [
+    "훅",
+    "settings.json",
+    "user"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:58.266717Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the embedding producer is tagged so a foreign vector drops out visibly (fact 063)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.347723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.347723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 49,
+   "entities": [
+    "absolute path-based deny",
+    "defense in depth",
+    "jcode",
+    "sandbox",
+    "sh -c"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:09.367945Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (fact 064)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 58,
+   "entities": [
+    "BLAST RADIUS",
+    "gate.py",
+    "jcode-command-risk",
+    "rm -rf"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:06.698770Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "훅은 데몬을 기동하지 않고 실패하면 조용히 빠진다 (fact 065)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "반영 게이트",
+    "issue #604",
+    "jcode-command-risk",
+    "rm -rf ~"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:11:16.118738Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 066)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 56,
+   "entities": [
+    "claude.com",
+    "code.claude.com",
+    "URL"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:11:39.927246Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "시간 인접성은 복사하지 않고 규칙으로 다시 만든다 (fact 067)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.367723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.367723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "컴팩션",
+    "jcode-compaction-core"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:11:29.449422Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 068)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.327723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.327723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 49,
+   "entities": [
+    "jcode",
+    "reflection gate",
+    "risk classification system",
+    "RiskLevel::Safe"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:58.266717Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 069)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.347723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.347723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 55,
+   "entities": [
+    "hindsight-memory-dev",
+    "UserPromptSubmit"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:18.662358Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 070)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 55,
+   "entities": [
+    "Claude",
+    "hook commands",
+    "user"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:09.367945Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "커서는 확정된 전송에만 전진한다 (fact 071)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 54,
+   "entities": [
+    "하네스 레이어",
+    "jcode-memory-findings.md",
+    "user"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:44.747452Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the retain cursor advances only on a confirmed post (fact 072)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 50,
+   "entities": [
+    "alignment",
+    "justification",
+    "model",
+    "reflection gate"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:30.864129Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "훅은 데몬을 기동하지 않고 실패하면 조용히 빠진다 (fact 073)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.327723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.327723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 57,
+   "entities": [
+    "검증",
+    "게이트"
+   ],
+   "causal_relations": [
+    {
+     "relation_type": "caused_by",
+     "target_fact_index": 41
+    }
+   ],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:36.770077Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 074)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.327723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.327723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 55,
+   "entities": [
+    "claude-hook.sh",
+    "PreToolUse"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:09.367945Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "시간 인접성은 복사하지 않고 규칙으로 다시 만든다 (fact 075)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.337723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.337723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 58,
+   "entities": [
+    "echo done > /tmp/marker",
+    "find /home/u -delete",
+    "gate.py",
+    "test_gate.py",
+    "truncate -s 0 /var/log/app.log"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:18.746172Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 076)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.337723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.337723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 51,
+   "entities": [
+    "ambient prompt",
+    "cycle budget",
+    "provider",
+    "tokens remaining",
+    "user usage rate",
+    "window resets"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:30.864129Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 077)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.337723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.337723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 49,
+   "entities": [
+    "BLAST RADIUS",
+    "denylist",
+    "jcode",
+    "recall"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:58.266717Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 078)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.337723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.337723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 55,
+   "entities": [
+    "agentmemory",
+    "MEMORY.md",
+    "PreCompact"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:09.367945Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the embedding producer is tagged so a foreign vector drops out visibly (fact 079)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.327723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.327723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 56,
+   "entities": [
+    "JSON output contract",
+    "PreToolUse hook",
+    "WebFetch"
+   ],
+   "causal_relations": [
+    {
+     "relation_type": "caused_by",
+     "target_fact_index": 66
+    }
+   ],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:11:39.927246Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (fact 080)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.327723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.327723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [
+    "SYSTEM_OVERHEAD_TOKENS"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:47.445801Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "훅은 데몬을 기동하지 않고 실패하면 조용히 빠진다 (fact 081)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.337723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.337723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "반영 턴",
+    "is_substantive()"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:11:29.449422Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 082)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 49,
+   "entities": [
+    "Bash",
+    "issue #604",
+    "jcode",
+    "pre_tool hook",
+    "rm -rf ~"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:58.266717Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 083)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 51,
+   "entities": [
+    "ID",
+    "memory",
+    "skill"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:09:18.746172Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 084)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 48,
+   "entities": [
+    "RiskLevel::Catastrophic",
+    "working directory"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:18.662358Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "예산 필터가 건너뛰지 않고 멈추면 뒤가 통째로 잘린다 (fact 085)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-03T16:56:27.317723Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-03T16:56:27.317723Z",
+   "metadata": {
+    "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "retained_at": "2026-08-03T16:49:32Z",
+    "message_count": "237",
+    "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/omc-gate/test_gate.py",
+    "file:/home/user/.claude/omc-gate/gate.py",
+    "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+    "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [
+    "EMERGENCY_TOOL_RESULT_MAX_CHARS",
+    "PAYLOAD_IMAGE_CHAR_BUDGET"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-03T16:58:28.143583Z",
+   "consolidated_at": "2026-08-03T17:10:47.445801Z",
+   "consolidation_failed_at": null
+  }
+ ]
+}

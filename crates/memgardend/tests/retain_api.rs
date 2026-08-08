@@ -1546,10 +1546,7 @@ async fn the_retain_payload_mirrors_the_chunk_counter() {
 #[tokio::test]
 async fn a_real_world_bank_id_survives_the_url_path() {
     let (harness, _rx, _state) = build("http://127.0.0.1:1", |_| {});
-    for bank in [
-        "claude-code::bank-b",
-        "claude-code::bank e",
-    ] {
+    for bank in ["claude-code::bank-b", "claude-code::bank e"] {
         memgarden_store::banks::create(&harness.db, bank, None, None).unwrap();
         let encoded = bank.replace(':', "%3A").replace(' ', "%20");
 

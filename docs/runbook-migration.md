@@ -1,5 +1,12 @@
 # Runbook — migrating the legacy banks
 
+**This whole phase presupposes a legacy system to migrate off.** `mg_migrate`
+reads a [hindsight](https://github.com/vectorize-io/hindsight) daemon on
+`127.0.0.1:9077` through its own supported transfer-archive API. If you are
+installing MemGarden fresh, there is nothing here for you: start the daemon,
+wire the hooks (`docs/runbook-hooks.md`), and let the bank fill. Nothing else in
+MemGarden depends on this phase.
+
 Phase D's three commands, in the order they are run, with the steps that are
 **not optional** marked as such. `mg_migrate` is a `memgardend` binary:
 
@@ -19,6 +26,13 @@ is stopped for the cutover import and for nothing else.
 ```bash
 mg_migrate snapshot --out migration/$(date +%Y-%m-%d)/
 ```
+
+`--drop-bank <id>` is repeatable and defaults to none. Naming a bank says *this
+one holds nothing and is not being migrated* — the run fails if it turns out to
+hold something, and `verify` re-checks that claim from the frozen `stats.json`
+rather than from a drop set you would have to re-type identically. If you have
+no such claim to make, pass none: an unnamed empty bank is snapshotted anyway
+and skipped at import for having an empty archive.
 
 Writes, per bank: the transfer archive verbatim as `<bank-slug>.zip`, the same
 archive unpacked beside it, `banks.json`, `stats.json` (the frozen `/stats`,

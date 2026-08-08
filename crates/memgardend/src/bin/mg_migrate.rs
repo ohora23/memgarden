@@ -27,7 +27,7 @@ use memgardend::migrate::{self, import};
 
 const USAGE: &str = "\
 usage:
-  mg_migrate snapshot --out <dir>
+  mg_migrate snapshot --out <dir> [--drop-bank <bank-id>]...
   mg_migrate import   --snapshot <dir> --db <path> [--replace] [--defer-embeddings]
 
 `snapshot` issues five read-only GETs against the legacy daemon on
@@ -37,6 +37,13 @@ stats.json, and refuses — non-zero, naming the property — if any of the
 integrity identities measured true today has stopped holding.
 
 It never issues anything but GET, and it writes no database row.
+
+  --drop-bank <id>    do not migrate this bank, and assert it is empty.
+                      Repeatable; defaults to none. Naming a bank is a claim
+                      that it holds nothing — the run fails if it does not,
+                      and `verify` re-checks the claim from the frozen stats.
+                      An unnamed empty bank is snapshotted anyway and skipped
+                      at import, so passing none loses nothing.
 
 `import` reads that directory and writes the banks into a MemGarden database:
 documents, facts, tags, entities, observations with their provenance, the
@@ -82,7 +89,10 @@ async fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match argv.as_slice() {
-        ["snapshot", "--out", out] => snapshot(Path::new(out)).await,
+        ["snapshot", rest @ ..] => match SnapshotArgs::parse(rest) {
+            Some(parsed) => snapshot(&parsed.out, &parsed.drop_banks).await,
+            None => return usage(),
+        },
         ["import", rest @ ..] => match ImportArgs::parse(rest) {
             Some(parsed) => run_import(parsed).await,
             None => return usage(),
@@ -124,9 +134,40 @@ fn usage() -> std::process::ExitCode {
     std::process::ExitCode::from(3)
 }
 
-async fn snapshot(out: &Path) -> migrate::Result<()> {
+/// `--drop-bank` is repeatable and defaults to nothing.
+///
+/// Naming a bank is a claim that it holds nothing, re-checked on every run and
+/// again at `verify`. An operator with no such claim to make passes none and
+/// loses nothing: an unnamed empty bank is snapshotted anyway and skipped at
+/// import for having an empty archive.
+struct SnapshotArgs {
+    out: PathBuf,
+    drop_banks: Vec<String>,
+}
+
+impl SnapshotArgs {
+    fn parse(argv: &[&str]) -> Option<SnapshotArgs> {
+        let mut out = None;
+        let mut drop_banks = Vec::new();
+        let mut rest = argv.iter();
+        while let Some(arg) = rest.next() {
+            match *arg {
+                "--out" => out = Some(PathBuf::from(rest.next()?)),
+                "--drop-bank" => drop_banks.push((*rest.next()?).to_string()),
+                _ => return None,
+            }
+        }
+        Some(SnapshotArgs {
+            out: out?,
+            drop_banks,
+        })
+    }
+}
+
+async fn snapshot(out: &Path, drop_banks: &[String]) -> migrate::Result<()> {
     println!("snapshot -> {}", out.display());
-    let lines = migrate::snapshot::run(out).await?;
+    let dropped = drop_banks.iter().map(String::as_str).collect();
+    let lines = migrate::snapshot::run(out, &dropped).await?;
     for line in &lines {
         println!("{line}");
     }

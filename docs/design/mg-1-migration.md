@@ -113,13 +113,23 @@ which property stopped holding is a refusal nobody acts on.
 | `sha256(original_text) != content_hash` | 25/25 equal | the same construction our own retain uses (`retain/mod.rs:146`); it is the document identity D2 dedups on |
 | an observation with empty `sources` | 0 of 1,747 | no provenance means an empty `node_sources` and a `proof_count` deriving to 0 (`consolidate.rs:658-666`) |
 | a non-null `observation_scopes` | null in all 1,747, censused | there is no MemGarden column for it, so a value is a **silent drop** — the one shape `deny_unknown_fields` structurally cannot catch, because the field is known and merely unused |
-| a bank on `DROPPED_BANKS` is no longer empty | 0/0 in all four | "nothing to lose" is only true while it stays true, and two of the four are live directories |
+| a `--drop-bank` bank is no longer empty | 0/0 in all four named on the run these numbers come from | "nothing to lose" is only true while it stays true, and a dropped bank can be a live directory |
 | a bank id that slugs to `""`, `.` or `..` | 8/8 fine | all three are made of characters `slug()` passes through, and `out.join("..")` is the snapshot directory's **parent** — which is where `unzip` would then extract |
 
-`DROPPED_BANKS` is a **named constant, not derived from emptiness**. Deriving
-the drop set from "is it empty right now" makes the emptiness assertion
-circular and unable to fire. A bank that appears later and is not on the list
-gets snapshotted whether or not it has content.
+The drop set is **named by the operator, not derived from emptiness**, and it
+is passed per run as repeated `--drop-bank` rather than compiled in. Deriving
+it from "is it empty right now" makes the emptiness assertion circular and
+unable to fire; naming a bank is a claim that it holds nothing, and the run
+fails if it does not.
+
+It **defaults to empty, and that is not a degraded mode**. A bank that is not
+named gets snapshotted whether or not it has content, and an empty archive is
+then skipped at import — so an operator with no such claim to make loses
+nothing by making none. The numbers below come from a run that named four.
+
+Whatever is named is frozen into `stats.json` as each bank's `dropped` flag,
+and `verify` re-checks the claim from *that* rather than from a drop set
+re-supplied on its own command line hours later, which could disagree.
 
 ### `deny_unknown_fields` on every archive struct
 
@@ -296,7 +306,7 @@ LISTEN 0 2048 127.0.0.1:9077 0.0.0.0:* users:(("python",pid=13097,fd=19))
 
 $ mg_migrate snapshot --out <scratch>/snapshot-r2
 snapshot -> <scratch>/snapshot-r2
-drop claude-code::user: empty, not migrated
+drop claude-code::bank-a: empty, not migrated
 drop claude-code::bank-f: empty, not migrated
 drop claude-code::bank e: empty, not migrated
 drop codex: empty, not migrated
@@ -819,9 +829,9 @@ is what the runbook's step 2 already says.
 ### And a sixth, which is not an error but a fact that moved
 
 **A fifth non-dropped bank appeared.** `claude-code::memgarden` exists in
-legacy as of 2026-08-06 with 0 nodes and 0 documents. It is not on
-`DROPPED_BANKS` — which is a *named* constant precisely so the emptiness
-assertion is not circular — so `snapshot` archives it, and `import` has to
+legacy as of 2026-08-06 with 0 nodes and 0 documents. It was not named to
+`--drop-bank` — the drop set is *named* precisely so the emptiness assertion is
+not circular — so `snapshot` archives it, and `import` has to
 decide what to do with an empty archive.
 
 It skips it and prints `skip claude-code::memgarden: empty archive, not
@@ -900,7 +910,7 @@ is not optional; without it the replaced content is never re-ingested.
 
 ---
 
-## `real-cms/`, the second fixture, and why `real/` could not do this job
+## `real-dup/`, the second fixture, and why `real/` could not do this job
 
 The `node_sources` gate is **2,114 distinct pairs, not 2,200 raw** ones,
 because `link_sources_tx` is `INSERT OR IGNORE` against the
@@ -910,7 +920,7 @@ a fixture with duplicate `(document_id, fact_index)` source pairs in it — and
 `claude-code::bank-b`**. `bank-a`, the bank `real/` is
 sliced from, has zero: 294 raw source references, 294 distinct.
 
-So D2 takes a second redacted slice. `real-cms/README.md` records every edit;
+So D2 takes a second redacted slice. `real-dup/README.md` records every edit;
 the shape it carries is 70 facts, 65 observations, **114 raw source references
 against 68 distinct**, one observation with more than one distinct source, and
 43 of 65 `proof_count` values that disagree with `len(distinct sources)` —
@@ -1054,7 +1064,7 @@ and the temporal self-consistency check needed a scope that took three attempts
 * **Entities can be a Tier-1 equality**, which the plan did not expect: 3,917
   distinct normalized archive names == 3,917 rows, 10,379 mentions == 10,379
   `node_entities` edges. §1.
-* `proof_count` disagrees with legacy in 43 of `real-cms/`'s 65 observations,
+* `proof_count` disagrees with legacy in 43 of `real-dup/`'s 65 observations,
   the same construction that produces 93 of 1,747 across the corpus. Tier 2.
 * The database now holds **both** sides of the `node_sources` arithmetic:
   `metadata.legacy.observation_of` carries the archive's 2,200 raw references,

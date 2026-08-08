@@ -1,0 +1,1665 @@
+[
+ {
+  "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (obs 000)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:52:25.053837Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:52:25.053837Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 0
+   }
+  ]
+ },
+ {
+  "text": "a budget filter that breaks instead of skipping truncates the tail (obs 001)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.089577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.089577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 18
+   }
+  ]
+ },
+ {
+  "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (obs 002)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.099577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.099577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 26
+   }
+  ]
+ },
+ {
+  "text": "the daemon holds one database and the hooks never start it (obs 003)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.079577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.079577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 35
+   }
+  ]
+ },
+ {
+  "text": "an observation carries its provenance as node_sources rows (obs 004)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.079577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.079577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 3
+   }
+  ]
+ },
+ {
+  "text": "temporal adjacency is rebuilt by our rule, not copied (obs 005)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.079577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.079577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 1
+   }
+  ]
+ },
+ {
+  "text": "consolidation records a watermark so a restart does not redo the corpus (obs 006)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.089577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.089577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 11
+   }
+  ]
+ },
+ {
+  "text": "the embedding producer is tagged so a foreign vector drops out visibly (obs 007)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.099577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.099577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 6
+   }
+  ]
+ },
+ {
+  "text": "the retain cursor advances only on a confirmed post (obs 008)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.129577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.129577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 19
+   }
+  ]
+ },
+ {
+  "text": "a budget filter that breaks instead of skipping truncates the tail (obs 009)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T00:00:00Z",
+  "occurred_start": "2026-08-03T00:00:00Z",
+  "occurred_end": "2026-08-03T00:00:00Z",
+  "mentioned_at": "2026-08-03T16:54:33.079577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 16
+   }
+  ]
+ },
+ {
+  "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (obs 010)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T00:00:00.010000Z",
+  "occurred_start": "2026-08-03T00:00:00.010000Z",
+  "occurred_end": "2026-08-03T00:00:00.010000Z",
+  "mentioned_at": "2026-08-03T16:54:33.089577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 21
+   }
+  ]
+ },
+ {
+  "text": "시간 인접성은 복사하지 않고 규칙으로 다시 만든다 (obs 011)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T00:00:00.020000Z",
+  "occurred_start": "2026-08-03T00:00:00.020000Z",
+  "occurred_end": "2026-08-03T00:00:00.020000Z",
+  "mentioned_at": "2026-08-03T16:54:33.099577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 12
+   }
+  ]
+ },
+ {
+  "text": "통합 실행은 워터마크를 남겨 재시작이 코퍼스를 다시 훑지 않게 한다 (obs 012)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.079577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.079577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 7
+   }
+  ]
+ },
+ {
+  "text": "예산 필터가 건너뛰지 않고 멈추면 뒤가 통째로 잘린다 (obs 013)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.079577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.079577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 13
+   }
+  ]
+ },
+ {
+  "text": "임베딩 생산자를 태그해 두면 남의 벡터가 조용히 섞이지 않는다 (obs 014)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.089577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.089577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 10
+   }
+  ]
+ },
+ {
+  "text": "커서는 확정된 전송에만 전진한다 (obs 015)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.079577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.079577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 17
+   }
+  ]
+ },
+ {
+  "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (obs 016)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.089577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.089577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 36
+   }
+  ]
+ },
+ {
+  "text": "훅은 데몬을 기동하지 않고 실패하면 조용히 빠진다 (obs 017)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.099577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.099577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 37
+   }
+  ]
+ },
+ {
+  "text": "관측은 출처를 별도 행으로 들고 다닌다 (obs 018)",
+  "tags": [
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md",
+   "file:/home/user/.claude/omc-gate/report.py",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.109577Z",
+  "occurred_start": "2026-08-03T00:00:00.050000Z",
+  "occurred_end": "2026-08-03T00:00:00.050000Z",
+  "mentioned_at": "2026-08-03T16:54:33.129577Z",
+  "observation_scopes": null,
+  "proof_count": 2,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 2
+   },
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 15
+   }
+  ]
+ },
+ {
+  "text": "시간 인접성은 복사하지 않고 규칙으로 다시 만든다 (obs 019)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.119577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.119577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 23
+   }
+  ]
+ },
+ {
+  "text": "통합 실행은 워터마크를 남겨 재시작이 코퍼스를 다시 훑지 않게 한다 (obs 020)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.129577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.129577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 34
+   }
+  ]
+ },
+ {
+  "text": "예산 필터가 건너뛰지 않고 멈추면 뒤가 통째로 잘린다 (obs 021)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.079577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.079577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 39
+   }
+  ]
+ },
+ {
+  "text": "consolidation records a watermark so a restart does not redo the corpus (obs 022)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.089577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.089577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 30
+   }
+  ]
+ },
+ {
+  "text": "the embedding producer is tagged so a foreign vector drops out visibly (obs 023)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.079577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.079577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 22
+   }
+  ]
+ },
+ {
+  "text": "the retain cursor advances only on a confirmed post (obs 024)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.089577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.089577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 5
+   }
+  ]
+ },
+ {
+  "text": "a budget filter that breaks instead of skipping truncates the tail (obs 025)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.079577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.079577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 4
+   }
+  ]
+ },
+ {
+  "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (obs 026)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.089577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.089577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 25
+   }
+  ]
+ },
+ {
+  "text": "the daemon holds one database and the hooks never start it (obs 027)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.079577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.079577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 14
+   }
+  ]
+ },
+ {
+  "text": "an observation carries its provenance as node_sources rows (obs 028)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.089577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.089577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 33
+   }
+  ]
+ },
+ {
+  "text": "temporal adjacency is rebuilt by our rule, not copied (obs 029)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.099577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.099577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 29
+   }
+  ]
+ },
+ {
+  "text": "consolidation records a watermark so a restart does not redo the corpus (obs 030)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.079577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.079577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 24
+   }
+  ]
+ },
+ {
+  "text": "the embedding producer is tagged so a foreign vector drops out visibly (obs 031)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.089577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.089577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 8
+   }
+  ]
+ },
+ {
+  "text": "the retain cursor advances only on a confirmed post (obs 032)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.099577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.099577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 31
+   }
+  ]
+ },
+ {
+  "text": "훅은 데몬을 기동하지 않고 실패하면 조용히 빠진다 (obs 033)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.109577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.109577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 9
+   }
+  ]
+ },
+ {
+  "text": "관측은 출처를 별도 행으로 들고 다닌다 (obs 034)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:54:33.119577Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:54:33.119577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 38
+   }
+  ]
+ },
+ {
+  "text": "시간 인접성은 복사하지 않고 규칙으로 다시 만든다 (obs 035)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T00:00:00.030000Z",
+  "occurred_start": "2026-08-03T00:00:00.030000Z",
+  "occurred_end": "2026-08-03T00:00:00.030000Z",
+  "mentioned_at": "2026-08-03T16:54:33.109577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 32
+   }
+  ]
+ },
+ {
+  "text": "통합 실행은 워터마크를 남겨 재시작이 코퍼스를 다시 훑지 않게 한다 (obs 036)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T00:00:00.040000Z",
+  "occurred_start": "2026-08-03T00:00:00.040000Z",
+  "occurred_end": "2026-08-03T00:00:00.040000Z",
+  "mentioned_at": "2026-08-03T16:54:33.119577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 28
+   }
+  ]
+ },
+ {
+  "text": "예산 필터가 건너뛰지 않고 멈추면 뒤가 통째로 잘린다 (obs 037)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T00:00:00.070000Z",
+  "occurred_start": "2026-08-03T00:00:00.070000Z",
+  "occurred_end": "2026-08-03T00:00:00.070000Z",
+  "mentioned_at": "2026-08-03T16:54:33.149577Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 20
+   }
+  ]
+ },
+ {
+  "text": "임베딩 생산자를 태그해 두면 남의 벡터가 조용히 섞이지 않는다 (obs 038)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.337723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.337723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 75
+   }
+  ]
+ },
+ {
+  "text": "커서는 확정된 전송에만 전진한다 (obs 039)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.347723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.347723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 43
+   }
+  ]
+ },
+ {
+  "text": "the retain cursor advances only on a confirmed post (obs 040)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.317723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.317723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 83
+   }
+  ]
+ },
+ {
+  "text": "a budget filter that breaks instead of skipping truncates the tail (obs 041)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.337723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.337723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 76
+   }
+  ]
+ },
+ {
+  "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (obs 042)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.327723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.327723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 52
+   }
+  ]
+ },
+ {
+  "text": "the daemon holds one database and the hooks never start it (obs 043)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.317723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.317723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 72
+   }
+  ]
+ },
+ {
+  "text": "an observation carries its provenance as node_sources rows (obs 044)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.327723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.327723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 53
+   }
+  ]
+ },
+ {
+  "text": "temporal adjacency is rebuilt by our rule, not copied (obs 045)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.337723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.337723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 48
+   }
+  ]
+ },
+ {
+  "text": "consolidation records a watermark so a restart does not redo the corpus (obs 046)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.347723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.347723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 60
+   }
+  ]
+ },
+ {
+  "text": "the embedding producer is tagged so a foreign vector drops out visibly (obs 047)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.317723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.317723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 54
+   }
+  ]
+ },
+ {
+  "text": "the retain cursor advances only on a confirmed post (obs 048)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.317723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.317723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 71
+   }
+  ]
+ },
+ {
+  "text": "훅은 데몬을 기동하지 않고 실패하면 조용히 빠진다 (obs 049)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.327723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.327723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 62
+   }
+  ]
+ },
+ {
+  "text": "관측은 출처를 별도 행으로 들고 다닌다 (obs 050)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.317723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.317723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 82
+   }
+  ]
+ },
+ {
+  "text": "시간 인접성은 복사하지 않고 규칙으로 다시 만든다 (obs 051)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.337723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.337723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 77
+   }
+  ]
+ },
+ {
+  "text": "an observation carries its provenance as node_sources rows (obs 052)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.347723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.347723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 63
+   }
+  ]
+ },
+ {
+  "text": "temporal adjacency is rebuilt by our rule, not copied (obs 053)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.317723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.317723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 70
+   }
+  ]
+ },
+ {
+  "text": "consolidation records a watermark so a restart does not redo the corpus (obs 054)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.327723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.327723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 74
+   }
+  ]
+ },
+ {
+  "text": "the embedding producer is tagged so a foreign vector drops out visibly (obs 055)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.337723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.337723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 78
+   }
+  ]
+ },
+ {
+  "text": "the retain cursor advances only on a confirmed post (obs 056)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.347723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.347723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 69
+   }
+  ]
+ },
+ {
+  "text": "a budget filter that breaks instead of skipping truncates the tail (obs 057)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.357723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.357723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 59
+   }
+  ]
+ },
+ {
+  "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (obs 058)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.327723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.327723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 58
+   }
+  ]
+ },
+ {
+  "text": "the daemon holds one database and the hooks never start it (obs 059)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.337723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.337723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 49
+   }
+  ]
+ },
+ {
+  "text": "an observation carries its provenance as node_sources rows (obs 060)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.327723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.327723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 73
+   }
+  ]
+ },
+ {
+  "text": "예산 필터가 건너뛰지 않고 멈추면 뒤가 통째로 잘린다 (obs 061)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.317723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.317723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 85
+   }
+  ]
+ },
+ {
+  "text": "임베딩 생산자를 태그해 두면 남의 벡터가 조용히 섞이지 않는다 (obs 062)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.327723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.327723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 80
+   }
+  ]
+ },
+ {
+  "text": "커서는 확정된 전송에만 전진한다 (obs 063)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.337723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.337723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 56
+   }
+  ]
+ },
+ {
+  "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (obs 064)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.347723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.347723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 51
+   }
+  ]
+ },
+ {
+  "text": "훅은 데몬을 기동하지 않고 실패하면 조용히 빠진다 (obs 065)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.357723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.357723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 61
+   }
+  ]
+ },
+ {
+  "text": "관측은 출처를 별도 행으로 들고 다닌다 (obs 066)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.367723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.367723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 47
+   }
+  ]
+ },
+ {
+  "text": "시간 인접성은 복사하지 않고 규칙으로 다시 만든다 (obs 067)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.317723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.317723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 50
+   }
+  ]
+ },
+ {
+  "text": "통합 실행은 워터마크를 남겨 재시작이 코퍼스를 다시 훑지 않게 한다 (obs 068)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.327723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.327723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 57
+   }
+  ]
+ },
+ {
+  "text": "예산 필터가 건너뛰지 않고 멈추면 뒤가 통째로 잘린다 (obs 069)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.317723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.317723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 65
+   }
+  ]
+ },
+ {
+  "text": "임베딩 생산자를 태그해 두면 남의 벡터가 조용히 섞이지 않는다 (obs 070)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.327723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.327723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 55
+   }
+  ]
+ },
+ {
+  "text": "커서는 확정된 전송에만 전진한다 (obs 071)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.337723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.337723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 81
+   }
+  ]
+ },
+ {
+  "text": "회수는 키워드 팔과 벡터 팔을 상호 순위 융합으로 합친다 (obs 072)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.347723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.347723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 42
+   }
+  ]
+ },
+ {
+  "text": "훅은 데몬을 기동하지 않고 실패하면 조용히 빠진다 (obs 073)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.357723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.357723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 46
+   }
+  ]
+ },
+ {
+  "text": "관측은 출처를 별도 행으로 들고 다닌다 (obs 074)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.367723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.367723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 67
+   }
+  ]
+ },
+ {
+  "text": "시간 인접성은 복사하지 않고 규칙으로 다시 만든다 (obs 075)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.377723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.377723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 45
+   }
+  ]
+ },
+ {
+  "text": "통합 실행은 워터마크를 남겨 재시작이 코퍼스를 다시 훑지 않게 한다 (obs 076)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.387723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.387723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 44
+   }
+  ]
+ },
+ {
+  "text": "temporal adjacency is rebuilt by our rule, not copied (obs 077)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.317723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.317723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 66
+   }
+  ]
+ },
+ {
+  "text": "consolidation records a watermark so a restart does not redo the corpus (obs 078)",
+  "tags": [
+   "file:/home/user/.claude/omc-gate/test_gate.py",
+   "file:/home/user/.claude/omc-gate/gate.py",
+   "file:/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/omc-gate-trial.md",
+   "e7eda98c-4f08-4b9b-a760-fb2fba441d2b"
+  ],
+  "event_date": "2026-08-03T16:56:27.327723Z",
+  "occurred_start": null,
+  "occurred_end": null,
+  "mentioned_at": "2026-08-03T16:56:27.327723Z",
+  "observation_scopes": null,
+  "proof_count": 1,
+  "sources": [
+   {
+    "document_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
+    "fact_index": 79
+   }
+  ]
+ }
+]

@@ -518,7 +518,7 @@ Daemon and bank as in Gate C above.
 $ ls -l <data>/daemon.token                      # written by memgardend at startup
 -rw------- 64 bytes
 $ curl -sD - -o /dev/null http://127.0.0.1:9111/healthz | grep -i token
-x-memgarden-token: REDACTED-DAEMON-TOKEN
+x-memgarden-token: <64 hex chars, redacted — regenerated at every startup>
 
 $ memgarden hook recall < manual.json            # mode = "full", daemon up
 exit 0, stdout 3118 bytes, exactly 1 line, valid JSON, stderr empty

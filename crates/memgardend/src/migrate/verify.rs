@@ -482,12 +482,17 @@ pub fn run(opts: &Options<'_>) -> Result<Report> {
         }
     }
     // The dropped banks, re-checked from the frozen zeroes. "Nothing to lose"
-    // is only true while it stays true, and two of the four are live
-    // directories.
-    for bank in snapshot::DROPPED_BANKS {
-        if let Some(stats) = oracle.get(bank)
-            && (stats.stats.total_nodes != 0 || stats.stats.total_documents != 0)
-        {
+    // is only true while it stays true, and a dropped bank can be a live
+    // directory.
+    //
+    // Read from the snapshot's own `dropped` flag rather than from the list the
+    // operator passed to `snapshot`. The two are the same decision, but only
+    // one of them is still in the room: `verify` runs hours later, from a
+    // different command line, and a drop set re-supplied by hand could disagree
+    // with what was actually frozen — silently skipping the check for a bank
+    // that had been dropped, which is precisely the bank it exists to check.
+    for (bank, stats) in oracle.iter().filter(|(_, s)| s.dropped) {
+        if stats.stats.total_nodes != 0 || stats.stats.total_documents != 0 {
             integrity.push(format!(
                 "{bank} was dropped as empty but the snapshot records {} nodes / {} documents",
                 stats.stats.total_nodes, stats.stats.total_documents
@@ -1689,7 +1694,7 @@ fn node_by_legacy_key(db: &Db, bank: &str, document: &str, index: i64) -> Result
 /// verbatim, which `import` writes for exactly this purpose. It is **not
 /// unique**, and not measuring that is how the second version of this function
 /// shipped: two observations can be two LLM paraphrases of the same fact.
-/// Measured — 2 shared keys in `real-cms/`, **10 observations across the live
+/// Measured — 2 shared keys in `real-dup/`, **10 observations across the live
 /// 1,747** — and a bare `query_row` resolved both archive rows to whichever
 /// node SQLite reached first, producing two false `text` differences and
 /// `AC-3 is NOT met` on a correct database, while the partner node was never
@@ -1845,7 +1850,7 @@ mod tests {
     use crate::migrate::test_support::Snapshot;
     use memgarden_core::EMBEDDING_DIM;
 
-    const JCODE: &str = "claude-code::bank-a";
+    const BANK_A: &str = "claude-code::bank-a";
 
     /// The same deterministic stand-in `import`'s tests use — one basis vector
     /// per text. `verify` reads no vector, only the `embedding_model` stamp.
@@ -1909,7 +1914,7 @@ mod tests {
         async fn with_legacy_temporal(count: i64) -> Migrated {
             let snapshot = Snapshot::real();
             snapshot.edit("stats.json", |stats| {
-                stats[JCODE]["stats"]["links_by_link_type"]["temporal"] = json(count)
+                stats[BANK_A]["stats"]["links_by_link_type"]["temporal"] = json(count)
             });
             let m = Migrated::of(snapshot).await;
             m.as_if_drained();
@@ -2143,7 +2148,7 @@ mod tests {
             "INSERT INTO memory_nodes
                (uuid, bank_id, fact_type, text, event_date, created_at, updated_at,
                 embedding, embedding_model)
-             VALUES ('after-the-import', '{JCODE}', 'world', 'a fact the daemon retained',
+             VALUES ('after-the-import', '{BANK_A}', 'world', 'a fact the daemon retained',
                      (SELECT MIN(event_date) FROM memory_nodes WHERE event_date IS NOT NULL),
                      1, 1, zeroblob(1536), '{}');
              INSERT INTO links (from_node_id, to_node_id, link_type, entity_id, weight, created_at)
@@ -2214,11 +2219,11 @@ mod tests {
         // migrated set.
         m.write(&format!(
             "INSERT INTO documents (bank_id, doc_key, metadata, created_at, updated_at)
-               VALUES ('{JCODE}', 'a-session-after-the-cutover', '{{}}', 1, 1);
+               VALUES ('{BANK_A}', 'a-session-after-the-cutover', '{{}}', 1, 1);
              INSERT INTO memory_nodes
                (uuid, bank_id, document_id, fact_type, text, event_date, created_at, updated_at,
                 embedding, embedding_model)
-               VALUES ('retained-after-import', '{JCODE}',
+               VALUES ('retained-after-import', '{BANK_A}',
                        (SELECT MAX(id) FROM documents), 'world', 'a fact the daemon retained',
                        (SELECT MIN(event_date) FROM memory_nodes WHERE event_date IS NOT NULL),
                        1, 1, zeroblob(1536), '{}');
@@ -2532,7 +2537,7 @@ mod tests {
         // 165 jcode nodes and 135 cms nodes out of 300, so 50 splits ~28/~22 —
         // proportional, not uniform, so neither bank can be missed.
         assert_eq!(a.per_bank.len(), 2);
-        let jcode = a.per_bank[JCODE];
+        let jcode = a.per_bank[BANK_A];
         let cms = a.per_bank["claude-code::bank-b"];
         assert!(
             jcode > cms,
@@ -2624,7 +2629,7 @@ mod tests {
     /// **The full sample over the bank that has duplicate provenance keys.**
     ///
     /// The check the second version of `observation_by_provenance` never got:
-    /// `real-cms/` holds two pairs of distinct observations with a
+    /// `real-dup/` holds two pairs of distinct observations with a
     /// byte-identical `sources` array (two LLM paraphrases of one fact), and
     /// the live corpus holds ten. A bare `query_row` resolved both archive
     /// rows to whichever node SQLite reached first — two false `text`

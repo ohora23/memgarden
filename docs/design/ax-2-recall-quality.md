@@ -23,12 +23,16 @@ Origin: plan `.omc/plans/phase-b-impl.md`, "AX-2 상세 — 회수 품질 하네
 | Path | What |
 |---|---|
 | `gold/export_legacy_corpus.py` | Read-only snapshot of the legacy bank (two GETs, no mutation). |
-| `gold/corpus.jsonl` | The snapshot itself — 2718 facts, committed. |
-| `gold/corpus.sha256` | `sha256sum -c`-compatible checksum. |
-| `gold/queries.jsonl` | 20 queries, 331 graded judgments, one rationale per label. |
-| `gold/results.jsonl` | Append-only results ledger. **Line 8 is the current baseline** (q17's labels ratified by `fix/q17-labels`); lines 1 and 5 were, and are kept. |
-| `gold/results.pool.json` | The top-20 the last run produced, with text — the labelling pool and its audit trail. Rewritten each run, unlike the ledger. |
+| `gold/corpus.jsonl` | The snapshot itself — 2718 facts. **Not committed**, gitignored: see `gold/README.md`. |
+| `gold/corpus.sha256` | `sha256sum -c`-compatible checksum. Not committed, for the same reason. |
+| `gold/queries.jsonl` | 20 queries, 331 graded judgments, one rationale per label. **Not committed** — the rationales quote the facts they grade. `gold/queries.example.jsonl` carries the schema. |
+| `gold/results.jsonl` | Append-only results ledger — metrics, query ids and result uuids, no text, so it is committed. **Line 8 is the current baseline** (q17's labels ratified by `fix/q17-labels`); lines 1 and 5 were, and are kept. |
+| `gold/results.pool.json` | The top-20 the last run produced, with text — the labelling pool and its audit trail. Rewritten each run, unlike the ledger. Not committed. |
 | `crates/memgardend/src/bin/recall_bench.rs` | `import` + `bench`. |
+
+Everything below describes the corpus this project measured against. It is the
+reasoning that still applies to a corpus you export yourself; the numbers are
+ours and are not reproducible from this repository alone.
 
 ## The corpus — the most important decision here
 
@@ -52,6 +56,16 @@ that happened to be built first.
 git's zlib packs down hard because the tag lists repeat. The alternative —
 checksum plus exporter — fails the moment the legacy daemon is retired, which is
 the entire point of this rebuild. The exporter is committed too, for provenance.
+
+> **Reversed, and at a real cost.** Preparing this repository to be readable by
+> others took the corpus and the labels back out (`gold/README.md`): they are one
+> person's memories, and the label rationales quote the facts they grade. The
+> objection above still stands and was not answered — once the legacy daemon is
+> retired, `results.jsonl`'s numbers can no longer be recomputed by anyone,
+> including us. What is kept is the ledger, which is enough to say what changed
+> between two of our own runs and not enough to re-derive either. The exporter
+> and the label schema are committed so a reader can build the same *kind* of
+> instrument over their own bank; they cannot rebuild ours.
 
 ### Snapshot identity
 
