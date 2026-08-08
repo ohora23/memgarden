@@ -1,0 +1,239 @@
+{
+  "mode": "verify",
+  "snapshot": {
+    "dir": "/home/user/.local/share/memgarden/migration/2026-08-08",
+    "sha256": "dd6f91b7956dab58ba5ed2bfcd7e204015d33ddc15a33890973a898351fe6be3",
+    "banks": 5,
+    "exported_at": "2026-08-08T03:25:48.135006Z"
+  },
+  "integrity": [],
+  "tier1": [
+    {
+      "name": "banks",
+      "expected": 5,
+      "actual": 5,
+      "source": "the snapshot",
+      "ok": true
+    },
+    {
+      "name": "documents",
+      "expected": 28,
+      "actual": 28,
+      "source": "legacy /stats",
+      "ok": true
+    },
+    {
+      "name": "nodes",
+      "expected": 5311,
+      "actual": 5311,
+      "source": "legacy /stats",
+      "ok": true
+    },
+    {
+      "name": "nodes.world",
+      "expected": 3447,
+      "actual": 3447,
+      "source": "legacy /stats",
+      "ok": true
+    },
+    {
+      "name": "nodes.experience",
+      "expected": 107,
+      "actual": 107,
+      "source": "legacy /stats",
+      "ok": true
+    },
+    {
+      "name": "nodes.observation",
+      "expected": 1757,
+      "actual": 1757,
+      "source": "legacy /stats",
+      "ok": true
+    },
+    {
+      "name": "caused_by",
+      "expected": 201,
+      "actual": 201,
+      "source": "legacy /stats",
+      "ok": true
+    },
+    {
+      "name": "node_sources",
+      "expected": 2125,
+      "actual": 2125,
+      "source": "the archive, distinct pairs",
+      "ok": true,
+      "detail": "2211 raw references collapse to 2125 distinct — link_sources_tx is INSERT OR IGNORE against the (observation_id, source_id) PK (consolidate.rs:638-650)"
+    },
+    {
+      "name": "node_tags",
+      "expected": 64817,
+      "actual": 64817,
+      "source": "the archive",
+      "ok": true
+    },
+    {
+      "name": "entities",
+      "expected": 3945,
+      "actual": 3945,
+      "source": "the archive, normalized",
+      "ok": true,
+      "detail": "expected folded by this module's own trim+lowercase, not by entities::normalize — a verifier that calls the code it verifies cannot fire. An `entities` row carries no $.legacy key of its own, so it is scoped through the mentions that reach it"
+    },
+    {
+      "name": "node_entities",
+      "expected": 10415,
+      "actual": 10415,
+      "source": "the archive, normalized",
+      "ok": true
+    },
+    {
+      "name": "documents with the right fact count",
+      "expected": 28,
+      "actual": 28,
+      "source": "the archive, per document",
+      "ok": true,
+      "detail": "the aggregate node count cannot see a fact filed under the wrong document; this can"
+    },
+    {
+      "name": "import marker",
+      "expected": 5,
+      "actual": 5,
+      "source": "our own rule",
+      "ok": true,
+      "detail": "state = done AND snapshot = this snapshot's hash — a bank imported from a different snapshot is caught rather than counted"
+    },
+    {
+      "name": "consolidation watermark",
+      "expected": 5,
+      "actual": 5,
+      "source": "our own rule",
+      "ok": true,
+      "detail": "one done run per bank whose watermark >= MAX(id) over the MIGRATED nodes — not `= MAX(id)` over the bank, which is true only in the instant between import step 9 and the next row anyone writes. Without such a row the daemon re-consolidates the whole migrated corpus within one poll of restart (consolidate.rs:314-330)"
+    },
+    {
+      "name": "embedding coverage",
+      "expected": 0,
+      "actual": 0,
+      "source": "our own rule",
+      "ok": true,
+      "detail": "a NULL or foreign producer drops a node out of the dense arm silently (search.rs:317, 0005_embedding_model.sql:9-12). Non-zero after --defer-embeddings until the daemon has drained the backlog"
+    },
+    {
+      "name": "orphan facts",
+      "expected": 0,
+      "actual": 0,
+      "source": "our own rule",
+      "ok": true
+    },
+    {
+      "name": "semantic edges from observations",
+      "expected": 0,
+      "actual": 0,
+      "source": "our own rule",
+      "ok": true,
+      "detail": "parity, not a divergence: legacy stores none either — /graph decomposed by endpoint fact_type gives 4,603 == /stats 4,603 for bank-a"
+    },
+    {
+      "name": "temporal self-consistency",
+      "expected": 0,
+      "actual": 0,
+      "source": "our own rule, re-run",
+      "ok": true,
+      "detail": "105199 stored against 105199 the rule produces: 0 stored edges it would not emit, 0 it emits that are not stored, over 5 of 5 banks. links.rs:62-92 replayed over the migrated nodes' own (fact_type, event_date) — this replaces the equality against legacy that can never hold"
+    }
+  ],
+  "tier2": [
+    {
+      "name": "temporal, fact to fact",
+      "legacy": 43777,
+      "ours": 70323,
+      "ratio": 1.6063914841126619,
+      "band": [
+        1.45,
+        1.75
+      ],
+      "ok": true,
+      "note": "legacy's /stats temporal count is fact-to-fact: it stores no derived edge on an observation (relink filters fact_type IN ('experience','world'), pg/graph.py:606). Its neighbour query applies no 24h predicate where links.rs:69 does, so the sets differ by rule and not by ordering",
+      "out_degree": {
+        "nodes": 3552,
+        "mean": 19.79814189189189,
+        "p50": 20,
+        "p90": 20,
+        "max": 20
+      }
+    },
+    {
+      "name": "temporal, observation to observation",
+      "legacy": null,
+      "ours": 34876,
+      "ratio": null,
+      "band": null,
+      "ok": true,
+      "note": "a new edge class: legacy has no counterpart, so there is no ratio to take. Folding these into the fact-to-fact ratio would pass a run in which the fact-edge rule silently broke",
+      "out_degree": {
+        "nodes": 1755,
+        "mean": 19.87236467236467,
+        "p50": 20,
+        "p90": 20,
+        "max": 20
+      }
+    },
+    {
+      "name": "semantic",
+      "legacy": 65149,
+      "ours": 6918,
+      "ratio": 0.10618735513975656,
+      "band": null,
+      "ok": true,
+      "note": "NO BAND, deliberately. Every semantic edge here connects two nodes embedded in the same batch of 8: embed_task.rs:178-179 builds node_types from the just-embedded batch and links.rs:143 drops every neighbour outside it. Over the same vectors a whole-corpus pass emits ~10x more. Banding this would be banding a CE-7 defect",
+      "out_degree": {
+        "nodes": 2720,
+        "mean": 2.5433823529411765,
+        "p50": 2,
+        "p90": 5,
+        "max": 7
+      }
+    },
+    {
+      "name": "proof_count disagreements",
+      "legacy": 1757,
+      "ours": 93,
+      "ratio": null,
+      "band": null,
+      "ok": true,
+      "note": "reported, never gated: legacy's stored value falls back to len(source_ids) (export.py:457) and ours is derived from what survived the INSERT OR IGNORE. They are different schemas, not a resolution bug",
+      "out_degree": {
+        "nodes": 0,
+        "mean": 0.0,
+        "p50": 0,
+        "p90": 0,
+        "max": 0
+      }
+    }
+  ],
+  "tier3": {
+    "entity links": {
+      "citation": "engine/memories/pg/counts.py:47-49 — derived at /stats time, not stored; links.rs:6-8 is our matching decision",
+      "legacy_reported": 4132,
+      "legacy_stored": 0,
+      "ours": 0
+    }
+  },
+  "sample": {
+    "n": 50,
+    "seed": 1,
+    "drawn": 50,
+    "available": 5311,
+    "per_bank": {
+      "claude-code::bank-b": 30,
+      "claude-code::bank-c": 9,
+      "claude-code::bank-a": 5,
+      "claude-code::memgarden": 1,
+      "claude-code::bank-d": 5
+    },
+    "mismatches": []
+  },
+  "verdict": "PASS",
+  "sentence": "No fact, observation, document or authored causal relation was lost. Derived adjacency (semantic, temporal) was rebuilt from the migrated facts by MemGarden's own rules rather than copied: a semantic edge is a function of the vector space and ours is not legacy's, and legacy's temporal rule applies no 24-hour window to its neighbour query (ops_postgresql.py:562-593) where ours does. The rebuilt temporal set reproduces our own rule exactly (105199 edges, checked against a reference implementation) and its fact-to-fact half stands at 1.61x legacy's count; semantic stands at 0.11x, and that ratio is a CE-7 defect rather than a migration property — every semantic edge here is confined to one embedding batch. Observation-to-observation temporal edges (34876) are a class legacy does not store. Entity links exist in neither system's storage."
+}
