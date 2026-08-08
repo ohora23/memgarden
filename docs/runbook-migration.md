@@ -20,6 +20,13 @@ is stopped for the cutover import and for nothing else.
 mg_migrate snapshot --out migration/$(date +%Y-%m-%d)/
 ```
 
+`--drop-bank <id>` is repeatable and defaults to none. Naming a bank says *this
+one holds nothing and is not being migrated* — the run fails if it turns out to
+hold something, and `verify` re-checks that claim from the frozen `stats.json`
+rather than from a drop set you would have to re-type identically. If you have
+no such claim to make, pass none: an unnamed empty bank is snapshotted anyway
+and skipped at import for having an empty archive.
+
 Writes, per bank: the transfer archive verbatim as `<bank-slug>.zip`, the same
 archive unpacked beside it, `banks.json`, `stats.json` (the frozen `/stats`,
 `/documents` and invalidated-fact census) and `SHA256SUMS`. It unpacks the ZIPs

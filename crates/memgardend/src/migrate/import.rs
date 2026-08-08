@@ -135,7 +135,7 @@ pub struct Options<'a> {
 pub struct BankReport {
     pub bank_id: String,
     /// A bank that reached the snapshot with no content. Not migrated, for the
-    /// same reason the four on `DROPPED_BANKS` are not: creating a bank row
+    /// same reason a `--drop-bank` bank is not: creating a bank row
     /// whose only content is a mission string puts a number in the AC-3 report
     /// that overstates what was verified, and `hook session-start`'s `POST
     /// /v1/banks` (`session_start.rs:159-166`) recreates it on first use.
@@ -289,8 +289,9 @@ pub async fn run(opts: &Options<'_>) -> Result<Vec<BankReport>> {
 }
 
 /// A bank whose archive carries nothing. Snapshotted (D1 archives any bank not
-/// named on `DROPPED_BANKS`, on purpose — deriving the drop set from "is it
+/// passed to `--drop-bank`, on purpose — deriving the drop set from "is it
 /// empty right now" makes the emptiness assertion circular), but not migrated.
+/// An operator who names no bank at all therefore still loses nothing here.
 ///
 /// This is not hypothetical: `claude-code::memgarden` appeared in legacy
 /// between D1's snapshot and D2's, with 0 nodes and 0 documents.
@@ -2614,7 +2615,7 @@ mod tests {
     }
 
     /// A bank that reached the snapshot empty is not migrated, for the same
-    /// reason the four on `DROPPED_BANKS` are not. `claude-code::memgarden`
+    /// reason a `--drop-bank` bank is not. `claude-code::memgarden`
     /// appeared in legacy between D1's snapshot and D2's with exactly this
     /// shape.
     #[tokio::test]

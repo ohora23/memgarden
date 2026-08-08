@@ -482,12 +482,17 @@ pub fn run(opts: &Options<'_>) -> Result<Report> {
         }
     }
     // The dropped banks, re-checked from the frozen zeroes. "Nothing to lose"
-    // is only true while it stays true, and two of the four are live
-    // directories.
-    for bank in snapshot::DROPPED_BANKS {
-        if let Some(stats) = oracle.get(bank)
-            && (stats.stats.total_nodes != 0 || stats.stats.total_documents != 0)
-        {
+    // is only true while it stays true, and a dropped bank can be a live
+    // directory.
+    //
+    // Read from the snapshot's own `dropped` flag rather than from the list the
+    // operator passed to `snapshot`. The two are the same decision, but only
+    // one of them is still in the room: `verify` runs hours later, from a
+    // different command line, and a drop set re-supplied by hand could disagree
+    // with what was actually frozen — silently skipping the check for a bank
+    // that had been dropped, which is precisely the bank it exists to check.
+    for (bank, stats) in oracle.iter().filter(|(_, s)| s.dropped) {
+        if stats.stats.total_nodes != 0 || stats.stats.total_documents != 0 {
             integrity.push(format!(
                 "{bank} was dropped as empty but the snapshot records {} nodes / {} documents",
                 stats.stats.total_nodes, stats.stats.total_documents

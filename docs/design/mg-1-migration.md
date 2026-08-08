@@ -113,13 +113,23 @@ which property stopped holding is a refusal nobody acts on.
 | `sha256(original_text) != content_hash` | 25/25 equal | the same construction our own retain uses (`retain/mod.rs:146`); it is the document identity D2 dedups on |
 | an observation with empty `sources` | 0 of 1,747 | no provenance means an empty `node_sources` and a `proof_count` deriving to 0 (`consolidate.rs:658-666`) |
 | a non-null `observation_scopes` | null in all 1,747, censused | there is no MemGarden column for it, so a value is a **silent drop** — the one shape `deny_unknown_fields` structurally cannot catch, because the field is known and merely unused |
-| a bank on `DROPPED_BANKS` is no longer empty | 0/0 in all four | "nothing to lose" is only true while it stays true, and two of the four are live directories |
+| a `--drop-bank` bank is no longer empty | 0/0 in all four named on the run these numbers come from | "nothing to lose" is only true while it stays true, and a dropped bank can be a live directory |
 | a bank id that slugs to `""`, `.` or `..` | 8/8 fine | all three are made of characters `slug()` passes through, and `out.join("..")` is the snapshot directory's **parent** — which is where `unzip` would then extract |
 
-`DROPPED_BANKS` is a **named constant, not derived from emptiness**. Deriving
-the drop set from "is it empty right now" makes the emptiness assertion
-circular and unable to fire. A bank that appears later and is not on the list
-gets snapshotted whether or not it has content.
+The drop set is **named by the operator, not derived from emptiness**, and it
+is passed per run as repeated `--drop-bank` rather than compiled in. Deriving
+it from "is it empty right now" makes the emptiness assertion circular and
+unable to fire; naming a bank is a claim that it holds nothing, and the run
+fails if it does not.
+
+It **defaults to empty, and that is not a degraded mode**. A bank that is not
+named gets snapshotted whether or not it has content, and an empty archive is
+then skipped at import — so an operator with no such claim to make loses
+nothing by making none. The numbers below come from a run that named four.
+
+Whatever is named is frozen into `stats.json` as each bank's `dropped` flag,
+and `verify` re-checks the claim from *that* rather than from a drop set
+re-supplied on its own command line hours later, which could disagree.
 
 ### `deny_unknown_fields` on every archive struct
 
@@ -819,9 +829,9 @@ is what the runbook's step 2 already says.
 ### And a sixth, which is not an error but a fact that moved
 
 **A fifth non-dropped bank appeared.** `claude-code::memgarden` exists in
-legacy as of 2026-08-06 with 0 nodes and 0 documents. It is not on
-`DROPPED_BANKS` — which is a *named* constant precisely so the emptiness
-assertion is not circular — so `snapshot` archives it, and `import` has to
+legacy as of 2026-08-06 with 0 nodes and 0 documents. It was not named to
+`--drop-bank` — the drop set is *named* precisely so the emptiness assertion is
+not circular — so `snapshot` archives it, and `import` has to
 decide what to do with an empty archive.
 
 It skips it and prints `skip claude-code::memgarden: empty archive, not

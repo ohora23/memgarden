@@ -42,24 +42,29 @@ use super::{MigrateError, Result};
 /// on 127.0.0.1 to negotiate a certificate for.
 pub const LEGACY_BASE: &str = "http://127.0.0.1:9077";
 
-/// The four zero-content banks §What AC-3 must mean now decides not to
-/// migrate: nothing to lose (0 nodes, 0 documents, 0 links), and
-/// `hook session-start`'s `POST /v1/banks`
+/// Banks the operator has decided not to migrate: nothing to lose (0 nodes, 0
+/// documents, 0 links), and `hook session-start`'s `POST /v1/banks`
 /// (`crates/memgarden-cli/src/cmd/session_start.rs:159-166`) recreates any of
 /// them on first use.
 ///
-/// **Named, not derived from emptiness.** Deriving the drop set from "is it
-/// empty right now" would make the emptiness assertion circular and unable to
-/// fire. This is the decision; the assertion re-checks it every run, because
-/// two of the four are live directories and "nothing to lose" is only true
-/// while it stays true. A bank that appears later and is not on this list gets
-/// snapshotted whether or not it has content.
-pub const DROPPED_BANKS: [&str; 4] = [
-    "claude-code::user",
-    "claude-code::bank-f",
-    "claude-code::bank e",
-    "codex",
-];
+/// **Named, not derived from emptiness**, and passed per run rather than
+/// compiled in. Deriving the drop set from "is it empty right now" would make
+/// the emptiness assertion circular and unable to fire: naming a bank is a
+/// claim that it holds nothing, and [`assert_dropped_bank_empty`] re-checks
+/// that claim on every run, because a dropped bank can be a live directory and
+/// "nothing to lose" is only true while it stays true.
+///
+/// **Empty is the right default, and it is not a degraded mode.** A bank left
+/// off this list is snapshotted whether or not it has content, and an empty
+/// archive is then skipped at import — so an operator who names nothing loses
+/// nothing. What they give up is only the assertion, which they had no basis
+/// to make about someone else's banks anyway.
+///
+/// Whatever is passed is frozen into the snapshot as [`Stats::dropped`], which
+/// is what `verify` reads. The decision therefore travels with the snapshot
+/// rather than having to be re-supplied, and re-supplied identically, hours
+/// later at verification time.
+pub type DroppedBanks<'a> = BTreeSet<&'a str>;
 
 /// `/documents` pages at `limit=100` by default and the largest bank has 22.
 /// Asked for explicitly so pagination is not something a future corpus
@@ -185,7 +190,7 @@ pub struct Stats {
     /// pass. Measured live, `bank-a`: 536 / 536 / 0.
     #[serde(default)]
     pub memories_invalidated: i64,
-    /// True for a bank on [`DROPPED_BANKS`]: its `/stats` is frozen here (the
+    /// True for a bank named in [`DroppedBanks`]: its `/stats` is frozen here (the
     /// zeroes that justified dropping it are evidence, and they die with
     /// :9077 otherwise) but it has no archive, so the archive↔oracle
     /// reconciliation in [`run`] must not expect one.
@@ -258,8 +263,8 @@ fn endpoint(base: &str, segments: &[&str], query: &[(&str, &str)]) -> Url {
 /// worth more than the tidiness of refusing before writing — the whole run is
 /// **1.62 s measured** (21 GETs, 1.94 MB zipped / 23 MB unpacked, four `unzip`
 /// invocations and a 23 MB sha256 pass), and rerunning it costs nothing.
-pub async fn run(out: &Path) -> Result<Vec<String>> {
-    run_from(LEGACY_BASE, out).await
+pub async fn run(out: &Path, dropped: &DroppedBanks<'_>) -> Result<Vec<String>> {
+    run_from(LEGACY_BASE, out, dropped).await
 }
 
 /// [`run`] against an arbitrary base URL.
@@ -271,7 +276,7 @@ pub async fn run(out: &Path) -> Result<Vec<String>> {
 /// was covered only by a manual run against the live daemon. `LEGACY_BASE`
 /// stays the production constant and no caller outside a test passes anything
 /// else.
-pub async fn run_from(base: &str, out: &Path) -> Result<Vec<String>> {
+pub async fn run_from(base: &str, out: &Path, dropped: &DroppedBanks<'_>) -> Result<Vec<String>> {
     std::fs::create_dir_all(out).map_err(|e| MigrateError::io(out, e))?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
@@ -281,17 +286,16 @@ pub async fn run_from(base: &str, out: &Path) -> Result<Vec<String>> {
             source,
         })?;
 
-    // 1. The bank list, written verbatim. `codex`'s hand-written 149-character
-    //    mission is the one string that would otherwise be lost by not
-    //    migrating the empty banks, so the file preserves every mission even
-    //    though four of the banks do not survive.
+    // 1. The bank list, written verbatim. A dropped bank's hand-written mission
+    //    is the one string that would otherwise be lost by not migrating it, so
+    //    the file preserves every mission even for the banks that do not
+    //    survive.
     let banks_url = endpoint(base, &["v1", "default", "banks"], &[]);
     let banks_bytes = get(&client, &banks_url).await?;
     write_file(&out.join("banks.json"), &banks_bytes)?;
     let banks: BankListResponse = serde_json::from_slice(&banks_bytes)
         .map_err(|e| MigrateError::json(banks_url.to_string(), e))?;
 
-    let dropped: BTreeSet<&str> = DROPPED_BANKS.iter().copied().collect();
     assert_slugs_usable(banks.banks.iter().map(|b| b.bank_id.as_str()))?;
 
     let mut oracle: BTreeMap<String, Stats> = BTreeMap::new();
@@ -729,7 +733,7 @@ pub fn assert_integrity(archive: &BankArchive, stats: &Stats) -> Result<()> {
     Ok(())
 }
 
-/// A bank on [`DROPPED_BANKS`] must still hold nothing.
+/// A bank named in [`DroppedBanks`] must still hold nothing.
 ///
 /// Separate from [`assert_integrity`] because a dropped bank has no archive to
 /// assert against — that is the whole point of dropping it.
@@ -1301,7 +1305,14 @@ mod tests {
             assert_slugs_usable(["a:b", "a b"].into_iter()),
             Err(MigrateError::SlugCollision { .. })
         ));
-        assert!(assert_slugs_usable(DROPPED_BANKS.into_iter()).is_ok());
+        // The shapes a real drop set takes, including the one bank id with a
+        // space in it that motivated `slug` in the first place.
+        assert!(
+            assert_slugs_usable(
+                ["claude-code::a", "claude-code::B C", "bare"].into_iter()
+            )
+            .is_ok()
+        );
     }
 
     /// `.` and `..` are made of characters `slug` passes through, so they
@@ -1534,7 +1545,7 @@ mod run_tests {
     async fn run_reads_five_endpoints_freezes_them_and_reconciles() {
         let legacy = Legacy::start(&[(JCODE, Some("real")), (CMS, Some("real-cms"))]).await;
         let out = tempfile::tempdir().unwrap();
-        let lines = run_from(&legacy.base, out.path())
+        let lines = run_from(&legacy.base, out.path(), &DroppedBanks::new())
             .await
             .expect("reconciles");
 
@@ -1579,7 +1590,7 @@ mod run_tests {
         let legacy = Legacy::start(&[(JCODE, Some("real")), (CMS, None)]).await;
         let out = tempfile::tempdir().unwrap();
         assert!(matches!(
-            run_from(&legacy.base, out.path()).await,
+            run_from(&legacy.base, out.path(), &DroppedBanks::new()).await,
             Err(MigrateError::ArchiveMissing { .. })
         ));
     }
@@ -1593,7 +1604,7 @@ mod run_tests {
         // `/v1/default/banks` is the one route an empty stub still serves, so
         // the 404 has to come from somewhere else: point the run at a path
         // that has no route at all.
-        let err = run_from(&format!("{}/nope", legacy.base), out.path())
+        let err = run_from(&format!("{}/nope", legacy.base), out.path(), &DroppedBanks::new())
             .await
             .unwrap_err();
         let MigrateError::HttpStatus { status, body, .. } = err else {
