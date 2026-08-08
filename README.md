@@ -54,6 +54,7 @@ memgardend (axum, :9100) ──────────── web UI (dashboard 
 | Korean search | FTS5 `unicode61` + `prefix='2 3 4'` + `*`-suffixed query terms | CJK has no word boundaries; guard-tested so recall can't silently degrade |
 | Concurrency | One Ollama permit, background/interactive acquire split, hard deadlines | A 14B model on one GPU must be queued for, never raced for |
 | Metrics | Static atomics, no LLM calls, `/metrics.json` + `benefit_ledger` table | Zero added latency on hot paths is an acceptance gate, not a hope |
+| Migration | Legacy's own transfer archive, frozen to disk, re-embedded and re-linked here | Legacy exports facts without vectors, ids or derived links **by design** — carrying them and re-deriving is the supported path, not a compromise. The frozen archive is what makes the AC-3 evidence outlive the daemon it came from |
 
 ## Status
 
@@ -76,11 +77,33 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 | **AC-2 performance** | recall p50 ≤35ms / p95 ≤60ms, hook overhead <10ms, retain cap savings held | ✅ **met** — 7.1/7.8ms recall, **0.85ms of hook per turn**, −75…−87% savings |
 | **AC-3 lossless migration** | node/link/document counts match across the legacy banks + 50-sample content diff | ✅ **met on a rehearsal, by the instrument rather than the importer** — `mg-migrate verify` exits 0 on the four-bank corpus: every Tier-1 equality green (25 documents, 5,288 nodes, 200 causal, 2,114 provenance edges, 3,917 entities), temporal self-consistency exact at 105,016, and **no content difference in the 50-sample diff**. Phase F re-runs it against the cutover import, which is the run that counts |
 
-The migration is four legacy banks — **5,288 nodes, 25 documents, 1,747 consolidated
-observations, 200 authored causal links** — carried through legacy's own supported transfer
-format, re-embedded here, with temporal and semantic adjacency rebuilt by our rules rather
-than copied. What that means and what it costs is in
-[`docs/design/mg-1-migration.md`](docs/design/mg-1-migration.md).
+### Migrating off the old system
+
+Three subcommands of one binary, and only the middle one writes a database row — `snapshot`
+issues nothing but `GET` to the old daemon, and `verify` issues no `INSERT`, `UPDATE` or
+`DELETE` at all:
+
+```bash
+mg_migrate snapshot --out migration/<date>/            # read-only GETs, ~2s, refuses on 15 identities
+mg_migrate import   --snapshot <dir> --db <path>       # archive → SQLite, ~167s for the whole corpus
+mg_migrate verify   --snapshot <dir> --db <path>       # the AC-3 report; exit 0 / 1 / 2
+```
+
+Four legacy banks — **5,288 nodes, 25 documents, 1,747 consolidated observations, 200 authored
+causal links** — carried through legacy's own supported transfer format, re-embedded here, with
+temporal and semantic adjacency **rebuilt by our rules rather than copied**. Of the four link
+types only the authored one (`caused_by`) can be equal, and the report says so rather than
+averaging it away: a semantic edge is a function of an embedding space that is ours and not
+legacy's, legacy's temporal neighbour query applies no 24-hour window where ours does, and
+`entity` links exist in neither system's storage.
+
+The snapshot is the migration source, not the live daemon — legacy is still being written, and
+a re-fetch between importing and verifying would surface a fact written in between as a count
+mismatch that is not a defect. Rehearsals cost zero downtime: `--db /tmp/…` builds a complete
+migrated database beside the live one with both daemons untouched.
+
+[Runbook](docs/runbook-migration.md) · [design](docs/design/mg-1-migration.md) ·
+[verification](docs/design/mg-2-verification.md)
 
 **One open defect, and it is not where it looked.** `cargo test --workspace` intermittently
 dies with a SIGSEGV inside SQLite (FTS5 index merge, and the allocator) under concurrent load
@@ -221,6 +244,7 @@ cargo test -p memgardend -- --ignored        # live tests (need Ollama running)
 cargo run -p memgarden-cli --bin hook_bench  # hook latency, interleaved-paired
 cargo run -p memgardend --bin mg_migrate -- snapshot --out <dir>   # freeze legacy (GETs only)
 cargo run -p memgardend --bin mg_migrate -- import --snapshot <dir> --db <path>
+cargo run -p memgardend --bin mg_migrate -- verify --snapshot <dir> --db <path> --sample 50
 ./scripts/hook-budget.sh                     # binary size, ldd set, dependency closure
 mdbook serve book                            # the wiki, at http://localhost:3000
 ```
