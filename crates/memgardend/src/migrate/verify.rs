@@ -228,6 +228,7 @@ pub struct Report {
     /// like a passed migration. The runbook writes both files into
     /// `docs/evidence/`, and anything keying on `.verdict` or `.tier1[].ok`
     /// would have read the dump as evidence.
+    #[serde(default = "verify_mode")]
     pub mode: String,
     pub snapshot: SnapshotInfo,
     /// Empty means the frozen `/stats` and the frozen archive agree with each
@@ -250,6 +251,10 @@ pub struct Report {
     /// exact Tier-2 result and the verdict was downgraded from REVIEW to PASS.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tier2_accepted: Option<String>,
+}
+
+fn verify_mode() -> String {
+    "verify".to_string()
 }
 
 impl Report {
@@ -455,9 +460,12 @@ pub fn run(opts: &Options<'_>) -> Result<Report> {
         return dump(info, &db);
     }
     if migrated.is_empty() {
-        // `quoted(&[])` is `""`, so every scoped query would become `IN ()` —
-        // a SQLite syntax error surfacing as `near ")"`. Reachable whenever
-        // every archive under the snapshot is content-free.
+        // Not because `IN ()` is a syntax error — **SQLite explicitly permits
+        // an empty IN list**, one of its documented divergences from the
+        // standard, and it evaluates to false. That is worse: every scoped
+        // count would come back 0 and the report would be an all-green
+        // vacuous PASS. Reachable whenever every archive under the snapshot is
+        // content-free.
         return Err(MigrateError::NoArchives {
             dir: opts.snapshot.to_path_buf(),
         });
@@ -696,7 +704,7 @@ fn tier1(
     let mut tags = 0i64;
     let mut entity_names: BTreeSet<(String, String)> = BTreeSet::new();
     let mut mentions = 0i64;
-    let mut per_document: BTreeMap<&str, i64> = BTreeMap::new();
+    let mut per_document: BTreeMap<(&str, &str), i64> = BTreeMap::new();
     for archive in migrated {
         for observation in &archive.observations {
             let distinct: BTreeSet<(&str, i64)> = observation
@@ -709,7 +717,10 @@ fn tier1(
             tags += distinct_tags(&observation.tags);
         }
         for document in &archive.documents {
-            per_document.insert(document.id.as_str(), document.facts.len() as i64);
+            per_document.insert(
+                (archive.bank_id.as_str(), document.id.as_str()),
+                document.facts.len() as i64,
+            );
             for fact in &document.facts {
                 tags += distinct_tags(&fact.tags);
                 let names = fold_names(&fact.entities);
@@ -799,13 +810,14 @@ fn tier1(
     // `/documents.memory_unit_count` is frozen in every snapshot and was read
     // by nothing until review pointed at it.
     let mut misplaced = 0i64;
-    for (document, expected) in &per_document {
+    for ((bank, document), expected) in &per_document {
         let actual = read_i64(
             db,
             "SELECT count(*) FROM memory_nodes n
              JOIN documents d ON d.id = n.document_id
-             WHERE d.doc_key = ?1 AND json_extract(n.metadata, '$.legacy') IS NOT NULL",
-            [document],
+             WHERE d.bank_id = ?1 AND d.doc_key = ?2
+               AND json_extract(n.metadata, '$.legacy') IS NOT NULL",
+            rusqlite::params![bank, document],
         )?;
         if actual != *expected {
             misplaced += 1;
@@ -879,7 +891,9 @@ fn tier1(
             watermarks,
         )
         .with_detail(
-            "one done run per bank at watermark = MAX(memory_nodes.id); without it the daemon \
+            "one done run per bank whose watermark >= MAX(id) over the MIGRATED nodes — not \
+             `= MAX(id)` over the bank, which is true only in the instant between import \
+             step 9 and the next row anyone writes. Without such a row the daemon \
              re-consolidates the whole migrated corpus within one poll of restart \
              (consolidate.rs:314-330)"
                 .to_string(),
@@ -926,7 +940,7 @@ fn tier1(
                 &format!(
                     "SELECT count(*) FROM links l JOIN memory_nodes n ON n.id = l.from_node_id
                      WHERE l.link_type = 'semantic' AND n.fact_type = 'observation'
-                       AND n.bank_id IN ({})",
+                       AND n.bank_id IN ({}) AND json_extract(n.metadata, '$.legacy') IS NOT NULL",
                     quoted(&banks)
                 ),
                 [],
@@ -941,11 +955,16 @@ fn tier1(
 
     // --- the one that catches a broken import ------------------------------
     let (stored, reference, extra, missing, covered) = temporal_self_consistency(db, &banks)?;
+    // `expected`/`actual` are **the disagreement**, not the cardinalities: a
+    // consumer enumerating failures by `expected != actual` — the natural
+    // reading of a row in a table headed "equality" — used to miss this check
+    // entirely, and a human saw `FAIL … expected 3262 actual 3262`. The raw
+    // counts move into the detail, where they were already printed.
     let mut consistency = Tier1Check::new(
         "temporal self-consistency",
         "our own rule, re-run",
-        reference,
-        stored,
+        0,
+        extra + missing,
     );
     // **Set equality, not count equality.** `Tier1Check::new` compares
     // cardinalities, and an equal-cardinality corruption — one genuine edge
@@ -956,10 +975,10 @@ fn tier1(
     // binary that imported and the one that verifies produces exactly that.
     consistency.ok = extra == 0 && missing == 0;
     checks.push(consistency.with_detail(format!(
-        "links.rs:62-92 replayed over the migrated nodes' own (fact_type, event_date): \
-             {extra} stored edges the rule would not emit, {missing} the rule emits that are \
-             not stored, over {covered} of {} banks. This replaces the equality against legacy \
-             that can never hold",
+        "{stored} stored against {reference} the rule produces: {extra} stored edges it would \
+         not emit, {missing} it emits that are not stored, over {covered} of {} banks. \
+         links.rs:62-92 replayed over the migrated nodes' own (fact_type, event_date) — this \
+         replaces the equality against legacy that can never hold",
         banks.len()
     )));
 
@@ -1212,7 +1231,10 @@ impl Rng {
 
 enum Record<'a> {
     Fact(&'a str, i64, &'a TransferFact),
-    Observation(&'a TransferObservation),
+    /// The observation, and **its ordinal among archive observations sharing
+    /// the same provenance**. See [`observation_by_provenance`]: the key is
+    /// not unique, and this is what disambiguates it.
+    Observation(&'a TransferObservation, usize),
 }
 
 fn sample(db: &Db, migrated: &[&BankArchive], want: usize, seed: u64) -> Result<SampleReport> {
@@ -1252,19 +1274,33 @@ fn sample(db: &Db, migrated: &[&BankArchive], want: usize, seed: u64) -> Result<
                 records.push(Record::Fact(&document.id, index as i64, fact));
             }
         }
+        // The ordinal is computed over the archive's **own** order, before the
+        // sort below, because that is the order `import` inserted in and
+        // therefore the order the rowids run in.
+        let mut seen: BTreeMap<String, usize> = BTreeMap::new();
         for observation in &archive.observations {
-            records.push(Record::Observation(observation));
+            let key = provenance_key(observation);
+            let ordinal = seen.entry(key).or_insert(0);
+            records.push(Record::Observation(observation, *ordinal));
+            *ordinal += 1;
         }
         records.sort_by_key(|r| match r {
             Record::Fact(document, index, _) => (0, (*document).to_string(), *index, String::new()),
-            Record::Observation(o) => (
+            Record::Observation(o, ordinal) => (
                 1,
                 String::new(),
-                0,
+                *ordinal as i64,
                 format!("{}\u{0}{}", o.text, o.mentioned_at.as_deref().unwrap_or("")),
             ),
         });
 
+        // Clamped so the run cannot draw more than asked: `.round()` alone
+        // gave `SAMPLE — 51 of 50 requested`, and AC-3 is written against a
+        // 50-record diff.
+        let quota = quota
+            .min(want.saturating_sub(drawn))
+            .max(1)
+            .min(records.len());
         let mut picked: BTreeSet<usize> = BTreeSet::new();
         let mut guard = 0;
         while picked.len() < quota.min(records.len()) && guard < quota * 64 + 1024 {
@@ -1294,16 +1330,16 @@ fn compare(db: &Db, bank: &str, record: &Record<'_>, out: &mut Vec<Mismatch>) ->
             format!("{document}#{index}"),
             node_by_legacy_key(db, bank, document, *index)?,
         ),
-        Record::Observation(o) => (
+        Record::Observation(o, ordinal) => (
             format!(
-                "observation:{}",
+                "observation:{}[{ordinal}]",
                 o.sources
                     .iter()
                     .map(|s| format!("{}#{}", s.document_id, s.fact_index))
                     .collect::<Vec<_>>()
                     .join(",")
             ),
-            observation_by_provenance(db, bank, o)?,
+            observation_by_provenance(db, bank, o, *ordinal)?,
         ),
     };
     let Some(row) = row else {
@@ -1349,9 +1385,9 @@ fn compare(db: &Db, bank: &str, record: &Record<'_>, out: &mut Vec<Mismatch>) ->
             f.occurred_end.clone(),
             f.mentioned_at.clone(),
             f.tags.clone(),
-            crate::entities::normalized_mentions(&f.entities),
+            fold_names(&f.entities).into_iter().collect::<Vec<_>>(),
         ),
-        Record::Observation(o) => (
+        Record::Observation(o, _) => (
             o.text.clone(),
             "observation".to_string(),
             None,
@@ -1416,7 +1452,7 @@ fn compare(db: &Db, bank: &str, record: &Record<'_>, out: &mut Vec<Mismatch>) ->
     // is available — and it is the one that backs the sentence's claim that no
     // *authored causal relation* was lost.
     match record {
-        Record::Observation(o) => {
+        Record::Observation(o, _) => {
             let want: BTreeSet<String> = o
                 .sources
                 .iter()
@@ -1430,10 +1466,16 @@ fn compare(db: &Db, bank: &str, record: &Record<'_>, out: &mut Vec<Mismatch>) ->
             )?;
             diff("sources", format!("{want:?}"), format!("{ours:?}"));
         }
-        Record::Fact(document, _, f) => {
+        Record::Fact(document, index, f) => {
+            // `import` drops `to == from` as extraction noise
+            // (`import.rs::import_bank`), so an expectation that kept it would
+            // report a content difference on a migration that behaved exactly
+            // as designed. Measured 0 in the live corpus; the asymmetry is the
+            // point.
             let want: BTreeSet<String> = f
                 .causal_relations
                 .iter()
+                .filter(|c| c.target_fact_index != *index)
                 .map(|c| format!("{}#{}", document, c.target_fact_index))
                 .collect();
             let ours = legacy_keys_of(
@@ -1496,12 +1538,16 @@ fn sentence(report: &Report) -> String {
     let find = |name: &str| report.tier2.iter().find(|m| m.name == name);
     let temporal = find("temporal, fact to fact");
     let semantic = find("semantic");
+    // The fact-to-fact and observation-to-observation counts are the edge
+    // totals; `temporal self-consistency`'s `actual` is its *disagreement*
+    // and would be 0 on a passing run, which is not the number this sentence
+    // wants.
     let stored = report
-        .tier1
+        .tier2
         .iter()
-        .find(|c| c.name == "temporal self-consistency")
-        .map(|c| c.actual)
-        .unwrap_or(0);
+        .filter(|m| m.name.starts_with("temporal"))
+        .map(|m| m.ours)
+        .sum::<i64>();
     format!(
         "No fact, observation, document or authored causal relation was lost. Derived adjacency \
          (semantic, temporal) was rebuilt from the migrated facts by MemGarden's own rules \
@@ -1543,6 +1589,9 @@ fn sentence(report: &Report) -> String {
 /// nothing else — `retain::NodeDraft` writes no such key. It is what lets
 /// every Tier-1 equality stay exact after the daemon starts writing again.
 const MIGRATED: &str = "json_extract(metadata, '$.legacy') IS NOT NULL";
+
+/// [`MIGRATED`] for a query that aliases `memory_nodes` as `n`.
+const MIGRATED_N: &str = "json_extract(n.metadata, '$.legacy') IS NOT NULL";
 
 fn quoted(banks: &[&str]) -> String {
     banks
@@ -1634,11 +1683,23 @@ fn node_by_legacy_key(db: &Db, bank: &str, document: &str, index: i64) -> Result
         .map_err(sql)
 }
 
-/// Observations join on **their provenance**, `metadata.$.legacy.observation_of`
-/// — the archive's `sources` array verbatim, which `import` writes for exactly
-/// this purpose and which nothing read until now.
+/// Observations join on **their provenance and their ordinal within it**.
 ///
-/// Two earlier keys were worse, and both were found by running it:
+/// `metadata.$.legacy.observation_of` is the archive's `sources` array
+/// verbatim, which `import` writes for exactly this purpose. It is **not
+/// unique**, and not measuring that is how the second version of this function
+/// shipped: two observations can be two LLM paraphrases of the same fact.
+/// Measured — 2 shared keys in `real-cms/`, **10 observations across the live
+/// 1,747** — and a bare `query_row` resolved both archive rows to whichever
+/// node SQLite reached first, producing two false `text` differences and
+/// `AC-3 is NOT met` on a correct database, while the partner node was never
+/// compared at all.
+///
+/// The ordinal closes it exactly rather than approximately: `import` inserts
+/// observations in archive order, so the k-th rowid sharing a provenance key
+/// is the k-th archive observation sharing it.
+///
+/// Three earlier keys were worse, and every one was found by running it:
 ///
 /// * `(text, mentioned_at)` with `mentioned_at` bound as **text** against
 ///   `coalesce(mentioned_at, '')`. `coalesce` strips the column's INTEGER
@@ -1657,29 +1718,42 @@ fn observation_by_provenance(
     db: &Db,
     bank: &str,
     observation: &TransferObservation,
+    ordinal: usize,
 ) -> Result<Option<NodeRow>> {
     use rusqlite::OptionalExtension;
-    let sources = serde_json::to_string(
-        &observation
-            .sources
-            .iter()
-            .map(|s| serde_json::json!({"document_id": s.document_id, "fact_index": s.fact_index}))
-            .collect::<Vec<_>>(),
-    )
-    .expect("sources serialize");
     db.read()
         .map_err(store)?
         .query_row(
             &format!(
                 "SELECT {NODE_COLUMNS} FROM memory_nodes
                  WHERE bank_id = ?1 AND fact_type = 'observation'
-                   AND json_extract(metadata, '$.legacy.observation_of') = ?2"
+                   AND json_extract(metadata, '$.legacy.observation_of') = ?2
+                 ORDER BY id LIMIT 1 OFFSET ?3"
             ),
-            rusqlite::params![bank, sources],
+            rusqlite::params![bank, provenance_key(observation), ordinal as i64],
             node_row,
         )
         .optional()
         .map_err(sql)
+}
+
+/// The archive's `sources` array as `import` serializes it into `metadata`.
+///
+/// Byte-identical to what `json_extract` returns on the bundled SQLite
+/// (3.53.2) for every shape in this corpus — verified in review including
+/// Hangul and quoted text. It is version-sensitive: 3.45.1 escapes non-ASCII
+/// as `\uXXXX` where serde does not. `rusqlite` is pinned with `bundled`, so
+/// that cannot bite here; if it is ever unpinned, this comparison is the line
+/// that has to become a decoded one.
+fn provenance_key(observation: &TransferObservation) -> String {
+    serde_json::to_string(
+        &observation
+            .sources
+            .iter()
+            .map(|s| serde_json::json!({"document_id": s.document_id, "fact_index": s.fact_index}))
+            .collect::<Vec<_>>(),
+    )
+    .expect("sources serialize")
 }
 
 /// The `(document uuid, fact_index)` keys of whatever rows a query returns
@@ -1707,12 +1781,20 @@ fn strings(db: &Db, sql_text: &str, id: i64) -> Result<BTreeSet<String>> {
         .map_err(sql)
 }
 
+/// Scoped to the migrated set like everything else, and for a reason beyond
+/// tidiness: `Report::acceptance_hash` is computed **over the Tier-2 counts**,
+/// and the runbook's discharge loop is "read the hash out of the report,
+/// re-run with `--accept-tier2 <hash>`". The daemon is up by then (step 3.6
+/// precedes 3.7), so an unscoped count changes between the two runs and the
+/// acknowledgement never matches — which is the paste-ability the hash was
+/// narrowed for in the first place.
 fn link_count(db: &Db, banks: &[&str], link_type: &str, side: &str) -> Result<i64> {
     read_i64(
         db,
         &format!(
             "SELECT count(*) FROM links l JOIN memory_nodes n ON n.id = l.from_node_id
-             WHERE l.link_type = '{link_type}' AND {side} AND n.bank_id IN ({})",
+             WHERE l.link_type = '{link_type}' AND {side} AND n.bank_id IN ({})
+               AND {MIGRATED_N}",
             quoted(banks)
         ),
         [],
@@ -1725,6 +1807,7 @@ fn out_degree(db: &Db, banks: &[&str], link_type: &str, side: &str) -> Result<De
         .prepare(&format!(
             "SELECT count(*) FROM links l JOIN memory_nodes n ON n.id = l.from_node_id
              WHERE l.link_type = '{link_type}' AND {side} AND n.bank_id IN ({})
+               AND {MIGRATED_N}
              GROUP BY l.from_node_id",
             quoted(banks)
         ))
@@ -2026,7 +2109,7 @@ mod tests {
                 .detail
                 .as_ref()
                 .unwrap()
-                .contains("1 stored edges the rule would not emit"),
+                .contains("1 stored edges it would not emit"),
             "{:?}",
             check.detail
         );
@@ -2167,12 +2250,14 @@ mod tests {
         m.as_if_drained();
         let before = m.verify();
         assert!(before.tier1.iter().all(|c| c.ok));
-        let stored = before
+        let baseline = before
             .tier1
             .iter()
             .find(|c| c.name == "temporal self-consistency")
-            .unwrap()
-            .actual;
+            .unwrap();
+        // `actual` is the *disagreement*, so a clean run is 0 — not the edge
+        // count. The cardinality lives in the detail.
+        assert_eq!((baseline.expected, baseline.actual), (0, 0));
 
         m.write(
             "CREATE TEMP TABLE victim AS
@@ -2192,10 +2277,22 @@ mod tests {
             .iter()
             .find(|c| c.name == "temporal self-consistency")
             .unwrap();
-        assert_eq!(check.actual, stored, "the cardinality is unchanged");
+        // The row reports **the disagreement**: one edge the rule would not
+        // emit, one it emits that is not stored. The cardinality is unchanged,
+        // which is exactly why gating on it passed.
+        assert_eq!((check.expected, check.actual), (0, 2));
         assert!(
             !check.ok,
-            "and the check still fails, because the set is not"
+            "and the check still fails, because the set is not equal"
+        );
+        assert!(
+            check
+                .detail
+                .as_ref()
+                .unwrap()
+                .contains("1 stored edges it would not emit, 1 it emits"),
+            "{:?}",
+            check.detail
         );
         assert_eq!(after.verdict, Verdict::Fail);
     }
@@ -2294,6 +2391,54 @@ mod tests {
                 sample.per_bank
             );
             assert!(sample.per_bank.values().all(|n| *n >= 1));
+        }
+    }
+
+    /// **The pin for the entity oracle**, and the one the first version of
+    /// this fix did not have: review measured that replacing `fold_names` with
+    /// `entities::normalized_mentions` — restoring exactly the tautology this
+    /// commit is named for — left all 21 tests green, because the behavioural
+    /// assertions below are satisfied by both.
+    ///
+    /// This one pins the fold to **the committed corpus**, and the guarantee
+    /// it gives is worth stating exactly rather than overclaiming:
+    ///
+    /// * swapping `fold_names` for `normalized_mentions` **on its own** is
+    ///   still undetectable here. Both are trim+lowercase today, so every
+    ///   assertion below holds either way. That is structural, not
+    ///   behavioural, and no test can close it;
+    /// * the swap **combined with the drift that makes it dangerous** is
+    ///   caught, and that is the case that matters. Verified: with the
+    ///   tautology restored *and* `entities::normalize` truncated to three
+    ///   characters, this test fails with `(138, 284)` against `(203, 291)` —
+    ///   the exact silent loss review measured. The gate can be made to follow
+    ///   the importer, but not quietly.
+    #[test]
+    fn the_entity_oracle_is_pinned_to_the_corpus_not_to_the_importer() {
+        let archives =
+            crate::migrate::archive::load_dir(&super::super::test_support::fixture("real"))
+                .unwrap();
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        let mut mentions = 0usize;
+        for fact in archives[0].documents.iter().flat_map(|d| d.facts.iter()) {
+            let folded = fold_names(&fact.entities);
+            mentions += folded.len();
+            names.extend(folded);
+        }
+        assert_eq!((names.len(), mentions), (203, 291));
+        // Verbatim survivors: anything that trims, cases, or strips more than
+        // trim+lowercase moves at least one of these.
+        for expected in [
+            "ce-9a",               // punctuation
+            "agent memory system", // internal spaces
+            "assess_tests.rs",     // a dot and an underscore
+            "2단 캐스케이드",      // Hangul, which has no case
+            "8/2 사고",            // a slash beside non-ASCII
+        ] {
+            assert!(
+                names.contains(expected),
+                "{expected} did not survive the fold"
+            );
         }
     }
 
@@ -2474,6 +2619,88 @@ mod tests {
             "{:?}",
             report.sample.mismatches
         );
+    }
+
+    /// **The full sample over the bank that has duplicate provenance keys.**
+    ///
+    /// The check the second version of `observation_by_provenance` never got:
+    /// `real-cms/` holds two pairs of distinct observations with a
+    /// byte-identical `sources` array (two LLM paraphrases of one fact), and
+    /// the live corpus holds ten. A bare `query_row` resolved both archive
+    /// rows to whichever node SQLite reached first — two false `text`
+    /// differences and `AC-3 is NOT met` on a correct database, with the
+    /// partner node never compared at all.
+    ///
+    /// Seed- and size-dependent, which is the worst property for a cutover
+    /// gate: the runbook's own `--sample 50 --seed 1` happened to miss it.
+    #[tokio::test]
+    async fn the_whole_corpus_of_a_bank_with_shared_provenance_keys_compares_clean() {
+        for snapshot in [Snapshot::real_cms(), Snapshot::both()] {
+            let m = Migrated::of(snapshot).await;
+            m.as_if_drained();
+            let report = run(&Options {
+                sample: 10_000,
+                ..m.options()
+            })
+            .unwrap();
+            assert!(
+                report.sample.mismatches.is_empty(),
+                "{:?}",
+                report.sample.mismatches
+            );
+            assert_eq!(report.sample.drawn, report.sample.available);
+            assert_eq!(report.verdict, Verdict::Pass);
+        }
+    }
+
+    /// A fact filed under the wrong document leaves every aggregate exact —
+    /// the per-document check is the only thing that sees it, and the first
+    /// version of it shipped with no test at all.
+    #[tokio::test]
+    async fn a_fact_under_the_wrong_document_fails_even_though_every_total_matches() {
+        let m = Migrated::of(Snapshot::both()).await;
+        m.as_if_drained();
+        assert_eq!(m.verify().verdict, Verdict::Pass);
+        // Move one fact to the other bank's document. Totals are untouched.
+        m.write(
+            "UPDATE memory_nodes SET document_id =
+               (SELECT id FROM documents WHERE id <> (SELECT document_id FROM memory_nodes
+                                                      WHERE document_id IS NOT NULL LIMIT 1)
+                LIMIT 1)
+             WHERE id = (SELECT MIN(id) FROM memory_nodes WHERE document_id IS NOT NULL)",
+        );
+        let report = m.verify();
+        assert!(
+            failed(&report).contains(&"documents with the right fact count"),
+            "{:?}",
+            failed(&report)
+        );
+        assert!(
+            report.tier1.iter().find(|c| c.name == "nodes").unwrap().ok,
+            "the aggregate node count cannot see it, which is the point"
+        );
+    }
+
+    /// The sample draws at most what was asked for. `.round()` alone gave
+    /// "51 of 50 requested", and AC-3 is written against a 50-record diff.
+    #[tokio::test]
+    async fn the_sample_never_draws_more_than_it_was_asked_for() {
+        let m = Migrated::of(Snapshot::both()).await;
+        m.as_if_drained();
+        for want in [1usize, 2, 7, 50, 99] {
+            let sample = run(&Options {
+                sample: want,
+                ..m.options()
+            })
+            .unwrap()
+            .sample;
+            assert!(
+                sample.drawn <= want.max(sample.per_bank.len()),
+                "want={want} drew {}",
+                sample.drawn
+            );
+            assert_eq!(sample.available, 300);
+        }
     }
 
     // --- the report itself ---------------------------------------------------

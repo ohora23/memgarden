@@ -252,7 +252,7 @@ corpus could miss a bank entirely.
 `proof_count` is **not** compared: it cannot be equal by construction and is
 Tier 2.
 
-### The join key took three attempts
+### The join key took four attempts, and the fourth was found by review
 
 Facts join on `(document_id, fact_index)` out of `memory_nodes.metadata`.
 Observations join on **their provenance**, `metadata.$.legacy.observation_of`
@@ -270,13 +270,27 @@ this purpose and which nothing read until now.
    bug above and from "the observations were never imported at all". Measured:
    tampering with all 79 observations' `text` produced 79 lines saying `node`
    and not one saying `text`.
-3. Provenance. Both become fields the diff can name.
+3. Provenance alone. Reportable, and **not unique** — two observations can be
+   two LLM paraphrases of the same fact. Measured after review asked for the
+   uniqueness the second key had and this one did not: **2 shared keys in
+   `real-cms/` and 10 observations across the live 1,747**. A bare `query_row`
+   resolved both archive rows to whichever node SQLite reached first, giving
+   two false `text` differences and `AC-3 is NOT met` on a correct database —
+   while the partner node was never compared at all. Seed- and size-dependent,
+   which is the worst property for a cutover gate: the runbook's own
+   `--sample 50 --seed 1` happened to miss it.
+4. Provenance **plus the observation's ordinal within it**. `import` inserts in
+   archive order, so the k-th rowid sharing a key is the k-th archive
+   observation sharing it — exact rather than approximate, and every archive
+   record is compared against exactly one node.
 
-A join key that silently matches nothing is worse than no join key, because it
-reads as a migration failure.
-`every_observation_in_the_sample_finds_its_node` and
-`a_tampered_observation_reports_the_field_and_not_a_missing_node` are the
-tests.
+A join key that silently matches nothing, or matches the wrong one of two, is
+worse than no join key, because it reads as a migration failure.
+`every_observation_in_the_sample_finds_its_node`,
+`a_tampered_observation_reports_the_field_and_not_a_missing_node` and
+`the_whole_corpus_of_a_bank_with_shared_provenance_keys_compares_clean` are the
+tests — the last one runs the **whole** sample over `real-cms/`, which is the
+measurement the third key never had.
 
 ---
 
@@ -354,8 +368,10 @@ content differences**. `VERDICT Pass (exit 0)`.
 Then twice against the **live** `~/.local/share/memgarden/memgarden.db` with
 `memgardend` up on :9100:
 
-* `--dump-only` — exit 0, preserving 4 sessions, 7 retain jobs, 2 benefit-ledger
-  rows and 3,674 metric snapshots;
+* `--dump-only` — **exit 2** (`"mode": "dump"`, empty `tier1`, a `census`, and
+  a verdict of `REVIEW`, so it cannot be mistaken for a passed migration),
+  preserving 4 sessions, 7 retain jobs, 2 benefit-ledger rows and 3,674 metric
+  snapshots;
 * a full run — exit 1, which is correct: that database has not been migrated.
   Temporal self-consistency reports `over 0 of 4 banks` rather than a green row.
 
