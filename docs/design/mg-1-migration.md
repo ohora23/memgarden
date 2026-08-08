@@ -306,7 +306,7 @@ LISTEN 0 2048 127.0.0.1:9077 0.0.0.0:* users:(("python",pid=13097,fd=19))
 
 $ mg_migrate snapshot --out <scratch>/snapshot-r2
 snapshot -> <scratch>/snapshot-r2
-drop claude-code::user: empty, not migrated
+drop claude-code::bank-a: empty, not migrated
 drop claude-code::bank-f: empty, not migrated
 drop claude-code::bank e: empty, not migrated
 drop codex: empty, not migrated

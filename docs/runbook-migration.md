@@ -1,5 +1,12 @@
 # Runbook — migrating the legacy banks
 
+**This whole phase presupposes a legacy system to migrate off.** `mg_migrate`
+reads a [hindsight](https://github.com/vectorize-io/hindsight) daemon on
+`127.0.0.1:9077` through its own supported transfer-archive API. If you are
+installing MemGarden fresh, there is nothing here for you: start the daemon,
+wire the hooks (`docs/runbook-hooks.md`), and let the bank fill. Nothing else in
+MemGarden depends on this phase.
+
 Phase D's three commands, in the order they are run, with the steps that are
 **not optional** marked as such. `mg_migrate` is a `memgardend` binary:
 

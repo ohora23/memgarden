@@ -79,6 +79,9 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 
 ### Migrating off the old system
 
+Only if you have one. This phase reads a legacy hindsight daemon on `:9077` through its own
+transfer-archive API; a fresh install skips it entirely and just lets the bank fill.
+
 Three subcommands of one binary, and only the middle one writes a database row — `snapshot`
 issues nothing but `GET` to the old daemon, and `verify` issues no `INSERT`, `UPDATE` or
 `DELETE` at all:
