@@ -73,9 +73,9 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 
 | | requirement | state |
 |---|---|---|
-| **AC-1 quality** | recall quality ≥ legacy on a fixed query set, human-judged | 🔄 **collectable now** — shadow-mode install logs what MemGarden *would* have injected, prompt by prompt, while legacy still drives the session |
+| **AC-1 quality** | recall quality ≥ legacy on a fixed query set, human-judged | 🔄 **collecting** — shadow-mode install logs what MemGarden *would* have injected, prompt by prompt, while legacy still drives the session. The first 33 records were taken against a bank live retain had filled to 312 nodes of 45 MB posted, so they are not a baseline; the bank has since been seeded from the legacy archive and recording continues against 5,333 nodes. [What was measured and what is left](docs/evidence/ac-1-shadow.md) |
 | **AC-2 performance** | recall p50 ≤35ms / p95 ≤60ms, hook overhead <10ms, retain cap savings held | ✅ **met** — 7.1/7.8ms recall, **0.85ms of hook per turn**, −75…−87% savings |
-| **AC-3 lossless migration** | node/link/document counts match across the legacy banks + 50-sample content diff | ✅ **met on a rehearsal, by the instrument rather than the importer** — `mg-migrate verify` exits 0 on the four-bank corpus: every Tier-1 equality green (25 documents, 5,288 nodes, 200 causal, 2,114 provenance edges, 3,917 entities), temporal self-consistency exact at 105,016, and **no content difference in the 50-sample diff**. Phase F re-runs it against the cutover import, which is the run that counts |
+| **AC-3 lossless migration** | node/link/document counts match across the legacy banks + 50-sample content diff | ✅ **met on the live database**, by the instrument rather than the importer — `mg_migrate verify` exits 0 against the cutover import of 2026-08-08: every Tier-1 equality green (28 documents, 5,311 nodes, 201 causal, 2,125 provenance edges, 3,945 entities), temporal self-consistency exact at 105,199 in both directions, and **no content difference in the 50-sample diff**. Report: [`docs/evidence/ac-3.json`](docs/evidence/ac-3.json) |
 
 ### Migrating off the old system
 
@@ -92,8 +92,8 @@ mg_migrate import   --snapshot <dir> --db <path>       # archive → SQLite, ~16
 mg_migrate verify   --snapshot <dir> --db <path>       # the AC-3 report; exit 0 / 1 / 2
 ```
 
-Four legacy banks — **5,288 nodes, 25 documents, 1,747 consolidated observations, 200 authored
-causal links** — carried through legacy's own supported transfer format, re-embedded here, with
+Five non-empty legacy banks — **5,311 nodes, 28 documents, 1,757 consolidated observations, 201
+authored causal links** — carried through legacy's own supported transfer format, re-embedded here, with
 temporal and semantic adjacency **rebuilt by our rules rather than copied**. Of the four link
 types only the authored one (`caused_by`) can be equal, and the report says so rather than
 averaging it away: a semantic edge is a function of an embedding space that is ours and not
@@ -117,8 +117,9 @@ behaviour when dozens of file-backed databases build FTS5 indexes at once, not t
 clean). Closing it needs an ASAN build; until then a PR's test tally carries that caveat.
 [Details and the reproducer](book/src/roadmap.md).
 
-**Next up, in order:** collect the AC-1 shadow evidence · the web UI · Phase F's cutover,
-which re-runs the migration against a fresh snapshot and reads AC-3 from MG-2's report.
+**Next up, in order:** AC-1's two remaining legs — fresh shadow records against the seeded bank,
+and `recall_bench` against `gold/` — then the web UI, then Phase F's remaining work, which is
+now the switch to `mode = full` and the legacy shutdown rather than the import.
 
 ## Claude Code hooks
 

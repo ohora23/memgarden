@@ -1,0 +1,36 @@
+{
+  "mode": "dump",
+  "snapshot": {
+    "dir": "/home/user/.local/share/memgarden/migration/2026-08-08",
+    "sha256": "dd6f91b7956dab58ba5ed2bfcd7e204015d33ddc15a33890973a898351fe6be3",
+    "banks": 5,
+    "exported_at": "2026-08-08T03:25:48.135006Z"
+  },
+  "integrity": [],
+  "tier1": [],
+  "census": {
+    "banks": 5,
+    "benefit_ledger": 4,
+    "consolidation_runs": 299,
+    "documents": 8,
+    "entities": 62,
+    "links": 3043,
+    "memory_nodes": 312,
+    "metric_snapshots": 4556,
+    "node_sources": 157,
+    "retain_jobs": 10,
+    "sessions": 6
+  },
+  "tier2": [],
+  "tier3": {},
+  "sample": {
+    "n": 0,
+    "seed": 0,
+    "drawn": 0,
+    "available": 0,
+    "per_bank": {},
+    "mismatches": []
+  },
+  "verdict": "REVIEW",
+  "sentence": "Dump only: no comparison was performed. This is the runbook's step 3a, which preserves the shadow run's sessions and retain_jobs before `import --replace` deletes them."
+}
