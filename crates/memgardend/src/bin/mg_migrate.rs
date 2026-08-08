@@ -3,14 +3,15 @@
 //! ```text
 //! mg_migrate snapshot --out <dir>
 //! mg_migrate import   --snapshot <dir> --db <path> [--replace] [--defer-embeddings]
+//! mg_migrate verify   --snapshot <dir> --db <path> [--out <file>] [--sample N]
+//!                     [--seed N] [--accept-tier2 <sha256>] [--dump-only]
 //! ```
 //!
-//! `verify` (D3) lands next; the `match` below is where it wires in.
 //! **`snapshot` writes no database row** — it reads legacy over HTTP, writes
 //! files, and asserts. **`import` issues no HTTP at all** — it reads the
 //! directory `snapshot` froze, which is the whole point of freezing it
 //! (§Binding decisions #2: the archive, not the daemon, is the migration
-//! source).
+//! source). **`verify` writes nothing at all** and exits 0, 1 or 2.
 //!
 //! A binary in `memgardend` rather than a new crate: the importer needs
 //! `rusqlite`, `fastembed` and this crate's whole library surface, which is
@@ -51,7 +52,27 @@ the database a live daemon is holding.
                       links. Observations are embedded either way — the store
                       takes their vector by value. Shortens the maintenance
                       window; `verify` will report the pending nodes until the
-                      daemon has caught up.";
+                      daemon has caught up.
+
+`verify` is the AC-3 instrument. It reads three oracles — legacy's frozen
+/stats, the frozen archive, and the database — and reports three tiers:
+equality for everything that can be equal, recomputed adjacency reported
+against a measured band, and the one type neither system stores. It writes
+nothing and is safe against a live database.
+
+  --out <file>        write the JSON report as well as the human table
+  --sample N          content-diff N records, stratified by bank (default 50)
+  --seed N            the sample's seed, so the run reproduces (default 1)
+  --accept-tier2 <h>  acknowledge one specific Tier-2 result and downgrade its
+                      exit 2 to 0. `h` is the report's own acceptance hash,
+                      which the report prints; a stale hash does nothing.
+  --dump-only         no comparison — emit what the database holds. This is the
+                      runbook's step 3a, and it is the only thing that
+                      preserves the shadow run's sessions before
+                      `import --replace` deletes them.
+
+exit 0 pass · 1 a Tier-1 mismatch or a content difference · 2 a Tier-2 review
+stop · 3 usage.";
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -64,6 +85,15 @@ async fn main() -> std::process::ExitCode {
         ["snapshot", "--out", out] => snapshot(Path::new(out)).await,
         ["import", rest @ ..] => match ImportArgs::parse(rest) {
             Some(parsed) => run_import(parsed).await,
+            None => return usage(),
+        },
+        ["verify", rest @ ..] => match VerifyArgs::parse(rest) {
+            // `verify` is the only subcommand whose *success* can carry a
+            // non-zero exit, so it returns the code rather than `()`.
+            Some(parsed) => match run_verify(parsed) {
+                Ok(code) => return std::process::ExitCode::from(code),
+                Err(e) => Err(e),
+            },
             None => return usage(),
         },
         _ => return usage(),
@@ -86,9 +116,12 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
+/// **3, not 2.** `verify` uses 2 for a Tier-2 review stop, so usage cannot
+/// share it — a script that treats "you called it wrong" as "a human should
+/// look at the adjacency numbers" is worse than one that treats it as neither.
 fn usage() -> std::process::ExitCode {
     eprintln!("{USAGE}");
-    std::process::ExitCode::from(2)
+    std::process::ExitCode::from(3)
 }
 
 async fn snapshot(out: &Path) -> migrate::Result<()> {
@@ -210,4 +243,70 @@ async fn load_embedder(cfg: &Config) -> migrate::Result<Arc<memgardend::embed::E
         .map_err(|e| migrate::MigrateError::Store {
             message: e.to_string(),
         })
+}
+
+struct VerifyArgs {
+    snapshot: PathBuf,
+    db: PathBuf,
+    out: Option<PathBuf>,
+    sample: usize,
+    seed: u64,
+    accept_tier2: Option<String>,
+    dump_only: bool,
+}
+
+impl VerifyArgs {
+    fn parse(argv: &[&str]) -> Option<VerifyArgs> {
+        let (mut snapshot, mut db, mut out, mut accept) = (None, None, None, None);
+        let (mut sample, mut seed, mut dump_only) = (50usize, 1u64, false);
+        let mut rest = argv.iter();
+        while let Some(arg) = rest.next() {
+            match *arg {
+                "--snapshot" => snapshot = Some(PathBuf::from(rest.next()?)),
+                "--db" => db = Some(PathBuf::from(rest.next()?)),
+                "--out" => out = Some(PathBuf::from(rest.next()?)),
+                "--sample" => sample = rest.next()?.parse().ok()?,
+                "--seed" => seed = rest.next()?.parse().ok()?,
+                "--accept-tier2" => accept = Some((*rest.next()?).to_string()),
+                "--dump-only" => dump_only = true,
+                _ => return None,
+            }
+        }
+        Some(VerifyArgs {
+            snapshot: snapshot?,
+            db: db?,
+            out,
+            sample,
+            seed,
+            accept_tier2: accept,
+            dump_only,
+        })
+    }
+}
+
+fn run_verify(args: VerifyArgs) -> migrate::Result<u8> {
+    let report = migrate::verify::run(&migrate::verify::Options {
+        snapshot: &args.snapshot,
+        db: &args.db,
+        sample: args.sample,
+        seed: args.seed,
+        accept_tier2: args.accept_tier2.as_deref(),
+        dump_only: args.dump_only,
+    })?;
+    print!("{}", report.table());
+    // Printed always, not only on a review stop: the operator who needs it is
+    // the one deciding whether to accept, and making them re-run to learn the
+    // hash is how a re-entry criterion becomes unused.
+    println!("acceptance hash: {}", report.acceptance_hash());
+    if let Some(path) = &args.out {
+        std::fs::write(
+            path,
+            serde_json::to_vec_pretty(&report).expect("Report serializes"),
+        )
+        .map_err(|e| migrate::MigrateError::Store {
+            message: format!("writing {}: {e}", path.display()),
+        })?;
+        println!("report -> {}", path.display());
+    }
+    Ok(report.verdict.exit_code())
 }

@@ -1018,7 +1018,17 @@ possible.
 
 ---
 
-## What D3 inherits
+## What D3 inherited, and what it did with it
+
+**Shipped as `docs/design/mg-2-verification.md`.** Three of the items below
+turned out differently from the handoff, and each is written up there:
+entities became a Tier-1 equality (as predicted), the temporal band held at
+[1.45, 1.75] fact-to-fact (1.608 observed), semantic got **no** band at all,
+and the temporal self-consistency check needed a scope that took three attempts
+— the manual verification found the first two, both of which failed on a
+*correctly working* daemon.
+
+## What D3 inherited
 
 * `import::BankReport` carries legacy's `documents` / `nodes` / `caused_by`
   beside ours, and `BankReport::reconciles()` is the comparison — the binary
@@ -1053,7 +1063,8 @@ possible.
 * `--defer-embeddings` leaves `embedding IS NULL` rows behind on purpose, so
   the embedding-coverage gate must run **after** the daemon has drained the
   backlog, not immediately after an import that used the flag.
-* Two `parity-gaps.md` rows this PR creates and D3 owns the file for:
+* **Done** — `docs/parity-gaps.md` gained a Phase D section with eleven rows,
+  including the two this PR created:
   **document `tags`** (dropped — `document_tags` has no reader or writer
   anywhere, and every document tag also appears on at least one of its facts,
   25/25) and **`retain_params.context`** (dropped — `"claude-code"` in 25/25,
