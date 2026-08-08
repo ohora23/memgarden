@@ -57,6 +57,16 @@ git's zlib packs down hard because the tag lists repeat. The alternative —
 checksum plus exporter — fails the moment the legacy daemon is retired, which is
 the entire point of this rebuild. The exporter is committed too, for provenance.
 
+> **Reversed, and at a real cost.** Preparing this repository to be readable by
+> others took the corpus and the labels back out (`gold/README.md`): they are one
+> person's memories, and the label rationales quote the facts they grade. The
+> objection above still stands and was not answered — once the legacy daemon is
+> retired, `results.jsonl`'s numbers can no longer be recomputed by anyone,
+> including us. What is kept is the ledger, which is enough to say what changed
+> between two of our own runs and not enough to re-derive either. The exporter
+> and the label schema are committed so a reader can build the same *kind* of
+> instrument over their own bank; they cannot rebuild ours.
+
 ### Snapshot identity
 
 | | |

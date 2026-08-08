@@ -1,0 +1,2252 @@
+{
+ "id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+ "original_text": "This stand-in replaces a 219,049-character Claude Code transcript. The real bytes are not\ncommitted; `stats.json`'s content_hash is sha256 of this text, so the identity the\nsnapshot asserts still holds. See README.md.\n",
+ "retain_params": {
+  "context": "claude-code",
+  "metadata": {
+   "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+   "retained_at": "2026-08-02T05:37:26Z",
+   "message_count": "115",
+   "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+  }
+ },
+ "tags": [
+  "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+  "file:.omc/state/autopilot-state.json",
+  "file:.omc/plans/phase-b-impl.md",
+  "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+ ],
+ "created_at": "2026-08-02T05:39:27.693352Z",
+ "chunks": [
+  {
+   "chunk_index": 0,
+   "chunk_text": "chunk text replaced; nothing reads it (0001_init.sql:18-27 has no column)"
+  },
+  {
+   "chunk_index": 1,
+   "chunk_text": "chunk text replaced; nothing reads it (0001_init.sql:18-27 has no column)"
+  }
+ ],
+ "facts": [
+  {
+   "text": "the retain cursor advances only on a confirmed post (fact 000)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.872057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.872057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:38:37.289292Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 001)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.882057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.882057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 50,
+   "entities": [
+    "async backlog worker",
+    "bge-small embeddings",
+    "CE-4",
+    "feat/ce-4-embeddings",
+    "PR B1",
+    "rebuild_vec_index",
+    "vec index rebuild"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:37:50.235955Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 002)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.832057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.832057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 54,
+   "entities": [
+    "TOOL_INPUT_FIELD_MAX",
+    "TOOL_INPUT_TOTAL_MAX"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:41:28.765042Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 003)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.862057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.862057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 55,
+   "entities": [
+    "bank_id",
+    "brief gotcha #5",
+    "doc_key",
+    "SHA-256"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:34:12.864928Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 004)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.872057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.872057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 55,
+   "entities": [
+    "ollama",
+    "semaphore"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:34:12.864928Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 005)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.832057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.832057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:38:37.289292Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 006)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.922057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.922057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:38:48.417432Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the embedding producer is tagged so a foreign vector drops out visibly (fact 007)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.902057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.902057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 51,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:42:47.091538Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the retain cursor advances only on a confirmed post (fact 008)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.852057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.852057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "memgardend/src/ollama.rs",
+    "OllamaClient",
+    "semaphore"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:40:38.537492Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 009)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.892057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.892057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 51,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:38:37.289292Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 010)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.822057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.822057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 55,
+   "entities": [
+    "Cap 20",
+    "metadata.files_modified",
+    "retain.py"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:19:00.248561Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 011)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.932057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.932057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:38:48.417432Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 012)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.962057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.962057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:33:45.649405Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 013)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.842057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.842057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 47,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:36:27.347466Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 014)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.852057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.852057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 47,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:36:27.347466Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the embedding producer is tagged so a foreign vector drops out visibly (fact 015)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.872057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.872057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 50,
+   "entities": [
+    "assistant",
+    "consolidation",
+    "experiences",
+    "fact_extraction.py",
+    "fact_type",
+    "LLM",
+    "Observations",
+    "world"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:37:50.235955Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the retain cursor advances only on a confirmed post (fact 016)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.842057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.842057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "config",
+    "core/src/config.rs",
+    "ollama"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:40:38.537492Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 017)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.842057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.842057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 55,
+   "entities": [
+    "mpsc",
+    "worker"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:33:45.649405Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 018)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.822057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.822057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 47,
+   "entities": [
+    "qwen3-14b",
+    "qwen3-14b-nothink:latest"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:35:58.097301Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 019)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.892057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.892057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 47,
+   "entities": [
+    "tiktoken-rs 0.12.0"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:36:55.107194Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 020)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.872057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.872057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 47,
+   "entities": [
+    "ollama",
+    "reqwest 0.13.4"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:36:55.107194Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 021)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.822057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.822057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 50,
+   "entities": [
+    "dedup thresholds",
+    "fastembed/ort",
+    "gotcha #7",
+    "L2 normalization",
+    "semantic-link"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:37:23.029080Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 022)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.892057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.892057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:38:56.051164Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the embedding producer is tagged so a foreign vector drops out visibly (fact 023)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.832057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.832057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 46,
+   "entities": [
+    "BAAI/bge-small-en-v1.5",
+    "fastembed/ort",
+    "SentenceTransformer"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:35:03.594881Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the retain cursor advances only on a confirmed post (fact 024)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.882057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.882057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 54,
+   "entities": [
+    "retain_max_initial_messages"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:41:54.188487Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 025)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.822057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.822057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:38:16.003975Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 026)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.822057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.822057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 48,
+   "entities": [
+    "0002_retain_jobs.sql",
+    "0003_entities_graph.sql",
+    "0004_consolidation.sql",
+    "0005_mental_models.sql",
+    "B1",
+    "B10",
+    "B2",
+    "B3",
+    "B4",
+    "B5",
+    "B6",
+    "B7",
+    "B8",
+    "B9",
+    "BM25",
+    "CE-10",
+    "CE-11",
+    "CE-4",
+    "CE-5",
+    "CE-6",
+    "CE-7",
+    "CE-8",
+    "CE-9",
+    "cli(hooks)",
+    "consolidate.rs",
+    "consolidation",
+    "embed.rs",
+    "engine",
+    "entities.rs",
+    "entity_cooccurrences",
+    "fastembed/ort",
+    "memgarden-core",
+    "memgardend",
+    "mental models",
+    "migrate.rs",
+    "migrations",
+    "ollama",
+    "ollama.rs",
+    "ort",
+    "ponytail",
+    "PRD",
+    "rebuild_vec_index",
+    "recall",
+    "reflect",
+    "rerank.rs",
+    "retain",
+    "retain_cap_saving",
+    "RRF",
+    "temporal",
+    "web UI"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:18:53.257270Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 027)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.832057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.832057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 49,
+   "entities": [
+    "fastembed/ort",
+    "memgarden-core",
+    "Rust",
+    "tiktoken"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:34:35.695180Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 028)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.842057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.842057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 51,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:42:21.207083Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 029)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.822057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.822057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "latency",
+    "query-embed"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:40:38.537492Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 030)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.872057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.872057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 51,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:42:47.091538Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the embedding producer is tagged so a foreign vector drops out visibly (fact 031)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.912057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.912057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 46,
+   "entities": [
+    "ollama"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:35:58.097301Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the retain cursor advances only on a confirmed post (fact 032)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.872057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.872057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 46,
+   "entities": [
+    "libonnxruntime.so"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:35:30.248978Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 033)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.832057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.832057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 45,
+   "entities": [
+    "BAAI/bge-small-en-v1.5",
+    "fastembed/ort",
+    "MG-1",
+    "SentenceTransformer",
+    "Xenova/bge-small-en-v1.5"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:18:53.257270Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 034)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.862057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.862057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 50,
+   "entities": [
+    "fts_korean_compound_negative",
+    "fts_korean_prefix",
+    "Korean FTS",
+    "MATCH",
+    "search::fts_query_string",
+    "tests/schema.rs"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:37:50.235955Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 035)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.882057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.882057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "/api/chat",
+    "JSON shape",
+    "schema"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:41:06.444355Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 036)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.822057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.822057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 51,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:41:54.188487Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 037)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.872057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.872057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "legacy split",
+    "ollama",
+    "prefix KV cache"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:41:06.444355Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 038)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.822057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.822057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 46,
+   "entities": [
+    "fastembed/ort",
+    "ort"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:35:03.594881Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the embedding producer is tagged so a foreign vector drops out visibly (fact 039)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.952057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.952057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:40:06.716218Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the retain cursor advances only on a confirmed post (fact 040)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.842057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.842057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 54,
+   "entities": [
+    "tool_result"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:41:28.765042Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 041)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.852057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.852057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 51,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:42:21.207083Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 042)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.822057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.822057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 45,
+   "entities": [
+    "memgarden",
+    "Phase 0",
+    "Phase A",
+    "PRs",
+    "rustc",
+    "Ryzen 9800X3D"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:18:53.257270Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 043)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.882057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.882057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 47,
+   "entities": [
+    "jiff 0.2.35"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:36:55.107194Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 044)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.862057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.862057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 51,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:42:21.207083Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 045)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.842057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.842057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:36:27.347466Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 046)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.902057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.902057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 46,
+   "entities": [
+    "AC-2"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:35:58.097301Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the embedding producer is tagged so a foreign vector drops out visibly (fact 047)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.982057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.982057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:40:06.716218Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the retain cursor advances only on a confirmed post (fact 048)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.842057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.842057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 45,
+   "entities": [
+    "AC-2",
+    "CE-11",
+    "cross-encoder",
+    "embedded reranker",
+    "hindsight_api",
+    "RRF"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:18:53.257270Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 049)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.842057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.842057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 50,
+   "entities": [
+    "AtomicU64",
+    "engine/embeddings.py",
+    "engine/local_device.py",
+    "gc-collect",
+    "health",
+    "ollama"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:37:23.029080Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 050)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.862057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.862057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 49,
+   "entities": [
+    "embedded text",
+    "stored text",
+    "vector space"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:34:35.695180Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 051)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.842057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.842057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 48,
+   "entities": [
+    "cli(hooks)",
+    "consolidate.rs",
+    "embed.rs",
+    "engine",
+    "entities.rs",
+    "fastembed/ort",
+    "memgarden-core",
+    "memgardend",
+    "ollama.rs",
+    "ort",
+    "Phase F",
+    "ponytail",
+    "recall",
+    "reflect",
+    "rerank.rs",
+    "retain",
+    "temporal",
+    "web UI"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:19:00.248561Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 052)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.852057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.852057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 45,
+   "entities": [
+    "cargo test",
+    "Hindsight",
+    "master",
+    "memory dashboard",
+    "ollama",
+    "test binaries"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:18:53.257270Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 053)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.972057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.972057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:40:06.716218Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 054)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.902057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.902057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 50,
+   "entities": [
+    "core/src/paths.rs",
+    "models_dir",
+    "models_dir_from",
+    "paths.rs",
+    "xdg_data_home"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:38:16.003975Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the embedding producer is tagged so a foreign vector drops out visibly (fact 055)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.862057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.862057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 52,
+   "entities": [
+    "memgardend/src/extract/prompts.rs",
+    "port brief",
+    "prompt"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:41:06.444355Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the retain cursor advances only on a confirmed post (fact 056)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.882057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.882057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:38:56.051164Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 057)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.892057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.892057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 50,
+   "entities": [
+    "Cargo.toml",
+    "fastembed/ort",
+    "jiff",
+    "memgardend/Cargo.toml"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:38:16.003975Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 058)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.852057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.852057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 54,
+   "entities": [
+    "tool_use"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:41:28.765042Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 059)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.882057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.882057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 55,
+   "entities": [
+    "brief gotcha #8",
+    "event_date",
+    "mentioned_at",
+    "occurred_start",
+    "SECONDS_PER_FACT"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:34:12.864928Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 060)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.912057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.912057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 47,
+   "entities": [
+    "Phase B-D",
+    "PRD Work Order"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:37:23.029080Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 061)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.842057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.842057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 46,
+   "entities": [
+    "nomic-embed-text",
+    "ollama"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:35:03.594881Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "consolidation records a watermark so a restart does not redo the corpus (fact 062)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.902057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.902057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:38:48.417432Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the embedding producer is tagged so a foreign vector drops out visibly (fact 063)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.832057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.832057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 47,
+   "entities": [
+    "/api/chat",
+    "/api/generate",
+    "CE-5"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:35:58.097301Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the retain cursor advances only on a confirmed post (fact 064)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.912057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.912057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 53,
+   "entities": [],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:38:48.417432Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "a budget filter that breaks instead of skipping truncates the tail (fact 065)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.862057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.862057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 54,
+   "entities": [
+    "hindsight_memories",
+    "memgarden_memories",
+    "relevant_memories"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:41:28.765042Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "recall fuses BM25 and vector arms with reciprocal rank fusion (fact 066)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.832057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.832057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 55,
+   "entities": [
+    "chunk_text",
+    "config.py",
+    "fact_extraction.py"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:33:45.649405Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "the daemon holds one database and the hooks never start it (fact 067)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.822057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.822057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 49,
+   "entities": [
+    "crate boundary",
+    "dependency graph"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:34:12.864928Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "an observation carries its provenance as node_sources rows (fact 068)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.862057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.862057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 46,
+   "entities": [
+    "spawn_blocking",
+    "TextEmbedding"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:35:30.248978Z",
+   "consolidation_failed_at": null
+  },
+  {
+   "text": "temporal adjacency is rebuilt by our rule, not copied (fact 069)",
+   "fact_type": "world",
+   "context": "claude-code",
+   "event_date": "2026-08-02T05:47:47.852057Z",
+   "occurred_start": null,
+   "occurred_end": null,
+   "mentioned_at": "2026-08-02T05:47:47.852057Z",
+   "metadata": {
+    "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "retained_at": "2026-08-02T05:37:26Z",
+    "message_count": "115",
+    "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+   },
+   "tags": [
+    "file:/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md",
+    "file:.omc/state/autopilot-state.json",
+    "file:.omc/plans/phase-b-impl.md",
+    "874a3a6d-c784-4dde-94ae-fd75cb6de48c"
+   ],
+   "observation_scopes": null,
+   "chunk_index": 50,
+   "entities": [
+    "BEGIN IMMEDIATE",
+    "Db::write",
+    "Phase A",
+    "rusqlite",
+    "spawn_blocking"
+   ],
+   "causal_relations": [],
+   "created_at": "2026-08-02T05:51:28.024223Z",
+   "consolidated_at": "2026-08-02T10:37:50.235955Z",
+   "consolidation_failed_at": null
+  }
+ ]
+}

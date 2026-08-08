@@ -1195,9 +1195,7 @@ mod tests {
     #[test]
     fn a_flipped_byte_is_detected() {
         let scratch = real_scratch();
-        let target = scratch
-            .path()
-            .join("claude-code__bank-a/manifest.json");
+        let target = scratch.path().join("claude-code__bank-a/manifest.json");
         let mut bytes = std::fs::read(&target).unwrap();
         // A byte inside the exported_at timestamp: still valid JSON, still
         // parses, and changes nothing a count check would notice.
@@ -1221,9 +1219,7 @@ mod tests {
     #[test]
     fn a_sha256sums_below_the_root_is_still_checksummed() {
         let scratch = real_scratch();
-        let nested = scratch
-            .path()
-            .join("claude-code__bank-a/SHA256SUMS");
+        let nested = scratch.path().join("claude-code__bank-a/SHA256SUMS");
         std::fs::write(&nested, b"legacy could legally emit this\n").unwrap();
         write_sha256sums(scratch.path()).unwrap();
         let body = std::fs::read_to_string(scratch.path().join("SHA256SUMS")).unwrap();
@@ -1286,14 +1282,8 @@ mod tests {
 
     #[test]
     fn bank_ids_slug_to_filesystem_safe_names() {
-        assert_eq!(
-            slug("claude-code::bank-a"),
-            "claude-code__bank-a"
-        );
-        assert_eq!(
-            slug("claude-code::bank e"),
-            "claude-code__bank_e"
-        );
+        assert_eq!(slug("claude-code::bank-a"), "claude-code__bank-a");
+        assert_eq!(slug("claude-code::bank e"), "claude-code__bank_e");
         assert_eq!(slug("codex"), "codex");
     }
 
@@ -1308,10 +1298,7 @@ mod tests {
         // The shapes a real drop set takes, including the one bank id with a
         // space in it that motivated `slug` in the first place.
         assert!(
-            assert_slugs_usable(
-                ["claude-code::a", "claude-code::B C", "bare"].into_iter()
-            )
-            .is_ok()
+            assert_slugs_usable(["claude-code::a", "claude-code::B C", "bare"].into_iter()).is_ok()
         );
     }
 
@@ -1338,13 +1325,7 @@ mod tests {
     fn endpoint_percent_encodes_the_bank_id() {
         let url = endpoint(
             LEGACY_BASE,
-            &[
-                "v1",
-                "default",
-                "banks",
-                "claude-code::bank e",
-                "stats",
-            ],
+            &["v1", "default", "banks", "claude-code::bank e", "stats"],
             &[],
         );
         assert_eq!(
@@ -1383,8 +1364,8 @@ mod run_tests {
     use super::*;
     use crate::migrate::test_support::fixture;
 
-    const JCODE: &str = "claude-code::bank-a";
-    const CMS: &str = "claude-code::bank-b";
+    const BANK_A: &str = "claude-code::bank-a";
+    const BANK_B: &str = "claude-code::bank-b";
 
     /// A stub legacy daemon: a routing table keyed on the exact URLs
     /// [`endpoint`] builds, and nothing else answered.
@@ -1543,7 +1524,7 @@ mod run_tests {
 
     #[tokio::test]
     async fn run_reads_five_endpoints_freezes_them_and_reconciles() {
-        let legacy = Legacy::start(&[(JCODE, Some("real")), (CMS, Some("real-cms"))]).await;
+        let legacy = Legacy::start(&[(BANK_A, Some("real")), (BANK_B, Some("real-dup"))]).await;
         let out = tempfile::tempdir().unwrap();
         let lines = run_from(&legacy.base, out.path(), &DroppedBanks::new())
             .await
@@ -1578,8 +1559,8 @@ mod run_tests {
         // which is what `import` and `verify` will read rather than the
         // responses just parsed.
         let oracle = crate::migrate::load_stats(out.path()).unwrap();
-        assert_eq!(oracle[JCODE].stats.total_nodes, 165);
-        assert_eq!(oracle[CMS].documents.len(), 1);
+        assert_eq!(oracle[BANK_A].stats.total_nodes, 165);
+        assert_eq!(oracle[BANK_B].documents.len(), 1);
     }
 
     /// The reconciliation that runs oracle -> archive, and the only one that
@@ -1587,7 +1568,7 @@ mod run_tests {
     /// checksums written and verified, exit 0.
     #[tokio::test]
     async fn a_bank_whose_archive_never_arrived_fails_the_run() {
-        let legacy = Legacy::start(&[(JCODE, Some("real")), (CMS, None)]).await;
+        let legacy = Legacy::start(&[(BANK_A, Some("real")), (BANK_B, None)]).await;
         let out = tempfile::tempdir().unwrap();
         assert!(matches!(
             run_from(&legacy.base, out.path(), &DroppedBanks::new()).await,
@@ -1604,9 +1585,13 @@ mod run_tests {
         // `/v1/default/banks` is the one route an empty stub still serves, so
         // the 404 has to come from somewhere else: point the run at a path
         // that has no route at all.
-        let err = run_from(&format!("{}/nope", legacy.base), out.path(), &DroppedBanks::new())
-            .await
-            .unwrap_err();
+        let err = run_from(
+            &format!("{}/nope", legacy.base),
+            out.path(),
+            &DroppedBanks::new(),
+        )
+        .await
+        .unwrap_err();
         let MigrateError::HttpStatus { status, body, .. } = err else {
             panic!("expected an HTTP status error, got {err}");
         };

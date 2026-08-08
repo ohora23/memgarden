@@ -14,3 +14,6 @@
 
 # Snapshots and evidence from a live migration carry real bank content.
 /migration/
+
+# OMC session state, not repo content
+/.omc/

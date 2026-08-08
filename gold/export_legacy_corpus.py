@@ -8,15 +8,17 @@ issue a mutating method.
 The snapshot — not the daemon — is the reproducibility anchor for
 `gold/queries.jsonl`. Gold labels key on the legacy fact uuid, and
 `recall_bench import` rebuilds the MemGarden corpus from this file, so the
-labels survive the legacy daemon being retired. That is why the file is
-committed rather than re-fetched on demand: a re-fetch returns a *different*
-corpus (hooks write to that bank continuously) and would silently invalidate
-every label.
+labels survive the legacy daemon being retired. Export once and keep the file:
+a re-fetch returns a *different* corpus (hooks write to that bank
+continuously) and would silently invalidate every label keyed to the old one.
+
+It is deliberately **not** committed — a corpus exported from a real bank is
+your working history. `gold/README.md` has the rest.
 
 Only the columns MemGarden actually stores are kept. Colours, chunk ids and
 consolidation bookkeeping are legacy-internal and would just be noise.
 
-Usage:  python3 gold/export_legacy_corpus.py [BANK_ID] > gold/corpus.jsonl
+Usage:  python3 gold/export_legacy_corpus.py BANK_ID > gold/corpus.jsonl
 """
 
 import json
@@ -25,7 +27,6 @@ import urllib.parse
 import urllib.request
 
 BASE = "http://127.0.0.1:9077"
-DEFAULT_BANK = "claude-code::bank-b"
 
 # Fetched in ONE request rather than paged. `memories/list` has no ORDER BY
 # guarantee, so a paged read of a bank being written to concurrently both
@@ -59,7 +60,14 @@ def get(bank: str, limit: int, offset: int) -> dict:
 
 
 def main() -> int:
-    bank = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_BANK
+    # Required rather than defaulted. The default used to be the bank this
+    # project measured against, which is nobody else's bank — and a silent
+    # default here exports the wrong corpus under the right filename, which
+    # then invalidates every label keyed to it.
+    if len(sys.argv) != 2:
+        print(__doc__, file=sys.stderr)
+        return 2
+    bank = sys.argv[1]
     total = get(bank, 1, 0)["total"]
     items = get(bank, total + PAGE_HEADROOM, 0)["items"]
 

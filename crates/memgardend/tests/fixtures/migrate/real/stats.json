@@ -21,7 +21,7 @@
   "documents": [
    {
     "id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
-    "content_hash": "85ffd68ac09de598f1d0fcb2d83639970977ad95071eecc01e3acfe1d9e60eda",
+    "content_hash": "01ab4f1a33328aa7dbdba31c731dc03eb69ecf5f123c83a1fb7a464f0d28e4e6",
     "memory_unit_count": 86,
     "document_metadata": {
      "session_id": "e7eda98c-4f08-4b9b-a760-fb2fba441d2b",
@@ -29,7 +29,7 @@
      "message_count": "237",
      "files_modified": "/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/hybrid-rrf-beats-pure-vector-recall.md,/home/user/.claude/projects/-home-user-0-AI-jcode-Analysis/memory/jcode-as-design-source.md"
     },
-    "text_length": 243
+    "text_length": 235
    }
   ],
   "memories_total": 165,

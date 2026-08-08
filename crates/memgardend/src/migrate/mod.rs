@@ -575,17 +575,17 @@ pub(crate) mod test_support {
             Snapshot::of(&["real"])
         }
 
-        /// `real-cms/` — the redacted `claude-code::bank-b`
+        /// `real-dup/` — the redacted `claude-code::bank-b`
         /// slice, and the only fixture that can carry duplicate
         /// `(document_id, fact_index)` source pairs: all 86 in the live corpus
         /// are in that bank.
         pub fn real_cms() -> Snapshot {
-            Snapshot::of(&["real-cms"])
+            Snapshot::of(&["real-dup"])
         }
 
         /// Both real banks in one snapshot directory.
         pub fn both() -> Snapshot {
-            Snapshot::of(&["real", "real-cms"])
+            Snapshot::of(&["real", "real-dup"])
         }
 
         /// One bank out of the three-bank `edge/` fixture, which has neither a

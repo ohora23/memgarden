@@ -273,7 +273,7 @@ this purpose and which nothing read until now.
 3. Provenance alone. Reportable, and **not unique** — two observations can be
    two LLM paraphrases of the same fact. Measured after review asked for the
    uniqueness the second key had and this one did not: **2 shared keys in
-   `real-cms/` and 10 observations across the live 1,747**. A bare `query_row`
+   `real-dup/` and 10 observations across the live 1,747**. A bare `query_row`
    resolved both archive rows to whichever node SQLite reached first, giving
    two false `text` differences and `AC-3 is NOT met` on a correct database —
    while the partner node was never compared at all. Seed- and size-dependent,
@@ -289,7 +289,7 @@ worse than no join key, because it reads as a migration failure.
 `every_observation_in_the_sample_finds_its_node`,
 `a_tampered_observation_reports_the_field_and_not_a_missing_node` and
 `the_whole_corpus_of_a_bank_with_shared_provenance_keys_compares_clean` are the
-tests — the last one runs the **whole** sample over `real-cms/`, which is the
+tests — the last one runs the **whole** sample over `real-dup/`, which is the
 measurement the third key never had.
 
 ---

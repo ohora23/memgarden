@@ -910,7 +910,7 @@ is not optional; without it the replaced content is never re-ingested.
 
 ---
 
-## `real-cms/`, the second fixture, and why `real/` could not do this job
+## `real-dup/`, the second fixture, and why `real/` could not do this job
 
 The `node_sources` gate is **2,114 distinct pairs, not 2,200 raw** ones,
 because `link_sources_tx` is `INSERT OR IGNORE` against the
@@ -920,7 +920,7 @@ a fixture with duplicate `(document_id, fact_index)` source pairs in it — and
 `claude-code::bank-b`**. `bank-a`, the bank `real/` is
 sliced from, has zero: 294 raw source references, 294 distinct.
 
-So D2 takes a second redacted slice. `real-cms/README.md` records every edit;
+So D2 takes a second redacted slice. `real-dup/README.md` records every edit;
 the shape it carries is 70 facts, 65 observations, **114 raw source references
 against 68 distinct**, one observation with more than one distinct source, and
 43 of 65 `proof_count` values that disagree with `len(distinct sources)` —
@@ -1064,7 +1064,7 @@ and the temporal self-consistency check needed a scope that took three attempts
 * **Entities can be a Tier-1 equality**, which the plan did not expect: 3,917
   distinct normalized archive names == 3,917 rows, 10,379 mentions == 10,379
   `node_entities` edges. §1.
-* `proof_count` disagrees with legacy in 43 of `real-cms/`'s 65 observations,
+* `proof_count` disagrees with legacy in 43 of `real-dup/`'s 65 observations,
   the same construction that produces 93 of 1,747 across the corpus. Tier 2.
 * The database now holds **both** sides of the `node_sources` arithmetic:
   `metadata.legacy.observation_of` carries the archive's 2,200 raw references,

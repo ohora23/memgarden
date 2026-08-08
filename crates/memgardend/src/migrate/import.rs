@@ -1544,8 +1544,8 @@ mod tests {
     use crate::migrate::test_support::Snapshot;
     use memgarden_core::EMBEDDING_DIM;
 
-    const JCODE: &str = "claude-code::bank-a";
-    const CMS: &str = "claude-code::bank-b";
+    const BANK_A: &str = "claude-code::bank-a";
+    const BANK_B: &str = "claude-code::bank-b";
 
     /// A deterministic stand-in for the 133 MB ONNX model.
     ///
@@ -1647,7 +1647,7 @@ mod tests {
         let fixture = Fixture::real();
         let reports = fixture.import().await.expect("the committed slice imports");
         let report = &reports[0];
-        assert_eq!(report.bank_id, JCODE);
+        assert_eq!(report.bank_id, BANK_A);
         assert_eq!(
             (report.documents, report.facts, report.observations),
             (1, 86, 79)
@@ -1962,7 +1962,7 @@ mod tests {
     /// duplicate `(document_id, fact_index)` pair collapses — and `proof_count`
     /// is recounted from what survived rather than carried.
     ///
-    /// Only `real-cms/` can show this: all 86 duplicates in the live corpus
+    /// Only `real-dup/` can show this: all 86 duplicates in the live corpus
     /// are in `claude-code::bank-b`, and `real/`'s bank has zero.
     #[tokio::test]
     async fn duplicate_source_pairs_collapse_and_proof_count_follows() {
@@ -2007,14 +2007,14 @@ mod tests {
         assert_eq!(
             count(
                 &db,
-                &format!("SELECT count(*) FROM memory_nodes WHERE bank_id='{JCODE}'")
+                &format!("SELECT count(*) FROM memory_nodes WHERE bank_id='{BANK_A}'")
             ),
             165
         );
         assert_eq!(
             count(
                 &db,
-                &format!("SELECT count(*) FROM memory_nodes WHERE bank_id='{CMS}'")
+                &format!("SELECT count(*) FROM memory_nodes WHERE bank_id='{BANK_B}'")
             ),
             135
         );
@@ -2042,7 +2042,7 @@ mod tests {
                 &format!("SELECT count(*) FROM entities WHERE bank_id='{bank}'"),
             )
         };
-        assert_eq!((per_bank(JCODE), per_bank(CMS)), (203, 166));
+        assert_eq!((per_bank(BANK_A), per_bank(BANK_B)), (203, 166));
         assert_eq!(count(&db, "SELECT count(*) FROM entities"), 369);
         assert_eq!(
             count(
@@ -2079,7 +2079,7 @@ mod tests {
         let fixture = Fixture::real();
         fixture.import().await.unwrap();
         let db = fixture.open();
-        let disposition = banks::get(&db, JCODE)
+        let disposition = banks::get(&db, BANK_A)
             .unwrap()
             .unwrap()
             .disposition
@@ -2093,7 +2093,7 @@ mod tests {
             "the snapshot's own hash, so verify can catch a bank imported from another one"
         );
         assert_eq!(
-            banks::get(&db, JCODE).unwrap().unwrap().mission.unwrap(),
+            banks::get(&db, BANK_A).unwrap().unwrap().mission.unwrap(),
             "You are a coding assistant with long-term memory of this project's engineering \
              history: decisions, bug fixes, conventions, and workflows.",
             "banks.json is the only carrier of the mission; the archive has none"
@@ -2111,21 +2111,21 @@ mod tests {
         let db = fixture.open();
         let max_id = count(&db, "SELECT MAX(id) FROM memory_nodes");
         assert_eq!(reports[0].watermark, max_id);
-        assert_eq!(consolidate::watermark(&db, JCODE).unwrap(), max_id);
+        assert_eq!(consolidate::watermark(&db, BANK_A).unwrap(), max_id);
         // Discriminating, unlike `count_unconsolidated(db, bank, max_id)`,
         // which is `id > MAX(id)` and is 0 for any database at all. The pair
         // is what shows the row did something: at watermark 0 the whole
         // imported corpus is due, at the written watermark none of it is.
         assert_eq!(
-            consolidate::count_unconsolidated(&db, JCODE, 0).unwrap(),
+            consolidate::count_unconsolidated(&db, BANK_A, 0).unwrap(),
             86,
             "without the row the daemon would re-consolidate every migrated fact"
         );
         assert_eq!(
             consolidate::count_unconsolidated(
                 &db,
-                JCODE,
-                consolidate::watermark(&db, JCODE).unwrap()
+                BANK_A,
+                consolidate::watermark(&db, BANK_A).unwrap()
             )
             .unwrap(),
             0,
@@ -2170,7 +2170,7 @@ mod tests {
             86,
             "the facts are on disk: there is no transaction to roll them back"
         );
-        let disposition = banks::get(&db, JCODE)
+        let disposition = banks::get(&db, BANK_A)
             .unwrap()
             .unwrap()
             .disposition
@@ -2190,13 +2190,13 @@ mod tests {
         ));
         let db = fixture.open();
         db.write(|tx| {
-            tx.execute("DELETE FROM memory_nodes WHERE bank_id = ?1", [JCODE])
+            tx.execute("DELETE FROM memory_nodes WHERE bank_id = ?1", [BANK_A])
                 .map_err(|e| memgarden_core::Error::Storage(e.to_string()))
         })
         .unwrap();
         assert!(
             matches!(
-                assert_bank_available(&db, JCODE, false),
+                assert_bank_available(&db, BANK_A, false),
                 Err(MigrateError::ImportInProgress { .. })
             ),
             "a bank that failed before its first node has zero rows and is still not reusable"
@@ -2224,7 +2224,7 @@ mod tests {
         let document_id: i64 = count(&db, "SELECT id FROM documents LIMIT 1");
         memgarden_store::sessions::upsert(
             &db,
-            JCODE,
+            BANK_A,
             &memgarden_store::sessions::SessionUpdate {
                 session_id: "s-1",
                 byte_offset: Some(4096),
@@ -2235,7 +2235,7 @@ mod tests {
         memgarden_store::retain_jobs::insert(
             &db,
             "job-1",
-            JCODE,
+            BANK_A,
             Some(document_id),
             Some("s-1"),
             None,
@@ -2246,7 +2246,7 @@ mod tests {
             &db,
             &memgarden_store::mental_models::NewMentalModel {
                 id: "mm-1",
-                bank_id: JCODE,
+                bank_id: BANK_A,
                 name: "m",
                 source_query: None,
                 content: "c",
@@ -2448,7 +2448,8 @@ mod tests {
     async fn document_metadata_that_disagrees_with_retain_params_is_refused() {
         let fixture = Fixture::real();
         fixture.snapshot.edit("stats.json", |stats| {
-            stats[JCODE]["documents"][0]["document_metadata"]["session_id"] = json!("someone-else");
+            stats[BANK_A]["documents"][0]["document_metadata"]["session_id"] =
+                json!("someone-else");
         });
         assert!(matches!(
             fixture.import().await,
@@ -2501,9 +2502,7 @@ mod tests {
             let fixture = Fixture::real();
             fixture
                 .snapshot
-                .edit("claude-code__bank-a/manifest.json", |m| {
-                    m[field] = json!(1)
-                });
+                .edit("claude-code__bank-a/manifest.json", |m| m[field] = json!(1));
             assert!(
                 matches!(
                     fixture.import().await,
@@ -2635,9 +2634,7 @@ mod tests {
             });
         fixture
             .snapshot
-            .edit("claude-code__bank-a/observations.json", |o| {
-                *o = json!([])
-            });
+            .edit("claude-code__bank-a/observations.json", |o| *o = json!([]));
         std::fs::remove_file(
             fixture
                 .snapshot
@@ -2646,12 +2643,12 @@ mod tests {
         )
         .unwrap();
         fixture.snapshot.edit("stats.json", |stats| {
-            stats[JCODE]["stats"]["total_nodes"] = json!(0);
-            stats[JCODE]["stats"]["total_documents"] = json!(0);
-            stats[JCODE]["stats"]["links_by_link_type"]["caused_by"] = json!(0);
-            stats[JCODE]["documents"] = json!([]);
-            stats[JCODE]["documents_total"] = json!(0);
-            stats[JCODE]["memories_total"] = json!(0);
+            stats[BANK_A]["stats"]["total_nodes"] = json!(0);
+            stats[BANK_A]["stats"]["total_documents"] = json!(0);
+            stats[BANK_A]["stats"]["links_by_link_type"]["caused_by"] = json!(0);
+            stats[BANK_A]["documents"] = json!([]);
+            stats[BANK_A]["documents_total"] = json!(0);
+            stats[BANK_A]["memories_total"] = json!(0);
         });
 
         let reports = fixture.import().await.unwrap();
@@ -2666,7 +2663,7 @@ mod tests {
     }
 
     /// The cross-document half of §1's trade, which no real fixture can show:
-    /// `real/` and `real-cms/` are both single-document, so
+    /// `real/` and `real-dup/` are both single-document, so
     /// `load_resolution_context` hands `resolve_fact` an empty candidate list
     /// and the resolver degenerates to `normalize`.
     ///
@@ -2806,13 +2803,13 @@ mod tests {
             .snapshot
             .edit("banks.json", |b| b["banks"][0]["mission"] = json!(null));
         let db = fixture.open();
-        banks::create(&db, JCODE, Some("set by hook session-start"), None).unwrap();
+        banks::create(&db, BANK_A, Some("set by hook session-start"), None).unwrap();
         drop(db);
 
         fixture.import_replacing().await.unwrap();
         let db = fixture.open();
         assert_eq!(
-            banks::get(&db, JCODE).unwrap().unwrap().mission.unwrap(),
+            banks::get(&db, BANK_A).unwrap().unwrap().mission.unwrap(),
             "set by hook session-start"
         );
     }

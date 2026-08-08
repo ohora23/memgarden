@@ -1,0 +1,39 @@
+{
+ "claude-code::bank-b": {
+  "bank_id": "claude-code::bank-b",
+  "stats": {
+   "bank_id": "claude-code::bank-b",
+   "total_nodes": 135,
+   "total_documents": 1,
+   "total_observations": 65,
+   "nodes_by_fact_type": {
+    "world": 70,
+    "observation": 65
+   },
+   "links_by_link_type": {
+    "caused_by": 0,
+    "temporal": 0,
+    "semantic": 0,
+    "entity": 0
+   }
+  },
+  "documents": [
+   {
+    "id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+    "content_hash": "3083608b59201bad981c592547784453bdcfa8eda6eba43a0b72891c67a4bacd",
+    "memory_unit_count": 70,
+    "document_metadata": {
+     "session_id": "874a3a6d-c784-4dde-94ae-fd75cb6de48c",
+     "retained_at": "2026-08-02T05:37:26Z",
+     "message_count": "115",
+     "files_modified": "/home/user/.claude/projects/-home-user-z-Setup-Claude-MemorySystem/memory/project_memgarden_rust_phase_a.md,.omc/research/retain-extraction-port-brief.md"
+    },
+    "text_length": 218
+   }
+  ],
+  "memories_total": 135,
+  "documents_total": 1,
+  "memories_invalidated": 0,
+  "dropped": false
+ }
+}
