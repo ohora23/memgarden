@@ -33,13 +33,14 @@ pub fn manager_file(path: &Path) -> SqliteConnectionManager {
     SqliteConnectionManager::file(path).with_init(init_pragmas)
 }
 
-pub fn manager_memory() -> SqliteConnectionManager {
-    SqliteConnectionManager::memory().with_init(init_pragmas)
-}
-
 /// Per-connection pragmas, applied outside any transaction via r2d2's
 /// `with_init` hook. Order: busy_timeout -> WAL -> synchronous ->
 /// foreign_keys -> temp_store -> mmap -> cache.
+///
+/// `journal_mode` is the one that has to reach a real file. SQLite refuses
+/// WAL for an in-memory database and answers `memory` instead — silently,
+/// since `pragma_update` does not read the response back — which is why
+/// `Db::open_memory` no longer opens one. See its doc comment.
 fn init_pragmas(conn: &mut Connection) -> rusqlite::Result<()> {
     conn.busy_timeout(Duration::from_millis(5000))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;

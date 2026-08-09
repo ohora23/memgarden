@@ -248,6 +248,31 @@ retain_jobs")` in 5 of 8 runs, and one `memgarden-cli` recall test times out.
 this is worth its own look — particularly since production slows down the same
 way under GPU contention.
 
+> **Closed 2026-08-10, and it was never under WAL.** `Db::open_memory` went
+> through `r2d2_sqlite::memory()`, which opens
+> `file:{uuid}?mode=memory&cache=shared` — and SQLite refuses WAL for an
+> in-memory database, answering `memory` instead. `init_pragmas` asks with
+> `pragma_update`, which does not read the answer back, so the request was
+> discarded in silence and all 828 tests ran on shared-cache table-level
+> locking. There a read concurrent with a write fails `SQLITE_LOCKED`
+> **immediately**, and `busy_timeout` does not cover that lock class; the same
+> read/write pair on the file+WAL production path passes untouched. Both halves
+> were measured directly against the system sqlite before anything was changed.
+>
+> `open_memory` now opens a throwaway file, removed on drop, and a guard test
+> pins `PRAGMA journal_mode` to `wal`. Against `retain_api` at 4 concurrent
+> processes × 32 threads, interleaved so both arms take the same machine load,
+> 160 runs each: **5 `SQLITE_LOCKED` deaths on shared cache, 0 on file+WAL.**
+>
+> **The corruption is a separate defect and is still open.** Each arm also died
+> once in a way that is not a lock — a SIGSEGV on shared cache, `error in table
+> sessions after add column: near "\n  ": syntax error` on file+WAL — and that
+> second shape, a value read back wrong, is the same one as the `Store {
+> message: "malformed JSON" }` above. It survives the storage change. What did
+> improve is that the probe and the suite now run the same storage model, so
+> the probe going quiet while the suite kept dying is no longer an
+> inconsistency to explain.
+
 Ruled out, each measured rather than argued: thread stack size
 (`RUST_MIN_STACK=32M` changes nothing), `mmap_size` (0 changes nothing),
 `sqlite-vec` (removing the `vec_nodes` insert changes nothing), and serializing
