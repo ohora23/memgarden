@@ -763,3 +763,86 @@ async fn backlog_tick_creates_semantic_links() {
         "weight {w} must be a cosine similarity, not a distance"
     );
 }
+
+/// CE-7: a semantic edge must be able to reach a node embedded in an *earlier*
+/// batch.
+///
+/// The test above hands all 42 nodes to one `on_batch_embedded` call, so it is
+/// structurally unable to see this: it would pass with the fact_type oracle
+/// built from the batch alone, which is how the defect survived. Everything a
+/// real backlog drain does happens across batches —
+/// `embedding.batch_size` defaults to 8 — so under the old code every semantic
+/// edge joined two nodes from the same batch and out-degree capped at 7
+/// against a `SEMANTIC_LINK_TOP_K` of 20.
+///
+/// Two batches, one node each, deliberately: with the old code this asserts 0
+/// links where the property demands 2.
+#[tokio::test]
+async fn a_semantic_link_reaches_a_node_embedded_in_an_earlier_batch() {
+    let db = Arc::new(Db::open_memory().unwrap());
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let dim = memgarden_core::EMBEDDING_DIM;
+    let unit = |second: f32| -> Vec<f32> {
+        let mut v = vec![0.0f32; dim];
+        v[0] = 1.0;
+        v[1] = second;
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.into_iter().map(|x| x / norm).collect()
+    };
+
+    let mk = |text: &str| {
+        let mut n = NewNode::new("b1", FactType::World, text);
+        n.mentioned_at = Some(1_782_898_200_000);
+        nodes::insert(&db, n).unwrap()
+    };
+    let first = mk("world fact embedded first");
+    let second = mk("world fact embedded second");
+
+    // Batch one, alone. Nothing to link to yet.
+    let b1 = vec![(first, "b1".to_string(), unit(0.0))];
+    nodes::set_embeddings_batch(&db, &b1).unwrap();
+    memgardend::embed_task::on_batch_embedded(&db, b1).await;
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM links WHERE link_type = 'semantic'"
+        ),
+        0,
+        "a lone first batch has no same-type neighbour to reach"
+    );
+
+    // Batch two. Its KNN finds `first`, which is not in this batch.
+    let b2 = vec![(second, "b1".to_string(), unit(0.1))];
+    nodes::set_embeddings_batch(&db, &b2).unwrap();
+    memgardend::embed_task::on_batch_embedded(&db, b2).await;
+
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM links WHERE link_type='semantic'
+               AND from_node_id=2 AND to_node_id=1"
+        ),
+        1,
+        "the second batch must link to the node the first batch embedded"
+    );
+
+    // **One edge, not two, and that is the pass's shape rather than a
+    // shortfall of this fix.** `on_batch_embedded` only ever writes edges
+    // *out of* the nodes it was just handed, so `first` cannot acquire an edge
+    // to a node that did not exist when it was embedded. The test above sees 2
+    // only because both of its nodes are in one batch and each links to the
+    // other. Consequence worth knowing: in a growing bank the semantic graph
+    // is built in insertion order, and an early node's out-edges are fixed at
+    // the moment it drains. Widening that means re-linking settled nodes on
+    // every batch, which is a different decision from this one.
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM links WHERE link_type='semantic'
+               AND from_node_id=1 AND to_node_id=2"
+        ),
+        0,
+        "the earlier node keeps the out-edges it had when it drained"
+    );
+}

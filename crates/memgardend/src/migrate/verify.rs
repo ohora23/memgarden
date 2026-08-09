@@ -42,10 +42,13 @@
 //!   class reported without a ratio. A band on the total would pass a run in
 //!   which the fact-edge rule silently broke.
 //! * **`semantic` gets no band at all**, and not for the plan's reason ("no
-//!   prior"). There is a prior — legacy's 65,127 — and we are at 6,890 because
-//!   `embed_task.rs:178-179` confines every semantic edge to one 8-node
-//!   embedding batch. Banding a number that a one-line CE-7 fix moves by 10×
-//!   would be banding a bug.
+//!   prior"). There is a prior — legacy's 65,127. The first runs sat at 6,890
+//!   because `embed_task` confined every semantic edge to one embedding batch,
+//!   and banding a number that a one-line CE-7 fix moves by 10× would have been
+//!   banding a bug. That fix landed 2026-08-09 and moved it to 62,199, 0.96×.
+//!   The band stays off for the reason that outlives the defect: a semantic
+//!   edge is a function of an embedding space, ours is not legacy's, and one
+//!   corpus at 0.96× is a measurement rather than an expectation.
 //! * **Entities are a Tier-1 equality**, which the plan did not expect. MG-1b
 //!   normalizes and stops, so the archive's distinct normalized names and its
 //!   mention count are both exact.
@@ -1151,11 +1154,15 @@ fn tier2(
             ratio: (legacy("semantic") > 0).then(|| semantic as f64 / legacy("semantic") as f64),
             band: None,
             ok: true,
-            note: "NO BAND, deliberately. Every semantic edge here connects two nodes embedded \
-                   in the same batch of 8: embed_task.rs:178-179 builds node_types from the \
-                   just-embedded batch and links.rs:143 drops every neighbour outside it. Over \
-                   the same vectors a whole-corpus pass emits ~10x more. Banding this would be \
-                   banding a CE-7 defect"
+            note: "NO BAND, deliberately, and no longer for the reason it used to be. Until \
+                   CE-7 was fixed every semantic edge joined two nodes from the same embedding \
+                   batch — node_types was built from the just-embedded ids, so semantic_links' \
+                   fact_type filter dropped every neighbour outside the batch and out-degree \
+                   capped at batch_size - 1. That read 6,918 edges, 0.11x legacy, max degree 7. \
+                   Fixed, the same corpus gives 62,199 at 0.96x with max degree 20, the \
+                   intended SEMANTIC_LINK_TOP_K. The band stays off for the reason that \
+                   survives: a semantic edge is a function of an embedding space, and ours is \
+                   not legacy's, so no ratio is the right one to expect"
                 .to_string(),
             out_degree: out_degree(db, &banks, "semantic", "1=1")?,
         },
@@ -1560,10 +1567,11 @@ fn sentence(report: &Report) -> String {
          legacy's, and legacy's temporal rule applies no 24-hour window to its neighbour query \
          (ops_postgresql.py:562-593) where ours does. The rebuilt temporal set reproduces our \
          own rule exactly ({stored} edges, checked against a reference implementation) and its \
-         fact-to-fact half stands at {}x legacy's count; semantic stands at {}x, and that ratio \
-         is a CE-7 defect rather than a migration property — every semantic edge here is \
-         confined to one embedding batch. Observation-to-observation temporal edges ({}) are a \
-         class legacy does not store. Entity links exist in neither system's storage.{}",
+         fact-to-fact half stands at {}x legacy's count; semantic stands at {}x, which is a \
+         property of two different embedding spaces rather than a shortfall — the CE-7 batch \
+         confinement that once held this at 0.11x is fixed. Observation-to-observation temporal \
+         edges ({}) are a class legacy does not store. Entity links exist in neither system's \
+         storage.{}",
         temporal
             .and_then(|m| m.ratio)
             .map(|r| format!("{r:.2}"))

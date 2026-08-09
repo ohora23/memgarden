@@ -194,6 +194,20 @@ defect affecting every MemGarden database**, not just migrated ones, and a
 one-line fix moves the number by 10×. Banding it now would be banding a bug.
 `book/src/roadmap.md` carries it; D3 sets no band until CE-7 decides.
 
+> **Fixed 2026-08-09, and the prediction held.** `on_batch_embedded` now looks
+> up node types for the batch **and** its KNN neighbours, so the fact_type
+> filter stops doubling as a batch-membership filter. Re-importing the same
+> snapshot: semantic **6,918 → 62,199**, ratio **0.106× → 0.955×**, out-degree
+> max **7 → 20** — from `batch_size - 1` to `SEMANTIC_LINK_TOP_K`, which is
+> what the rule was always trying to produce. The estimate above said a
+> whole-corpus pass would emit ~68,537; the real pass emits 62,199, so the
+> estimate was 10 % high but right about the order.
+>
+> **The band stays off**, for the reason that outlives the defect rather than
+> the one that motivated it: a semantic edge is a function of an embedding
+> space, ours is not legacy's, and there is no ratio it *should* hit. One
+> corpus at 0.96× is not a band; it is one corpus.
+
 ### `--accept-tier2`, and why its hash is not a hash of the report
 
 A phase that always exits 2 trains the reader to ignore exit 1 within two runs,
