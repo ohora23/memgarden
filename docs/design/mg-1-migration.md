@@ -806,9 +806,16 @@ cleanest evidence that the fact_type filter had been acting as a batch filter.
 Holding it out of the migration PR was right for the reason given, and it is
 worth keeping the reason legible now that both halves have happened: the
 migration produced a graph exactly as dense as every other MemGarden database
-of its day, and the fix then moved all of them together. What has *not* been
-re-measured is AX-2 — the gold corpus was built through the same worker, so the
-recall numbers in the README still describe the thin graph.
+of its day, and the fix then moved all of them together.
+
+**AX-2 has since been re-run, and the density bought nothing.** The gold corpus
+rebuilt through the fixed worker holds 43,830 semantic edges against 681 — a
+64× change, out-degree max 3 → 20 — and recall@10 went **0.3881 → 0.3792**,
+nDCG@10 0.3236 → 0.3168, with no stratum improving (ledger line 11). Read as
+*no measurable gain* rather than *a regression*: 0.9 points over 14 scored
+queries is inside what this set resolves. But the assumption written above — and
+in the README until now — that these numbers were being held down by the thin
+graph is retired. They were not.
 
 ### 5. §5 and the runbook disagree about `sessions`, and the reason given for the winner is not the right reason
 

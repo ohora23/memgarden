@@ -236,10 +236,24 @@ Fixed on 2026-08-09 — the lookup now covers the batch **and** its neighbours. 
 same corpus moves semantic edges **6,918 → 62,199** (0.11× → 0.96× of legacy's 65,149) and
 out-degree from max 7, which was `batch_size - 1`, to max 20, which is `SEMANTIC_LINK_TOP_K`.
 
-**The table above is still the old measurement.** The gold corpus was built through the same
-worker, so every number in this section was taken on a semantic arm roughly a tenth as dense as
-the rule intends. Re-measuring is AX-2's job and has not happened yet; until it does, read these
-as a floor rather than as the ranker's behaviour.
+**Re-measured on the fixed graph, and the density bought nothing.** The gold corpus was rebuilt
+through the same worker: **681 semantic edges → 43,830**, a 64× change, with out-degree going
+from mean 1.24 / max 3 to mean 16.6 / max 20. Recall moved the wrong way:
+
+| | recall@10 | MRR | nDCG@10 |
+|---|---|---|---|
+| thin graph (ledger line 8) | 0.3881 | 0.5221 | 0.3236 |
+| 9× denser (line 11) | **0.3792** | **0.5162** | **0.3168** |
+
+Per stratum, nothing improved: `memcompare` recall@10 −0.025, `graph` nDCG −0.025, and
+`identifier`, `conclusion` and `temporal` unmoved to three decimals. The ceiling is unchanged at
+0.8588, as it must be — the labels never moved.
+
+The honest reading is *no measurable gain*, not *a regression*: −0.9 points of recall@10 over 14
+scored queries is inside what a set this size can resolve. But it does retire the assumption that
+these numbers were being held down by the thin graph. They were not, and the fix stands on the
+code having done something other than what it said rather than on a recall win it did not
+deliver.
 
 ## Documentation
 
