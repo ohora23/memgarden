@@ -44,6 +44,7 @@ pub fn router(state: AppState) -> Router {
             get(metrics::list_ledger).post(metrics::create_ledger),
         )
         .route("/v1/banks/{bank_id}/reindex", post(embed::reindex_bank))
+        .route("/v1/banks/{bank_id}/relink", post(embed::relink_bank))
         .route("/v1/embed", post(embed::embed_debug))
         // Unlike /v1/embed this debug route is deliberately ungated: it is
         // B2's only end-to-end verification surface until B3 wires retain,

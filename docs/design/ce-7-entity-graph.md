@@ -251,3 +251,43 @@ to `mentioned_at`, putting the pairs 12.25 h apart inside the 24 h window.
 Note the Zipfian entity shape even in a four-fact bank: two entities at 3
 mentions of 4 facts. That distribution is the argument for
 `MAX_ENTITY_FANOUT`, not a hypothetical.
+
+### The relink repair (`POST /v1/banks/{id}/relink`)
+
+The fact_type oracle in `on_batch_embedded` was first built from the embedding
+batch alone, which silently turned the fact_type filter into a *same-batch*
+filter: every semantic edge joined two nodes of one `embedding.batch_size`
+batch, and out-degree capped at exactly `batch_size - 1` against a
+`SEMANTIC_LINK_TOP_K` of 20. Fixing the oracle only helps nodes embedded
+*after* the fix, so every database built before it keeps the thin graph — the
+live one showed 7,040 semantic links, out-degree max 7.
+
+`relink` walks a bank's already-embedded nodes in keyset chunks of 500,
+decodes each stored vector (`vecblob::decode`, the inverse of what
+`set_embeddings_batch` wrote) and hands them back to the same
+`on_batch_embedded` the backlog worker uses. Nothing is deleted first:
+`graph::insert_links` is `ON CONFLICT DO NOTHING`, so the pass is purely
+additive and a second run writes 0. `reindex` is *not* this — it rebuilds
+`vec_nodes` from `memory_nodes.embedding` and leaves `links` untouched.
+
+It also answers the narrower shape recorded in
+`a_semantic_link_reaches_a_node_embedded_in_an_earlier_batch`: the pass only
+writes edges *out of* the nodes handed to it, so in a growing bank an early
+node's out-edges are fixed at the moment it drains. Relink is what lets a
+settled node acquire edges to everything embedded since.
+
+Live run, six banks, 5,377 embedded nodes:
+
+```
+semantic links   7,040 -> 92,417        (legacy PostgreSQL: 65,149)
+out-degree max       7 -> 27            (20 own + reciprocal edges written by neighbours)
+out-degree avg              17.78
+nodes with >=1 out-edge      5,197 / 5,377
+cross-fact_type 0 · cross-bank 0 · weight in [0.7, 1.0]
+second run: {"nodes":65,"links_written":0}
+```
+
+// ponytail: synchronous like `reindex`, and unlike it this runs a k=100 KNN
+per node — the live 3,200-node bank took seconds, but a bank large enough to
+outlive the client's timeout wants 202 + a job id. It reads a chunk at a time,
+so an interrupted run simply resumes on the next call.
