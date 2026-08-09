@@ -4,6 +4,14 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Manual trigger, and it is here for a reason rather than as a nicety. The
+  # repository was deleted and recreated on 2026-08-09; its 25 branches went up
+  # in one `refs/heads/*:refs/heads/*` push, and GitHub raises no workflow event
+  # for a bulk ref push. Four PRs then merged through the API without this file
+  # ever being registered, so every check was run locally instead.
+  # `workflow_dispatch` is the lever that does not depend on guessing which
+  # event GitHub will honour.
+  workflow_dispatch:
 
 jobs:
   test:
