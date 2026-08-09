@@ -147,12 +147,66 @@ merge writing a varint through a stale buffer pointer
 (`sqlite3MemSize(pPrior=0x1008)` under `pcache1Alloc`). SQLite is
 `THREADSAFE=1`, `MUTEX_PTHREADS`, 3.53.2.
 
-**It is not the migration code, and the reproducer is what says so.** Twenty-five
+**It is not the migration code, and the reproducer is what said so.** Twenty-five
 lines in `memgarden-store` — open a file-backed `Db`, `nodes::insert_batch` of
 150 long-text nodes, drop — with no `migrate` involvement, no links and no
-reopen, crashes **6 times in 32 processes** under the same load. Phase D's
-tests were simply the first suite to hold dozens of file-backed databases with
-substantial FTS5 content open at once.
+reopen, crashed **6 times in 32 processes** under the same load on 2026-08-07.
+Phase D's tests were simply the first suite to hold dozens of file-backed
+databases with substantial FTS5 content open at once.
+
+**That reproducer stopped reproducing, and the conclusion it carried has to go
+with it.** Re-measured 2026-08-09, same machine, same harness:
+
+| what was run | 2026-08-07 | 2026-08-09 |
+|---|---|---|
+| `cargo test --workspace`, 8 runs | 2 died | **2 died** |
+| the committed probe, 8 proc x 32 threads | 6 of 32 | **0 of 32** |
+| its pre-reduction variant (+3,000 links in a second transaction, + reopen) | — | **0 of 32** |
+| `memgardend` lib alone, 4 proc x 16 threads | — | **0 of 16** |
+
+The defect is alive — the workspace tally is unchanged. What is not established
+any more is *where* it lives: the smallest unit that reproduces is the whole
+workspace run, where cargo schedules a dozen test binaries concurrently, and no
+single binary reproduces on its own. "It is the store's, not the migration's"
+rested entirely on the probe reproducing alone, so that sentence is now an open
+question rather than a result.
+
+**A second symptom, which is not a crash.** One of the two 2026-08-09 deaths was
+`migrate::verify`'s sample test failing with `Store { message: "malformed
+JSON" }` — a value read back wrong, not a segfault. Two observations is not a
+pattern, but "the test suite corrupts memory" is scoped to crashes and this one
+is not a crash, so the scope is doing work the evidence does not support.
+
+## ASAN does not reproduce it
+
+Run on 2026-08-09 against the only unit that reproduces (`cargo test
+--workspace`), on nightly with `-Zbuild-std`, in three configurations —
+Rust-only instrumentation; Rust **and** the bundled SQLite C; and the same again
+with `--no-fail-fast` so every target runs regardless. **24 workspace runs, zero
+ASAN reports, zero SIGSEGVs.**
+
+Instrumenting SQLite is what makes this conclusive rather than inconclusive. A
+redzone absorbing an overrun would still be *reported* by instrumented code; no
+report at all points at the corrupting access not happening, which makes this a
+timing- or layout-dependent defect that ASAN's allocator and its 2-4x slowdown
+design out of existence. ASAN is the wrong instrument here. The next ones are
+valgrind — much slower, no rebuild, precise access tracking instead of redzones
+— or TSAN, if the cause turns out to be a race.
+
+`rust-toolchain.toml` stays pinned at stable; nightly is installed locally and
+`cargo +nightly` overrides the file, so nothing about the project's toolchain
+needs to change to re-run any of this. The `-fsanitize=address` for SQLite has
+to arrive through a `CC` wrapper that matches only the SQLite sources: a global
+`CFLAGS` also instruments `ring`, whose objects then link into `ort-sys`'s
+*build script* — a host binary with no ASAN runtime — and the build fails on
+`__asan_stack_free_6`.
+
+**What ASAN did surface, unrelated to the corruption:** under its slowdown,
+`retain_api.rs`'s `await_job` poll fails with `Storage("database table is locked:
+retain_jobs")` in 5 of 8 runs, and one `memgarden-cli` recall test times out.
+`SQLITE_LOCKED` on a *read* under WAL is not what WAL is supposed to give, so
+this is worth its own look — particularly since production slows down the same
+way under GPU contention.
 
 Ruled out, each measured rather than argued: thread stack size
 (`RUST_MIN_STACK=32M` changes nothing), `mmap_size` (0 changes nothing),

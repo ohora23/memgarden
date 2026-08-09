@@ -105,13 +105,32 @@ mod heap_corruption_repro {
     //! done
     //! ```
     //!
-    //! Measured on a Ryzen 7 9800X3D (16 threads): **6 of 32 processes died**,
-    //! with SIGSEGV inside FTS5's index merge or SQLite's allocator. There is
-    //! no `migrate` code here, no links, and no reopen — a file-backed `Db`
-    //! and one large `insert_batch` of FTS5-bearing rows is the whole shape.
+    //! Measured 2026-08-07 on a Ryzen 7 9800X3D (16 threads): **6 of 32
+    //! processes died**, with SIGSEGV inside FTS5's index merge or SQLite's
+    //! allocator. There is no `migrate` code here, no links, and no reopen — a
+    //! file-backed `Db` and one large `insert_batch` of FTS5-bearing rows is
+    //! the whole shape.
     //!
-    //! This is the input an ASAN build needs. Delete it when the defect is
-    //! closed, not before.
+    //! # It no longer reproduces, and that is a finding rather than a fix
+    //!
+    //! Re-measured 2026-08-09 on the same machine, same harness: **0 of 32**.
+    //! So did the pre-reduction variant this was cut down from — the one that
+    //! also wrote ~3,000 links in a second transaction and reopened the
+    //! database — at **0 of 32**.
+    //!
+    //! The defect itself is not gone. `cargo test --workspace` died **2 of 8**
+    //! the same afternoon. What changed is where the reproducing boundary sits:
+    //! it is the whole workspace run, whose test binaries cargo schedules
+    //! concurrently, and not any single binary. `memgardend`'s own lib tests at
+    //! 4 processes x 16 threads are 0 of 16.
+    //!
+    //! **Do not read this module as evidence that the corruption is the
+    //! store's.** That conclusion rested on this probe reproducing on its own,
+    //! and today it does not. `book/src/roadmap.md` carries the current state.
+    //!
+    //! Kept, rather than deleted, because a probe that stopped reproducing is
+    //! itself a measurement — and because the shape it isolates is still the
+    //! cheapest thing to re-run when the conditions are next understood.
     use memgarden_core::types::FactType;
 
     fn one(seed: usize) {
