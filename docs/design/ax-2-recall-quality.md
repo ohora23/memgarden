@@ -214,7 +214,9 @@ arm. This table is the index; the superseded figures are kept below because
 |---|---|---|---|
 | 1-2 | `f1b7d143` / `52a8288` | The original AX-2 baseline, pre-Korean-date fix. | Superseded — kept, CE-11's first tables used it |
 | 5 | `33d49519` | Re-baselined by `fix/ce-8-korean-absolute-dates`: `8월 2일` parses, q17's retrieval changes. | Superseded — kept, quoted in two notes |
-| **8** | **`73ba3b2c`** | **q17's labels ratified by `fix/q17-labels`; `\|R\|` 4 → 5.** | **Current baseline** |
+| 8 | `73ba3b2c` | q17's labels ratified by `fix/q17-labels`; `\|R\|` 4 → 5. | Superseded — the last **thin-graph** line; README and CE-11 quote it as the before |
+| 11 | `8d1bb21` | The CE-7 batch-confinement fix: the corpus re-imported through the fixed worker, 681 → 43,830 semantic edges. | Superseded by 12, which reproduces it exactly |
+| **12** | **`eadbe0e`** | **CE-7 relink run over line 11's database: 43,830 → 69,080 semantic edges.** | **Current baseline** |
 
 Lines 3-4, 6-7 and 9-10 are the matching `top_k = 10` / `top_k = 20` reranked
 arms for each generation (CE-11).
@@ -223,6 +225,30 @@ arms for each generation (CE-11).
 > reproduces digit-for-digit including its retrieved uuid list. The 2026-08-03
 > ratification changed **no retrieval at all** — `gold/results.pool.json` is
 > byte-identical across it, since only the label set moved.
+
+**Line 12 is the strongest null result this harness has produced.** Running
+CE-7's relink over line 11's database added 25,250 semantic edges (43,830 →
+69,080, +58%; out-degree mean 16.61 → 25.53, max 20 → 40) in 2.4 s, and every
+aggregate came back **identical to the last floating-point digit** — `mrr`
+0.516156462585034, `ndcg@10` 0.3167967967859271, `recall@10` 0.3791717269658446,
+and the ceiling with them. `per_stratum` matches entry for entry. The only
+field that moved anywhere in the record is q05's `retrieved` list, which
+reordered without changing a single metric.
+
+The mechanism is visible in the pool: of the 400 candidates across 20 queries,
+**8 were replaced**, and among the 14 scored queries only q05's top ten changed
+at all (the other three reorderings are in unanswered queries, excluded from the
+aggregates). The new edges are not weak ones being ignored — their mean weight
+is 0.781 against the existing 0.7669, with 7,028 of them above 0.8. They simply
+do not reach the fused top-20: the graph arm is already saturated against
+`GRAPH_EXPANSION_CAP = 200` (20 seeds × mean out-degree 16.61 = 332 candidates
+*before* the relink), so a denser graph feeds it more of what it was already
+discarding.
+
+Two independent density experiments now agree. 6,918 → 62,199 edges (9×) moved
+recall@10 by −0.9 points; 43,830 → 69,080 (+58%) moved it by exactly zero. On
+this corpus semantic density is not the constraint on recall, and no future
+change should be justified by the expectation that it will be.
 
 **Note on the recorded commit.** `gold/results.jsonl` line 1 stamps
 `commit: f1b7d143`, but its numbers already include the two gold-label
