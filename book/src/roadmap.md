@@ -132,6 +132,46 @@ argmax. **What would justify it:** an AX-2 run showing the recall effect, for
 the same reason MG-1b did not change it on the way past. A migration does not
 get to reshape CE-7 while nobody is measuring.
 
+### Fixed 2026-08-09, and measured directly rather than through AX-2
+
+The short-circuit landed as described. What justified it was not an AX-2 run:
+AX-2 measures recall quality, and the question here is how often the resolver
+hands a mention to the wrong entity — which can be counted.
+
+Replaying the scoring over the migrated corpus, against the real co-mention
+sets from `node_entities` and with CPython's `difflib` rather than the code
+being measured: **1,124 of 10,415 mentions (10.8%)** would resolve to a
+different entity *despite an exact match existing*. Both sides are scored with
+a temporal term of zero, which is what cutover makes permanent for migrated
+entities and is the setting kindest to the exact match — a rival written after
+cutover collects up to +0.2 more and wins by a wider margin.
+
+What the failures look like:
+
+```
+'memgardend'      -> 'memgarden'        rival 0.624 vs exact 0.5
+'claude code'     -> 'claude-code'      rival 0.605
+'/deep-interview' -> 'deep-interview'   rival 0.783
+'architect(opus)' -> 'architect'        rival 0.675
+'phase f'         -> 'phase 1'          rival 0.654
+'phase 1'         -> 'phase f'          rival 0.654
+```
+
+The last pair is the shape worth noticing: each absorbs the other depending on
+which is mentioned. That is not a merge, it is an oscillation — the graph has no
+stable answer for either name.
+
+**A first pass got this wrong and is recorded because the error is instructive.**
+It gave every rival the full 0.3 co-occurrence term whenever the rival had
+co-occurred with anything at all, rather than with the entities named alongside
+*this* mention, and reported 2,771 of 3,945 names at risk. That number measured
+the assumption, not the corpus.
+
+**Still open:** the short-circuit only rescues mentions whose exact match
+already exists as an entity. MG-1b's other observed merges — `ci.yml` into
+`cli.mjs` — are names that were never entities, and no short-circuit reaches
+them. That is a threshold-and-weights question, and a separate decision.
+
 ### The test suite corrupts memory under concurrent load — `memgarden-store`, not the migration
 
 `cargo test --workspace` intermittently dies with SIGSEGV or abort in the
