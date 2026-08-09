@@ -108,14 +108,21 @@ migrated database beside the live one with both daemons untouched.
 [Runbook](docs/runbook-migration.md) · [design](docs/design/mg-1-migration.md) ·
 [verification](docs/design/mg-2-verification.md)
 
-**One open defect, and it is not where it looked.** `cargo test --workspace` intermittently
-dies with a SIGSEGV inside SQLite (FTS5 index merge, and the allocator) under concurrent load
-— measured 0 of 8 runs before Phase D's importer tests, 2 of 8 after. A 25-line reproducer in
-`memgarden-store` with no migration code in it crashes the same way, so it is the store's
-behaviour when dozens of file-backed databases build FTS5 indexes at once, not the importer's.
-**The daemon's shape is not implicated** (one database, 16 threads, 6,400 inserts: 10/10
-clean). Closing it needs an ASAN build; until then a PR's test tally carries that caveat.
-[Details and the reproducer](book/src/roadmap.md).
+**One open defect, and nobody has pinned it down yet.** `cargo test --workspace` intermittently
+dies with a SIGSEGV inside SQLite (FTS5 index merge, and the allocator) under concurrent load —
+**2 of 8 runs**, measured again on 2026-08-09 and unchanged. What did change is the story around
+it: the 25-line `memgarden-store` reproducer that once crashed 6 times in 32 processes now runs
+**0 of 32**, as does the heavier variant it was cut down from, as does `memgardend`'s lib suite
+on its own. The smallest thing that still reproduces is the whole workspace run, so "it is the
+store's, not the importer's" has lost the evidence it stood on.
+
+**ASAN does not reproduce it either** — 24 workspace runs, including a build with the bundled
+SQLite C instrumented, produced zero reports and zero segfaults, which points at a timing- or
+layout-dependent defect that the sanitizer designs away. **The daemon's shape is still not
+implicated** (one database, 16 threads, 6,400 inserts: 10/10 clean), though one of the two
+deaths was a value read back as malformed JSON rather than a crash, which is a symptom "corrupts
+memory under test load" does not cover. Until this closes, a PR's test tally carries the caveat.
+[Details, the numbers, and what to try next](book/src/roadmap.md).
 
 **Next up, in order:** AC-1's two remaining legs — fresh shadow records against the seeded bank,
 and `recall_bench` against `gold/` — then the web UI, then Phase F's remaining work, which is
