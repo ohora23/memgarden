@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MemGarden</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>🌱</text></svg>">
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+
+<!-- The graph fills the viewport; E2 draws into this. Until then it carries
+     the empty state, which is also what an unselected node looks like. -->
+<div id="canvas" aria-hidden="true">
+  <p id="canvas-empty">Select a result to see its neighbourhood.<br>
+     <span class="dim">The graph lands in E2.</span></p>
+</div>
+
+<section id="search-panel" aria-label="Search">
+  <header>
+    <h1>MemGarden</h1>
+    <select id="bank" aria-label="Bank"></select>
+  </header>
+  <form id="search-form">
+    <input id="q" type="search" placeholder="What would be recalled for…"
+           autocomplete="off" autofocus>
+  </form>
+  <p id="search-status" role="status"></p>
+  <ol id="results"></ol>
+</section>
+
+<aside id="detail-panel" hidden aria-label="Memory detail">
+  <button id="detail-close" aria-label="Close">×</button>
+  <div id="detail"></div>
+</aside>
+
+<script type="module" src="/ui/app.js"></script>
+</body>
+</html>

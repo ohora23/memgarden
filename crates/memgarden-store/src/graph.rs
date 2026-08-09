@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use memgarden_core::error::Result;
 use memgarden_core::types::FactType;
@@ -610,6 +610,241 @@ pub fn graph_view(
         .map_err(store_err)?;
 
     Ok((nodes, edges))
+}
+
+/// One node's full text, provenance and adjacency (E1).
+///
+/// `graph_view` hands the viewer a 160-character label; this is what the
+/// viewer calls when the user clicks one. Everything the detail panel shows
+/// arrives in one round trip.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeDetail {
+    pub node: NodeSummary,
+    pub context: Option<String>,
+    pub event_date: Option<i64>,
+    pub occurred_start: Option<i64>,
+    pub occurred_end: Option<i64>,
+    pub created_at: i64,
+    pub proof_count: i64,
+    pub tags: Vec<String>,
+    pub entities: Vec<String>,
+    /// `node_sources.observation_id = id` — the facts this observation was
+    /// consolidated from. Empty for a fact.
+    pub sources: Vec<NodeSummary>,
+    /// `node_sources.source_id = id` — observations that cite this node.
+    /// Indexed by `idx_node_sources_source`, so it costs the same as the
+    /// forward direction, and it is what makes a `proof_count` auditable from
+    /// the screen instead of from hand-written SQL.
+    pub cited_by: Vec<NodeSummary>,
+    /// Adjacent nodes by link type, each list ordered by descending weight.
+    pub neighbors: Vec<AdjacentNode>,
+}
+
+/// A node reduced to what a list row draws. `text` is truncated by the caller.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeSummary {
+    pub id: i64,
+    pub uuid: String,
+    pub fact_type: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdjacentNode {
+    pub node: NodeSummary,
+    pub link_type: String,
+    pub weight: f64,
+}
+
+/// Per link type, so one dense class cannot crowd out the others. A migrated
+/// node carries ~20 semantic and dozens of temporal edges; the panel lists the
+/// strongest and the graph pass (E2) is what shows the rest.
+const MAX_NEIGHBORS_PER_TYPE: usize = 20;
+
+/// Provenance in either direction is bounded too: an observation merged from
+/// many facts, or a fact cited by many observations, must not return a payload
+/// the panel cannot draw.
+const MAX_PROVENANCE: usize = 50;
+
+/// `None` when the node does not exist **or** belongs to another bank. The two
+/// are deliberately indistinguishable: `bank_id` comes from the URL, so
+/// separating them would let a caller probe ids across banks.
+pub fn node_detail(db: &Db, bank_id: &str, id: i64) -> Result<Option<NodeDetail>> {
+    let conn = db.read()?;
+
+    type NodeRow = (
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        i64,
+        i64,
+    );
+    let row: Option<NodeRow> = conn
+        .query_row(
+            "SELECT uuid, fact_type, text, context, event_date, occurred_start,
+                    occurred_end, created_at, proof_count
+             FROM memory_nodes WHERE id = ?1 AND bank_id = ?2",
+            params![id, bank_id],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(store_err)?;
+    let Some((uuid, fact_type, text, context, event_date, start, end, created_at, proof_count)) =
+        row
+    else {
+        return Ok(None);
+    };
+
+    let mut stmt = conn
+        .prepare("SELECT tag FROM node_tags WHERE node_id = ?1 ORDER BY tag")
+        .map_err(store_err)?;
+    let tags = stmt
+        .query_map(params![id], |r| r.get::<_, String>(0))
+        .map_err(store_err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(store_err)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.canonical_name FROM node_entities ne
+             JOIN entities e ON e.id = ne.entity_id
+             WHERE ne.node_id = ?1 ORDER BY e.canonical_name",
+        )
+        .map_err(store_err)?;
+    let entities = stmt
+        .query_map(params![id], |r| r.get::<_, String>(0))
+        .map_err(store_err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(store_err)?;
+
+    let provenance = |sql: &str| -> Result<Vec<NodeSummary>> {
+        let mut stmt = conn.prepare(sql).map_err(store_err)?;
+        let out = stmt
+            .query_map(params![id, MAX_PROVENANCE as i64], |r| {
+                Ok(NodeSummary {
+                    id: r.get(0)?,
+                    uuid: r.get(1)?,
+                    fact_type: r.get(2)?,
+                    text: r.get(3)?,
+                })
+            })
+            .map_err(store_err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(store_err)?;
+        Ok(out)
+    };
+
+    let sources = provenance(
+        "SELECT n.id, n.uuid, n.fact_type, n.text FROM node_sources s
+         JOIN memory_nodes n ON n.id = s.source_id
+         WHERE s.observation_id = ?1 ORDER BY n.id LIMIT ?2",
+    )?;
+    let cited_by = provenance(
+        "SELECT n.id, n.uuid, n.fact_type, n.text FROM node_sources s
+         JOIN memory_nodes n ON n.id = s.observation_id
+         WHERE s.source_id = ?1 ORDER BY n.id LIMIT ?2",
+    )?;
+
+    // **Both directions, unioned.** `links` is keyed
+    // `(from_node_id, to_node_id, link_type, entity_id)` and the semantic pass
+    // writes edges only *out of* the nodes it was just handed, so a pair
+    // embedded in one batch has two rows while a pair spanning batches has one
+    // (`embed_task::on_batch_embedded`, and the assertion in
+    // `graph_api.rs::a_semantic_link_reaches_a_node_embedded_in_an_earlier_batch`).
+    // Reading one direction would make a node's neighbourhood depend on when it
+    // happened to be embedded, which is not a property of the memory.
+    //
+    // Both are index-served: forward on the PK prefix, reverse on
+    // `idx_links_to (to_node_id, link_type)`.
+    //
+    // `MAX(weight)` because the same pair can appear as two rows whose weights
+    // were computed in different passes; the strongest is the honest one.
+    let mut stmt = conn
+        .prepare(
+            "SELECT other, link_type, MAX(w) AS weight, uuid, fact_type, text FROM (
+               SELECT l.to_node_id AS other, l.link_type AS link_type, l.weight AS w,
+                      n.uuid AS uuid, n.fact_type AS fact_type, n.text AS text
+                 FROM links l JOIN memory_nodes n ON n.id = l.to_node_id
+                WHERE l.from_node_id = ?1
+               UNION ALL
+               SELECT l.from_node_id, l.link_type, l.weight,
+                      n.uuid, n.fact_type, n.text
+                 FROM links l JOIN memory_nodes n ON n.id = l.from_node_id
+                WHERE l.to_node_id = ?1
+             )
+             WHERE other != ?1
+             GROUP BY other, link_type
+             ORDER BY link_type, weight DESC, other",
+        )
+        .map_err(store_err)?;
+    let all = stmt
+        .query_map(params![id], |r| {
+            Ok(AdjacentNode {
+                node: NodeSummary {
+                    id: r.get(0)?,
+                    uuid: r.get(3)?,
+                    fact_type: r.get(4)?,
+                    text: r.get(5)?,
+                },
+                link_type: r.get(1)?,
+                weight: r.get(2)?,
+            })
+        })
+        .map_err(store_err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(store_err)?;
+
+    // Capped per type rather than overall: `ORDER BY link_type, weight DESC`
+    // already groups them, so a running count does it without a query per type.
+    let mut neighbors: Vec<AdjacentNode> = Vec::new();
+    let mut seen_type: Option<String> = None;
+    let mut n_of_type = 0usize;
+    for neighbor in all {
+        if seen_type.as_deref() != Some(neighbor.link_type.as_str()) {
+            seen_type = Some(neighbor.link_type.clone());
+            n_of_type = 0;
+        }
+        if n_of_type < MAX_NEIGHBORS_PER_TYPE {
+            n_of_type += 1;
+            neighbors.push(neighbor);
+        }
+    }
+
+    Ok(Some(NodeDetail {
+        node: NodeSummary {
+            id,
+            uuid,
+            fact_type,
+            text,
+        },
+        context,
+        event_date,
+        occurred_start: start,
+        occurred_end: end,
+        created_at,
+        proof_count,
+        tags,
+        entities,
+        sources,
+        cited_by,
+        neighbors,
+    }))
 }
 
 /// i64s as a JSON array — no injection surface and one statement shape
