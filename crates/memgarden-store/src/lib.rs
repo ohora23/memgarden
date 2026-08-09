@@ -13,6 +13,7 @@ pub mod search;
 pub mod sessions;
 pub mod vecblob;
 
+pub use conn::register_vec_extension;
 pub use migrate::LATEST_VERSION;
 
 use std::path::Path;

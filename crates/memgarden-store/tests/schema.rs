@@ -8,6 +8,23 @@ fn store_err(e: rusqlite::Error) -> Error {
     Error::Storage(e.to_string())
 }
 
+/// A raw connection for the tests that hand-build an old database before
+/// `Db::open` upgrades it.
+///
+/// `rusqlite::Connection::open` on its own does **not** get `vec0`:
+/// sqlite-vec is registered as a process-wide auto-extension by
+/// `Db::open*`, and only connections opened *after* that call see it. Six
+/// tests here open a connection directly and run `0001_init.sql`, which
+/// creates a `USING vec0` virtual table — so they passed only when some
+/// other test in the same process had already constructed a `Db`. Under
+/// `--test-threads=32` that ordering stopped holding and
+/// `migrate_upgrades_a_v3_database_in_place` failed with `no such module:
+/// vec0`; run `--exact`, alone, it failed every time.
+fn open_raw(path: &std::path::Path) -> rusqlite::Connection {
+    memgarden_store::register_vec_extension();
+    rusqlite::Connection::open(path).unwrap()
+}
+
 #[test]
 fn migrate_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
@@ -43,7 +60,7 @@ fn migrate_upgrades_a_v1_database_in_place() {
     // Build a v1 database the way the previous release left it: apply
     // 0001 only, then stamp user_version = 1.
     {
-        let conn = rusqlite::Connection::open(&path).unwrap();
+        let conn = open_raw(&path);
         conn.execute_batch(include_str!("../migrations/0001_init.sql"))
             .unwrap();
         conn.execute(
@@ -634,7 +651,7 @@ fn migrate_upgrades_a_v2_database_in_place() {
     let path = dir.path().join("v2.db");
 
     {
-        let conn = rusqlite::Connection::open(&path).unwrap();
+        let conn = open_raw(&path);
         conn.execute_batch(include_str!("../migrations/0001_init.sql"))
             .unwrap();
         conn.execute_batch(include_str!("../migrations/0002_retain_jobs.sql"))
@@ -1163,7 +1180,7 @@ fn migrate_upgrades_a_v3_database_in_place() {
     let path = dir.path().join("v3.db");
 
     {
-        let conn = rusqlite::Connection::open(&path).unwrap();
+        let conn = open_raw(&path);
         for sql in [
             include_str!("../migrations/0001_init.sql"),
             include_str!("../migrations/0002_retain_jobs.sql"),
@@ -1313,7 +1330,7 @@ fn migrate_upgrades_a_v4_database_in_place() {
         // so force the registration rather than depending on another test in
         // the binary having happened to run first.
         drop(Db::open_memory().unwrap());
-        let conn = rusqlite::Connection::open(&path).unwrap();
+        let conn = open_raw(&path);
         for sql in [
             include_str!("../migrations/0001_init.sql"),
             include_str!("../migrations/0002_retain_jobs.sql"),
@@ -1573,7 +1590,7 @@ fn migrate_upgrades_a_v5_database_in_place() {
         // process-global auto-extension `Db::open` registers; the raw
         // connection below may be the first in this binary.
         drop(Db::open_memory().unwrap());
-        let conn = rusqlite::Connection::open(&path).unwrap();
+        let conn = open_raw(&path);
         for sql in [
             include_str!("../migrations/0001_init.sql"),
             include_str!("../migrations/0002_retain_jobs.sql"),
@@ -1720,7 +1737,7 @@ fn migrate_upgrades_a_v6_database_in_place() {
         // 0001's `CREATE VIRTUAL TABLE vec_nodes USING vec0` needs the
         // process-global auto-extension `Db::open` registers.
         drop(Db::open_memory().unwrap());
-        let conn = rusqlite::Connection::open(&path).unwrap();
+        let conn = open_raw(&path);
         for sql in [
             include_str!("../migrations/0001_init.sql"),
             include_str!("../migrations/0002_retain_jobs.sql"),
