@@ -9,11 +9,10 @@
 </head>
 <body>
 
-<!-- The graph fills the viewport; E2 draws into this. Until then it carries
-     the empty state, which is also what an unselected node looks like. -->
+<!-- The graph fills the viewport. E2 replaces the contents with an SVG
+     ego-graph on the first selection; this is the unselected state. -->
 <div id="canvas" aria-hidden="true">
-  <p id="canvas-empty">Select a result to see its neighbourhood.<br>
-     <span class="dim">The graph lands in E2.</span></p>
+  <p id="canvas-empty">Select a result to see its neighbourhood.</p>
 </div>
 
 <section id="search-panel" aria-label="Search">

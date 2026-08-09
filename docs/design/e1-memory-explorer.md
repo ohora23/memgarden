@@ -71,6 +71,20 @@ with its version and license recorded — rather than fetched at runtime, becaus
 a CDN dependency in a local-first memory system is a contradiction, and because
 the daemon must work with no network.
 
+> **E2 turned out not to need it, so it is not vendored yet.** The argument
+> above is about a *force-directed layout over an open-ended graph*, which is
+> what E3's progressive expansion produces. An ego-graph is not that: one
+> centre and one ring, every edge already present in the `get_node` response
+> the panel was just drawn from, and positions that are an angle and a radius
+> rather than a simulation. Seventy lines of SVG against a 200 KB vendored
+> build and a `vendor/` directory to keep current.
+>
+> Measured on the real shape rather than assumed: the densest node in the
+> gold corpus returns 20 semantic plus 20 temporal neighbours, and 40 dots on
+> a 300-unit ring are 47 units apart. The decision above stands unchanged for
+> E3 — when the node count leaves one screen and edges arrive incrementally,
+> a hand-written layout is exactly the risk this section describes.
+
 ### 3. The viewer is filter-first and loads progressively
 
 `MAX_LIMIT` is 2000 and AC-4 asks for 2,500 nodes. That conflict is not the
@@ -188,7 +202,7 @@ thrown away.
 | PR | scope |
 |---|---|
 | **E1** | `GET .../nodes/{id}`, static serving, the shell: search → results → detail |
-| E2 | sigma.js vendored, ego-graph for the selected node |
+| **E2** | ego-graph for the selected node, in SVG — sigma.js deferred to E3, see §Decisions 2 |
 | E3 | filters (session, type, date) and progressive expansion |
 | E4 | SSE, so a retain appears without a reload (GV-3, AC-4's ≤5 s) |
 | E5 | dashboard and ledger views (DB-1, MX-2, AC-5) |

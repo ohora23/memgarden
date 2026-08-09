@@ -28,10 +28,11 @@
 //!   in a file-serving stack for three files.
 //!
 //! The cost is a rebuild to see a UI edit, which for one crate is seconds.
-//! When the vendored graph renderer arrives in E2 it is one more
-//! `include_str!` — and it must be vendored rather than fetched from a CDN,
-//! because a local-first memory system that needs the network to draw its own
-//! graph is a contradiction.
+//! E2's ego-graph needed no renderer to vendor — it is SVG in `app.js` — so
+//! this is still three files. Whenever a vendored one does arrive for E3 it is
+//! one more `include_str!`, and it must be vendored rather than fetched from a
+//! CDN, because a local-first memory system that needs the network to draw its
+//! own graph is a contradiction.
 
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
