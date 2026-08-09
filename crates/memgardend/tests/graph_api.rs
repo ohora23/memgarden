@@ -846,3 +846,200 @@ async fn a_semantic_link_reaches_a_node_embedded_in_an_earlier_batch() {
         "the earlier node keeps the out-edges it had when it drained"
     );
 }
+
+// ---------------------------------------------------------------------------
+// E1: GET /v1/banks/{bank_id}/nodes/{id}
+// ---------------------------------------------------------------------------
+
+/// `/graph` truncates node text to a 160-character label and its own comment
+/// promises the viewer "fetches the full text on click". Until E1 there was
+/// nothing to fetch it from.
+#[tokio::test]
+async fn node_detail_returns_the_untruncated_text() {
+    let (app, db) = read_only_app();
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let long = "가".repeat(400);
+    let id = nodes::insert(&db, NewNode::new("b1", FactType::World, &long)).unwrap();
+
+    let (status, graph) = send(&app, get("/v1/banks/b1/graph?limit=10")).await;
+    assert_eq!(status, StatusCode::OK);
+    let label = graph["nodes"][0]["text"].as_str().unwrap();
+    assert!(
+        label.chars().count() < 200 && label.ends_with('…'),
+        "the graph endpoint still truncates"
+    );
+
+    let (status, node) = send(&app, get(&format!("/v1/banks/b1/nodes/{id}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        node["text"].as_str().unwrap().chars().count(),
+        400,
+        "the detail endpoint must return the whole text"
+    );
+}
+
+/// **The property this endpoint exists to get right.**
+///
+/// `links` is keyed `(from_node_id, to_node_id, link_type, entity_id)` and the
+/// semantic pass writes edges only *out of* the batch it was handed, so a pair
+/// embedded together has two rows and a pair spanning batches has one — see
+/// `a_semantic_link_reaches_a_node_embedded_in_an_earlier_batch` above.
+/// Reading a single direction would make a node's neighbourhood depend on when
+/// it happened to be embedded, which is not a property of the memory.
+#[tokio::test]
+async fn neighbours_are_found_through_an_edge_pointing_either_way() {
+    let (app, db) = read_only_app();
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let subject = nodes::insert(&db, NewNode::new("b1", FactType::World, "the subject")).unwrap();
+    let outgoing =
+        nodes::insert(&db, NewNode::new("b1", FactType::World, "edge points away")).unwrap();
+    let incoming = nodes::insert(
+        &db,
+        NewNode::new("b1", FactType::World, "edge points at us"),
+    )
+    .unwrap();
+
+    graph::insert_links(
+        &db,
+        &[
+            NewLink {
+                from_node_id: subject,
+                to_node_id: outgoing,
+                link_type: "semantic",
+                weight: 0.9,
+            },
+            // Only the reverse row exists for this one, exactly as a
+            // cross-batch semantic edge leaves it.
+            NewLink {
+                from_node_id: incoming,
+                to_node_id: subject,
+                link_type: "semantic",
+                weight: 0.8,
+            },
+        ],
+        1,
+    )
+    .unwrap();
+
+    let (status, node) = send(&app, get(&format!("/v1/banks/b1/nodes/{subject}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let semantic = node["neighbors"]["semantic"].as_array().unwrap();
+    let ids: Vec<i64> = semantic.iter().map(|n| n["id"].as_i64().unwrap()).collect();
+
+    assert!(
+        ids.contains(&outgoing) && ids.contains(&incoming),
+        "both directions must appear; got {ids:?}"
+    );
+    // Ordered by weight, and the subject is never its own neighbour.
+    assert_eq!(ids[0], outgoing, "strongest edge first");
+    assert!(!ids.contains(&subject));
+}
+
+/// `proof_count` is derived from `node_sources`, and MG-2 reports 93
+/// disagreements against legacy's stored value. Both directions of the join
+/// are served so that number is auditable from the screen: `sources` is what
+/// this observation was built from, `cited_by` is what was built from it.
+#[tokio::test]
+async fn provenance_is_reported_in_both_directions() {
+    let (app, db) = read_only_app();
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let fact = nodes::insert(&db, NewNode::new("b1", FactType::World, "a source fact")).unwrap();
+    // The production path, so the provenance rows are written the way
+    // consolidation writes them rather than by hand.
+    let obs = memgarden_store::consolidate::insert_observation(
+        &db,
+        "b1",
+        "an observation over it",
+        &vec![0.0f32; memgarden_core::EMBEDDING_DIM],
+        &[fact],
+    )
+    .unwrap();
+
+    let (_, o) = send(&app, get(&format!("/v1/banks/b1/nodes/{obs}"))).await;
+    assert_eq!(o["sources"][0]["id"].as_i64().unwrap(), fact);
+    assert!(o["cited_by"].as_array().unwrap().is_empty());
+
+    let (_, f) = send(&app, get(&format!("/v1/banks/b1/nodes/{fact}"))).await;
+    assert_eq!(f["cited_by"][0]["id"].as_i64().unwrap(), obs);
+    assert!(f["sources"].as_array().unwrap().is_empty());
+}
+
+/// The bank in the path is part of the identity, not decoration. A node in
+/// another bank is a 404 and not a 200 — and it is the *same* 404 as a node
+/// that does not exist, so ids cannot be enumerated across banks.
+#[tokio::test]
+async fn a_node_in_another_bank_is_not_readable_through_this_one() {
+    let (app, db) = read_only_app();
+    banks::create(&db, "b1", None, None).unwrap();
+    banks::create(&db, "b2", None, None).unwrap();
+    let theirs = nodes::insert(&db, NewNode::new("b2", FactType::World, "b2's memory")).unwrap();
+
+    let (status, _) = send(&app, get(&format!("/v1/banks/b1/nodes/{theirs}"))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = send(&app, get(&format!("/v1/banks/b1/nodes/{}", theirs + 9999))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "same answer, no oracle");
+
+    let (status, _) = send(&app, get(&format!("/v1/banks/b2/nodes/{theirs}"))).await;
+    assert_eq!(status, StatusCode::OK, "its own bank still reads it");
+}
+
+// ---------------------------------------------------------------------------
+// E1: the UI is served by the daemon
+// ---------------------------------------------------------------------------
+
+/// Same origin as the API is the point: `check_host` then passes on the Host
+/// header a browser sends anyway, so the UI needs no token and there is no
+/// CORS to configure. This asserts the assets are reachable and that the
+/// route does not become an arbitrary file reader.
+#[tokio::test]
+async fn the_ui_is_served_from_the_daemon_and_is_not_a_file_server() {
+    let (app, _db) = read_only_app();
+
+    for (path, needle) in [
+        ("/ui/", "<title>MemGarden</title>"),
+        ("/ui/app.js", "/v1/banks/"),
+        ("/ui/style.css", "#search-panel"),
+    ] {
+        let res = app.clone().oneshot(get(path)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{path}");
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains(needle), "{path} did not carry {needle:?}");
+    }
+
+    // Nothing under /ui/ resolves to a path on disk, so traversal has nothing
+    // to traverse — every unknown asset is a flat 404.
+    for path in [
+        "/ui/../Cargo.toml",
+        "/ui/%2e%2e/Cargo.toml",
+        "/ui/nope.js",
+        "/ui/vendor/sigma.js",
+    ] {
+        let res = app.clone().oneshot(get(path)).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "{path} must not resolve"
+        );
+    }
+}
+
+/// The host guard covers the UI too — it is applied to the whole router, and
+/// a UI served to a rebound hostname would hand a malicious page the same
+/// origin as the API.
+#[tokio::test]
+async fn the_ui_is_behind_the_same_host_guard_as_the_api() {
+    let (app, _db) = read_only_app();
+    let req = Request::builder()
+        .method("GET")
+        .uri("/ui/")
+        .header("host", "memgarden.example.com")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}

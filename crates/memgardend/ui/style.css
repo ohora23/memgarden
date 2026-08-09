@@ -1,0 +1,180 @@
+/* E1 — the explorer shell. Dark, dense, no framework.
+   Panels float over a full-viewport graph area that E2 fills. */
+
+:root {
+  color-scheme: dark;
+  --bg: #10131a;
+  --panel: #181c26;
+  --panel-edge: #262c3a;
+  --ink: #e6e9f0;
+  --dim: #8b93a7;
+  --accent: #7fd1ae;
+  --world: #7aa2f7;
+  --observation: #bb9af7;
+  --experience: #e0af68;
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+        "Noto Sans KR", sans-serif;
+}
+
+/* The graph area. Full bleed, everything else sits on top of it. */
+#canvas {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: var(--dim);
+}
+.dim { color: var(--panel-edge); }
+
+/* --- panels ------------------------------------------------------------- */
+
+#search-panel, #detail-panel {
+  position: fixed;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px #0008;
+}
+
+#search-panel {
+  top: 16px; left: 16px;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+}
+
+#search-panel header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--panel-edge);
+}
+#search-panel h1 {
+  margin: 0; font-size: 14px; font-weight: 600;
+  letter-spacing: .02em; flex: 1;
+}
+#search-panel h1::before { content: "🌱 "; }
+
+select, input {
+  background: #0d1017;
+  color: var(--ink);
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+}
+select { max-width: 190px; }
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+#search-form { padding: 10px 12px; }
+#q { width: 100%; }
+
+#search-status {
+  margin: 0; padding: 0 12px 8px;
+  color: var(--dim); font-size: 12px; min-height: 1em;
+}
+
+/* --- results ------------------------------------------------------------ */
+
+#results { margin: 0; padding: 0 6px 8px; list-style: none; overflow-y: auto; }
+
+#results li {
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+#results li:hover { background: #ffffff0a; }
+#results li[aria-current="true"] {
+  background: #ffffff12;
+  border-color: var(--accent);
+}
+
+.row-text {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.row-meta {
+  margin-top: 4px;
+  display: flex; flex-wrap: wrap; gap: 8px;
+  font-size: 11px; color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.type {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  padding: 1px 5px; border-radius: 4px; border: 1px solid currentColor;
+}
+.type.world { color: var(--world); }
+.type.observation { color: var(--observation); }
+.type.experience { color: var(--experience); }
+
+/* An arm that did not contribute is drawn, not hidden — a keyword-only hit
+   and a hit both arms found are different facts about the ranking. */
+.arm.absent { opacity: .35; }
+
+/* --- detail ------------------------------------------------------------- */
+
+#detail-panel {
+  top: 16px; right: 16px; bottom: 16px;
+  width: min(460px, calc(100vw - 32px));
+  padding: 14px 16px;
+  overflow-y: auto;
+}
+#detail-close {
+  position: absolute; top: 8px; right: 10px;
+  background: none; border: none; color: var(--dim);
+  font-size: 20px; line-height: 1; cursor: pointer;
+}
+#detail-close:hover { color: var(--ink); }
+
+#detail h2 {
+  margin: 0 0 10px; font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+}
+#detail .full-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0 0 14px;
+}
+
+dl.meta {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px 10px;
+  margin: 0 0 14px; font-size: 12px;
+}
+dl.meta dt { color: var(--dim); }
+dl.meta dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 14px; }
+.chip {
+  font-size: 11px; padding: 2px 7px; border-radius: 999px;
+  background: #ffffff10; color: var(--dim);
+}
+
+/* Related nodes are buttons: clicking one navigates to it, which is the
+   whole exploration loop. */
+.related { margin: 0 0 14px; padding: 0; list-style: none; }
+.related button {
+  display: block; width: 100%; text-align: left;
+  background: none; border: 1px solid var(--panel-edge);
+  border-radius: 8px; color: inherit; font: inherit;
+  padding: 6px 8px; margin-bottom: 4px; cursor: pointer;
+}
+.related button:hover { background: #ffffff0a; border-color: var(--accent); }
+.related .row-meta { margin-top: 2px; }
+
+.empty { color: var(--dim); font-size: 12px; margin: 0 0 14px; }
+.error { color: #f7768e; }

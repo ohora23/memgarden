@@ -9,6 +9,7 @@ mod metrics;
 mod recall;
 mod retain;
 mod sessions;
+mod ui;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
@@ -83,6 +84,7 @@ pub fn router(state: AppState) -> Router {
             get(consolidate::get_consolidation),
         )
         .route("/v1/banks/{bank_id}/graph", get(graph::get_graph))
+        .route("/v1/banks/{bank_id}/nodes/{node_id}", get(graph::get_node))
         .route(
             "/v1/banks/{bank_id}/mental-models",
             get(mental::list_mental_models).post(mental::create_mental_model),
@@ -101,6 +103,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/banks/{bank_id}/reflect", post(mental::reflect_bank))
         .route("/v1/retain/{job_id}", get(retain::get_job))
+        // E1's explorer. Static, compiled in, same origin as the API it
+        // calls — see `ui.rs` for why all three of those are deliberate.
+        .route("/ui", get(ui::index_redirect))
+        .route("/ui/", get(ui::index))
+        .route("/ui/app.js", get(ui::app_js))
+        .route("/ui/style.css", get(ui::style_css))
+        .route("/ui/{*rest}", get(ui::not_found))
         .layer(from_fn(track_http));
 
     unmeasured
