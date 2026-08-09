@@ -795,6 +795,21 @@ unlike every other MemGarden database would be the worse outcome.
 Recorded here rather than in a comment because it is the answer D3 needs before
 it sets a semantic band: **do not band this number until CE-7 has decided.**
 
+**CE-7 decided on 2026-08-09.** The fix was the one line predicted here —
+`node_types` widened to cover the neighbour ids as well as the batch ids, which
+also meant moving the KNN ahead of the type lookup so the neighbour ids exist
+to ask about. Re-importing this same snapshot: **6,918 → 62,199 semantic edges,
+0.11× → 0.96×, out-degree max 7 → 20**. The prediction of ~10× held at 9.0×,
+and max out-degree moving from `batch_size - 1` to `SEMANTIC_LINK_TOP_K` is the
+cleanest evidence that the fact_type filter had been acting as a batch filter.
+
+Holding it out of the migration PR was right for the reason given, and it is
+worth keeping the reason legible now that both halves have happened: the
+migration produced a graph exactly as dense as every other MemGarden database
+of its day, and the fix then moved all of them together. What has *not* been
+re-measured is AX-2 — the gold corpus was built through the same worker, so the
+recall numbers in the README still describe the thin graph.
+
 ### 5. §5 and the runbook disagree about `sessions`, and the reason given for the winner is not the right reason
 
 §Binding decisions #5 says `--replace` *"does **not** touch `sessions`,
@@ -1058,6 +1073,9 @@ and the temporal self-consistency check needed a scope that took three attempts
   migration. Over the same vectors a whole-corpus pass would emit 68,537. The
   number will move by ~10× the day CE-7 lands, so a band derived from it now
   would be a band on a bug.
+  **CE-7 landed 2026-08-09 and it moved by 9.0×** — 6,918 → 62,199, 0.11× →
+  0.96×. The band still stays off, now for the reason that outlives the defect:
+  ours is not legacy's embedding space, so no ratio is the one to expect.
 * **`semantic edges FROM an observation = 0` is parity, not a divergence.**
   Legacy stores none either (4,603 == 4,603, §4). Assert the post-condition;
   do not file a `parity-gaps.md` row for it.

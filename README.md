@@ -226,15 +226,20 @@ Against a frozen 2,718-fact corpus with 20 graded queries and 331 judgments, mac
 
 The reranker wins ordering (+0.150 MRR) and loses coverage (−0.044 recall@10) for +13.7ms p50 / +31.8ms p95, and it drops background ingest to 89.9% of offered load. That is why it ships **off** — with a written re-entry criterion rather than a verdict.
 
-**A caveat these numbers inherited, found during Phase D.** Semantic links only ever form
-between nodes embedded in the *same* batch of 8 — `embed_task.rs` builds its `fact_type`
-lookup from the just-embedded batch and drops every neighbour outside it, so the KNN's other
-99 candidates are discarded. Measured on the migrated corpus: all 6,890 semantic edges
-connect rowids ≤ 7 apart, where a whole-corpus pass over the same vectors would emit 68,537.
-The gold corpus was built through the same worker, so **every number in this section was
-measured on a semantic arm roughly a tenth as dense as the rule intends.** It is a CE-7 fix
-with an AX-2 re-measurement behind it, not a migration one —
-[`docs/design/mg-1-migration.md`](docs/design/mg-1-migration.md) §4b.
+**A caveat these numbers inherited, found during Phase D and since fixed.** Semantic links only
+ever formed between nodes embedded in the *same* batch of 8: `embed_task.rs` built its
+`fact_type` lookup from the just-embedded batch, so `semantic_links` dropped every neighbour
+outside it and the KNN's other 99 candidates were discarded. The filter meant to select on
+fact type was selecting on batch membership.
+
+Fixed on 2026-08-09 — the lookup now covers the batch **and** its neighbours. Re-importing the
+same corpus moves semantic edges **6,918 → 62,199** (0.11× → 0.96× of legacy's 65,149) and
+out-degree from max 7, which was `batch_size - 1`, to max 20, which is `SEMANTIC_LINK_TOP_K`.
+
+**The table above is still the old measurement.** The gold corpus was built through the same
+worker, so every number in this section was taken on a semantic arm roughly a tenth as dense as
+the rule intends. Re-measuring is AX-2's job and has not happened yet; until it does, read these
+as a floor rather than as the ranker's behaviour.
 
 ## Documentation
 

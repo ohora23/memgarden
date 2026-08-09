@@ -175,13 +175,17 @@ pub async fn on_batch_embedded(db: &Arc<Db>, embedded: Vec<(i64, String, Vec<f32
     }
     let db = db.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let ids: Vec<i64> = embedded.iter().map(|(id, ..)| *id).collect();
-        let types = graph::node_types(&db, &ids)?;
-        let mut batch: Vec<graph::NewLink> = Vec::new();
+        // KNN first, types second, and in that order for a reason. The types
+        // map is `semantic_links`' fact_type oracle, and a neighbour missing
+        // from it is dropped — `is_some_and` is false for an absent key. Built
+        // from the just-embedded ids alone, as it was until CE-7 was measured,
+        // it silently turned the fact_type filter into a *same-batch* filter:
+        // every semantic edge joined two nodes from one batch of
+        // `embedding.batch_size`, capping out-degree at `batch_size - 1`
+        // against a `SEMANTIC_LINK_TOP_K` of 20. The migrated corpus showed it
+        // as 6,918 edges against legacy's 65,149, out-degree max exactly 7.
+        let mut found: Vec<(i64, Vec<(i64, f64)>)> = Vec::with_capacity(embedded.len());
         for (id, bank_id, embedding) in &embedded {
-            let Some((_, fact_type)) = types.get(id) else {
-                continue;
-            };
             // Over-fetch: vec0 partitions on bank_id only, so the fact_type
             // restriction is applied in Rust and needs headroom to still
             // yield 20 same-type neighbours.
@@ -191,7 +195,26 @@ pub async fn on_batch_embedded(db: &Arc<Db>, embedded: Vec<(i64, String, Vec<f32
                     // vec0's cosine `distance` is `1 - cosine_similarity`.
                     .map(|(id, distance)| (id, 1.0 - distance))
                     .collect();
-            batch.extend(links::semantic_links(*id, fact_type, &neighbors, &types));
+            found.push((*id, neighbors));
+        }
+
+        // One lookup covering the batch *and* everything its KNN turned up.
+        let mut type_ids: Vec<i64> = embedded.iter().map(|(id, ..)| *id).collect();
+        type_ids.extend(
+            found
+                .iter()
+                .flat_map(|(_, ns)| ns.iter().map(|(id, _)| *id)),
+        );
+        type_ids.sort_unstable();
+        type_ids.dedup();
+        let types = graph::node_types(&db, &type_ids)?;
+
+        let mut batch: Vec<graph::NewLink> = Vec::new();
+        for (id, neighbors) in &found {
+            let Some((_, fact_type)) = types.get(id) else {
+                continue;
+            };
+            batch.extend(links::semantic_links(*id, fact_type, neighbors, &types));
         }
         graph::insert_links(&db, &batch, memgarden_core::now_ms())
     })
