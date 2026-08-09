@@ -136,7 +136,9 @@ pub async fn drain_once(db: &Arc<Db>, state: &AppState) {
         let db3 = db.clone();
         let embedded = batch.clone();
         match tokio::task::spawn_blocking(move || nodes::set_embeddings_batch(&db3, &batch)).await {
-            Ok(Ok(())) => on_batch_embedded(db, embedded).await,
+            Ok(Ok(())) => {
+                on_batch_embedded(db, embedded).await;
+            }
             Ok(Err(e)) => {
                 tracing::warn!(error = %e, "set_embeddings_batch failed");
                 return;
@@ -169,9 +171,13 @@ pub async fn drain_once(db: &Arc<Db>, state: &AppState) {
 /// *here* rather than in `links::semantic_links` — the `1.0 - distance`
 /// cosine conversion and the `TOP_K * 5` over-fetch — need coverage that does
 /// not depend on it (architect F1). See `tests/graph_api.rs`.
-pub async fn on_batch_embedded(db: &Arc<Db>, embedded: Vec<(i64, String, Vec<f32>)>) {
+/// Returns the number of edges actually written — `insert_links` is
+/// `ON CONFLICT DO NOTHING`, so on a re-run of already-linked nodes that is 0.
+/// `drain_once` ignores it; the relink route (`routes::embed::relink_bank`)
+/// reports it.
+pub async fn on_batch_embedded(db: &Arc<Db>, embedded: Vec<(i64, String, Vec<f32>)>) -> usize {
     if embedded.is_empty() {
-        return;
+        return 0;
     }
     let db = db.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -220,8 +226,14 @@ pub async fn on_batch_embedded(db: &Arc<Db>, embedded: Vec<(i64, String, Vec<f32
     })
     .await;
     match result {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => tracing::warn!(error = %e, "semantic link pass failed"),
-        Err(e) => tracing::warn!(error = %e, "semantic link task panicked"),
+        Ok(Ok(written)) => written,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "semantic link pass failed");
+            0
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "semantic link task panicked");
+            0
+        }
     }
 }

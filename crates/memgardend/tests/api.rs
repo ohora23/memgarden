@@ -351,6 +351,99 @@ async fn reindex_bank_rebuilds_vec_index() {
     assert_eq!(search::knn(&db, "b1", &v, 10).unwrap()[0].0, id);
 }
 
+/// CE-7 repair: relink widens a graph that was built one batch at a time, and
+/// a second run writes nothing.
+///
+/// Embedding the five nodes one per batch is the pre-CE-7 corpus in miniature.
+/// The pass only writes edges *out of* the nodes handed to it, so node 1 ends
+/// with 0 out-edges and the bank with 0+1+2+3+4 = 10 — the thin graph. Relink
+/// hands every node back to the same pass, now with the whole bank visible to
+/// KNN, so all five reach all four others.
+#[tokio::test]
+async fn relink_widens_a_graph_built_one_batch_at_a_time() {
+    use memgarden_core::EMBEDDING_DIM;
+    use memgarden_core::types::FactType;
+    use memgarden_store::models::NewNode;
+    use memgarden_store::nodes;
+
+    let (app, db) = test_app_with_db();
+    memgarden_store::banks::create(&db, "b1", None, None).unwrap();
+
+    // Five near-parallel unit vectors: every pairwise cosine is well above
+    // links::SEMANTIC_LINK_MIN_SIMILARITY, so the only thing bounding the
+    // graph is which nodes the pass can see.
+    let unit = |second: f32| -> Vec<f32> {
+        let mut v = vec![0.0f32; EMBEDDING_DIM];
+        v[0] = 1.0;
+        v[1] = second;
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.into_iter().map(|x| x / norm).collect()
+    };
+    let count = |sql: &str| -> i64 { db.read().unwrap().query_row(sql, [], |r| r.get(0)).unwrap() };
+
+    let mut first_id = 0i64;
+    for i in 0..5 {
+        let text = format!("world fact {i}");
+        let mut n = NewNode::new("b1", FactType::World, &text);
+        n.mentioned_at = Some(1_782_898_200_000);
+        let id = nodes::insert(&db, n).unwrap();
+        if i == 0 {
+            first_id = id;
+        }
+        // One node per batch, exactly as a real backlog drain would arrive.
+        let batch = vec![(id, "b1".to_string(), unit(i as f32 * 0.05))];
+        nodes::set_embeddings_batch(&db, &batch).unwrap();
+        memgardend::embed_task::on_batch_embedded(&db, batch).await;
+    }
+    let semantic = "SELECT count(*) FROM links WHERE link_type = 'semantic'";
+    assert_eq!(
+        count(semantic),
+        10,
+        "incremental linking leaves a thin graph"
+    );
+    assert_eq!(
+        count(&format!(
+            "SELECT count(*) FROM links WHERE link_type='semantic' AND from_node_id={first_id}"
+        )),
+        0,
+        "the first node was embedded with nothing to link to"
+    );
+
+    let relink = || {
+        app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/banks/b1/relink")
+                .header("host", "127.0.0.1:9100")
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+
+    let response = relink().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["nodes"], 5);
+    assert_eq!(
+        body["links_written"], 10,
+        "the 10 edges the thin graph lacks"
+    );
+    assert_eq!(count(semantic), 20, "every node now reaches the other four");
+    assert_eq!(
+        count(&format!(
+            "SELECT count(*) FROM links WHERE link_type='semantic' AND from_node_id={first_id}"
+        )),
+        4,
+        "relink gives the first node the out-edges it could never acquire"
+    );
+
+    // Idempotent and additive: insert_links is ON CONFLICT DO NOTHING, so a
+    // second pass is a no-op rather than something needing a delete first.
+    let body = body_json(relink().await.unwrap()).await;
+    assert_eq!(body["links_written"], 0);
+    assert_eq!(count(semantic), 20);
+}
+
 #[tokio::test]
 async fn dry_run_extract_unknown_bank_404() {
     let app = test_app();

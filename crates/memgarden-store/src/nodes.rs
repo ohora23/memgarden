@@ -288,6 +288,45 @@ pub fn pending_embeddings(db: &Db, limit: usize) -> Result<Vec<PendingEmbeddingR
         .map_err(store_err)
 }
 
+/// Embedded nodes of one bank, keyset-paginated by `id` — the CE-7 relink
+/// pass's source. `vecblob::decode` is the exact inverse of what
+/// `set_embeddings_batch` wrote, so rows come back in the shape
+/// `embed_task::on_batch_embedded` already takes.
+///
+/// // ponytail: no partial index for `embedding IS NOT NULL` (the backlog's
+/// // `idx_memory_nodes_embed_backlog` is the complement). A relink is a
+/// // once-per-database repair and `idx_memory_nodes_bank_date` already cuts
+/// // the scan to one bank; add one if relinking ever becomes routine.
+pub fn embedded_after(
+    db: &Db,
+    bank_id: &str,
+    after_id: i64,
+    limit: usize,
+) -> Result<Vec<(i64, String, Vec<f32>)>> {
+    let conn = db.read()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, bank_id, embedding FROM memory_nodes
+             WHERE bank_id = ?1 AND id > ?2 AND embedding IS NOT NULL
+             ORDER BY id LIMIT ?3",
+        )
+        .map_err(store_err)?;
+    let rows = stmt
+        .query_map(params![bank_id, after_id, limit as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+            ))
+        })
+        .map_err(store_err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(store_err)?;
+    rows.into_iter()
+        .map(|(id, bank, blob)| Ok((id, bank, vecblob::decode(&blob)?)))
+        .collect()
+}
+
 /// Batch variant of `set_embedding`: one `BEGIN IMMEDIATE` for the whole
 /// batch (called once per backlog-worker tick, not per node), same
 /// delete-then-insert shape since vec0 has no native upsert.
