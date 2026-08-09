@@ -246,6 +246,29 @@ pub fn resolve_fact(
             let mut best: Option<&str> = None;
             let mention_len = mention.chars().count();
             for candidate in &ctx.candidates {
+                // An exact name is the entity, and nothing can outrank it.
+                //
+                // Without this the argmax can hand the mention to a *different*
+                // entity, because the score is only half about the name:
+                // `ratio*0.5 + overlap*0.3 + temporal*0.2`. An exact match on a
+                // candidate whose `last_seen` is old scores at most 0.8 — the
+                // temporal term is zero — while a fresher, co-occurring
+                // near-match reaches `0.9*0.5 + 0.3 + 0.2 = 0.95` and wins.
+                //
+                // A migrated bank is where this bites: every entity carries its
+                // *legacy* date, so months after cutover an exactly-matching
+                // migrated candidate is permanently the stale one, and a later
+                // `CE-4` can be routed onto `ce-1` rather than onto the migrated
+                // `ce-4` row it names.
+                //
+                // Unambiguous by schema: `entities` is
+                // `UNIQUE (bank_id, canonical_name)` and the candidates come
+                // from one bank, so at most one can match exactly.
+                if candidate.canonical_name.as_str() == mention.as_str() {
+                    best = Some(candidate.canonical_name.as_str());
+                    best_score = 1.0;
+                    break;
+                }
                 // Cheap length bound before the O(n*m) `ratio`. Ratcliff/
                 // Obershelp cannot exceed `2*min(len)/(len_a+len_b)`, and the
                 // other two terms cap at 0.3 + 0.2, so a candidate whose best
@@ -501,6 +524,49 @@ mod tests {
         assert_eq!(
             resolve_fact(&["메모리시스템".to_string()], Some(now), &c),
             vec!["메모리 시스템".to_string()]
+        );
+    }
+
+    /// An exactly-matching candidate must win even when a near-match outscores
+    /// it — which it can, because only half the score is about the name.
+    ///
+    /// This is the shape a migrated bank makes permanent. Every migrated entity
+    /// keeps its *legacy* `last_seen`, so its temporal term is zero forever,
+    /// while entities written after cutover are fresh. Here `ce-4` is the
+    /// migrated one and `ce-1` the fresh neighbour:
+    ///
+    /// * `ce-4` exact — `1.0*0.5` + no co-occurrence + no proximity = **0.50**
+    /// * `ce-1` near  — `ratio*0.5` + full overlap `0.3` + same-day `0.2`
+    ///
+    /// `ratio("ce-4", "ce-1")` is 0.75, so `ce-1` scores 0.875 and the argmax
+    /// hands `ce-4`'s mention to `ce-1`. MG-1b measured this class at 77 of
+    /// 3,917 names when the importer ran the resolver, `ce-4` into `ce-1` among
+    /// them; the same conditions recur on every retain after cutover.
+    #[test]
+    fn an_exact_name_beats_a_fresher_co_occurring_near_match() {
+        let now = 1_785_000_000_000i64;
+        let legacy_date = now - 400 * 86_400_000; // long outside the 7-day window
+
+        let mut c = ctx(vec![
+            EntityCandidate {
+                id: 1,
+                canonical_name: "ce-4".to_string(),
+                last_seen: Some(legacy_date),
+            },
+            EntityCandidate {
+                id: 2,
+                canonical_name: "ce-1".to_string(),
+                last_seen: Some(now),
+            },
+        ]);
+        // `ce-1` has co-occurred with the other mention in this fact before.
+        c.cooccurring
+            .insert(2, ["retain".to_string()].into_iter().collect());
+
+        let out = resolve_fact(&["ce-4".to_string(), "retain".to_string()], Some(now), &c);
+        assert_eq!(
+            out[0], "ce-4",
+            "an exact name must not be absorbed by a better-scoring neighbour"
         );
     }
 }
