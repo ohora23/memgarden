@@ -291,3 +291,13 @@ second run: {"nodes":65,"links_written":0}
 per node — the live 3,200-node bank took seconds, but a bank large enough to
 outlive the client's timeout wants 202 + a job id. It reads a chunk at a time,
 so an interrupted run simply resumes on the next call.
+
+**It buys no recall, and that was measured rather than assumed.** Relinking the
+AX-2 gold database added 25,250 semantic edges (43,830 → 69,080, +58%) in 2.4 s
+and every aggregate reproduced to the last floating-point digit — ledger line 12
+against line 11. The graph arm is already saturated against
+`GRAPH_EXPANSION_CAP = 200` before the relink, so the new edges, whose mean
+weight is *higher* than the existing ones, feed it more of what it was already
+discarding. See `ax-2-recall-quality.md`. The repair is worth shipping because a
+database whose graph does not match what the code claims is a defect on its own
+terms, not because it moves a number.

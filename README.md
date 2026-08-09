@@ -244,16 +244,27 @@ from mean 1.24 / max 3 to mean 16.6 / max 20. Recall moved the wrong way:
 |---|---|---|---|
 | thin graph (ledger line 8) | 0.3881 | 0.5221 | 0.3236 |
 | 9× denser (line 11) | **0.3792** | **0.5162** | **0.3168** |
+| relinked, +58% denser again (line 12) | 0.3792 | 0.5162 | 0.3168 |
 
 Per stratum, nothing improved: `memcompare` recall@10 −0.025, `graph` nDCG −0.025, and
 `identifier`, `conclusion` and `temporal` unmoved to three decimals. The ceiling is unchanged at
 0.8588, as it must be — the labels never moved.
 
+**Line 12 is not a rounding coincidence.** The fix only reaches nodes embedded after it, so
+[`POST /v1/banks/{id}/relink`](docs/design/ce-7-entity-graph.md) re-runs the pass over a settled
+bank; on line 11's own database it added 25,250 edges in 2.4s (43,830 → 69,080, out-degree mean
+16.61 → 25.53, max 20 → 40) and every aggregate came back **identical to the last floating-point
+digit**. The only field that moved anywhere in the record is q05's retrieved list, which reordered
+without changing a metric. Of 400 pooled candidates, 8 were replaced — and not because the new
+edges are weak, since their mean weight is 0.781 against the existing 0.7669. They never reach the
+fused top-20: the graph arm is already saturated against its 200-node expansion cap, so a denser
+graph feeds it more of what it was already discarding.
+
 The honest reading is *no measurable gain*, not *a regression*: −0.9 points of recall@10 over 14
-scored queries is inside what a set this size can resolve. But it does retire the assumption that
-these numbers were being held down by the thin graph. They were not, and the fix stands on the
-code having done something other than what it said rather than on a recall win it did not
-deliver.
+scored queries is inside what a set this size can resolve, and the second experiment moved nothing
+at all. Two independent density changes now agree, so the assumption that these numbers were held
+down by the thin graph is retired. The fix and the repair stand on the code having done something
+other than what it said, not on a recall win neither delivered.
 
 ## Documentation
 
