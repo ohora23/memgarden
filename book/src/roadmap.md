@@ -273,12 +273,52 @@ way under GPU contention.
 > the probe going quiet while the suite kept dying is no longer an
 > inconsistency to explain.
 
-Ruled out, each measured rather than argued: thread stack size
-(`RUST_MIN_STACK=32M` changes nothing), `mmap_size` (0 changes nothing),
-`sqlite-vec` (removing the `vec_nodes` insert changes nothing), and serializing
-pool construction (changes nothing). A contributing factor, not the cause: the
-per-**connection** `cache_size` of 64 MiB and `mmap_size` of 256 MiB multiply by
-every live pool, and cutting the cache to 2 MiB moves 13/32 to 9/32.
+**No MemGarden code is required to reproduce it.** A sibling probe was written
+that goes nowhere near `Db`: raw `rusqlite`, an r2d2 pool of 4, the same
+pragmas, an FTS5 index over one text column, 150 long rows per database, and no
+`sqlite-vec` registered anywhere in the process. It died 25 times in 480 runs
+while the `Db`-based probe beside it died 11 times — so `sqlite-vec` is not in
+it, and neither is anything this repository wrote. What is left in the picture
+is SQLite, FTS5, and the shape of the load.
+
+**Every "ruled out by measurement" line here is now suspect, and that is the
+most important sentence on this page.** On 2026-08-10 the reproduction rate was
+measured repeatedly across one day and moved between 0% and 30% *for the same
+binary and the same command*, with hour-long stretches at zero. Numbers taken at
+different times are not comparable, and most of the eliminations below were
+taken that way.
+
+Kept for the record with that caveat attached: thread stack size
+(`RUST_MIN_STACK=32M` changes nothing), `mmap_size`, `sqlite-vec`, serializing
+pool construction, and the `cache_size` observation (13/32 → 9/32 at 2 MiB).
+
+Two later measurements show how little that record is worth. A same-session
+interleaved A/B — both arms in the same rounds, same binary, same machine load,
+480 runs each — put `mmap_size=256MB` at **25** deaths against `mmap_size=0` at
+**13**, which contradicts the "0 changes nothing" line above. A run of the same
+shape an hour later returned **0 and 0**, which contradicts both.
+
+**ASAN and TSAN have now been run properly, and neither finds it.**
+`memgarden-store` does not depend on `ort-sys`, so the `CC`-wrapper problem that
+broke the earlier attempt does not arise here; `libsqlite3.a` and
+`libsqlite_vec0.a` were verified instrumented rather than assumed. 480 runs of
+the reproducing probe under ASAN: **zero reports, zero deaths**. TSAN (with
+`-Z build-std`, so std and the C are instrumented together) fires on the first
+run, but every race it names is one SQLite documents as intentional —
+`unixOpen`'s `randomnessPid`, whose own comment says "multiple resets are
+harmless", and `walIndexTryHdr` reading the wal-index header without a lock
+before validating it by checksum.
+
+**A hardware explanation was proposed and withdrawn the same day.** Every crash
+in one boot that the kernel annotated with a CPU — 42 of them — named the same
+logical CPU, and pinning the probe there produced 12 deaths in 40 runs against
+0 in 40 on its SMT sibling. It did not replicate: 80 sequential runs across four
+CPUs, and 80 more with both siblings of that physical core saturated at once,
+returned **zero**. Three synthetic self-checks pinned to the same CPU — integer
+arithmetic plus `memcpy`; 32 threads context-switching with atomics and FP
+state; a 512 MB streaming working set — return zero mismatches. The
+42-of-42 clustering is a real observation and remains unexplained. It is not,
+on this evidence, a defective core.
 
 **The daemon's shape is not implicated.** One file-backed database, 16 threads,
 6,400 FTS5-bearing inserts: 10 runs, 0 failures. Thirty short-lived databases
@@ -286,9 +326,18 @@ with 250 small inserts each at 64 threads: 20 runs, 0 failures. It takes many
 concurrent databases *and* substantial FTS5 index building together.
 
 **What it costs today:** `cargo test --workspace` is not a trustworthy gate
-under load, so a PR's test tally has to be read with that caveat until this is
-closed. **What would close it:** an ASAN build, which needs a nightly toolchain
-this repo does not pin — the minimal reproducer above is the input for it.
+under load, so a PR's test tally has to be read from consecutive runs rather
+than one, and a death has to be recorded rather than re-run away.
+
+**What would close it: a reproduction that stays reproducible.** Every
+instrument aimed at this so far has been aimed at a failure that was not firing
+while it was aimed — that is what the ASAN, TSAN and CPU-pinning results above
+have in common, and it is why each of them looked conclusive for an afternoon.
+Until the rate is steady enough that two arms measured an hour apart mean
+something, bisecting configuration is measuring the clock. The leading untested
+lead is thermal: the 12-of-40 came directly after two hours of continuous
+8-process × 32-thread load, and every failed replication was run on a
+comparatively cool machine.
 
 ### ~~The cursor gap~~ — fixed (HK-1g)
 
