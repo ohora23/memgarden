@@ -42,6 +42,23 @@
         <label><input type="checkbox" value="experience" checked> experience</label>
       </div>
 
+      <label for="f-links">Links</label>
+      <div id="f-links" class="type-checks">
+        <label><input type="checkbox" value="semantic" checked> semantic</label>
+        <label><input type="checkbox" value="caused_by" checked> caused_by</label>
+        <!-- Off by default. The live bank holds more temporal edges than
+             semantic ones and they connect anything from the same day, so
+             leaving them on is what makes a filtered draw a solid mat. -->
+        <label><input type="checkbox" value="temporal"> temporal</label>
+      </div>
+
+      <!-- 1.5 rather than 1: chosen by looking at the live bank, not derived.
+           The scale it multiplies is calibrated for edge counts, and edge
+           counts are a property of the bank you happen to be looking at, so
+           the knob stays. -->
+      <label for="f-edge-scale">Edge width</label>
+      <input id="f-edge-scale" type="range" min="0.25" max="3" step="0.25" value="1.5">
+
       <label for="f-session">Session</label>
       <input id="f-session" type="text" placeholder="session id" autocomplete="off">
 

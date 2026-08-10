@@ -362,12 +362,70 @@ function addNode(id, attrs) {
 function addEdge(a, b, linkType, weight) {
   const [x, y] = [String(a), String(b)];
   if (x === y || !graph.hasNode(x) || !graph.hasNode(y) || graph.hasEdge(x, y)) return;
-  graph.addEdge(x, y, {
-    color: EDGE_COLOR[linkType] || DIM,
-    size: weight == null ? 1 : 0.5 + weight * 2,
-    linkType,
-    weight,
+  graph.addEdge(x, y, { linkType, weight });
+}
+
+/** Hex to `rgba`, because sigma takes a colour string and the alpha is what
+ *  does most of the work in a dense graph. */
+function withAlpha(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
+/** Edge weight and opacity are a function of how many edges there are, and
+ *  that has to be recomputed after every bulk change rather than fixed when
+ *  an edge is added.
+ *
+ *  Measured on the live bank: `limit=200` comes back with **5,432 links** —
+ *  27 per node — and at a fixed 2.5px those cover the nodes they are supposed
+ *  to connect. The graph does not get less dense if you draw it more boldly;
+ *  it gets less readable. Thin and translucent lets density read as *shade*,
+ *  which is the only way a hairball says anything. */
+function restyleEdges() {
+  const n = visibleEdgeCount();
+  // Calibrated with `temporal` off, which is the default: a 200-node draw is
+  // then hundreds of edges rather than the 5,432 it is with temporal on, and
+  // the first version of this scale was set against the latter — which made
+  // the common case nearly invisible.
+  const base = n > 3000 ? 0.5 : n > 1000 ? 0.9 : n > 300 ? 1.5 : 2.4;
+  const alpha = n > 3000 ? 0.35 : n > 1000 ? 0.5 : n > 300 ? 0.7 : 0.9;
+  // …and a knob, because two guesses at "the right thickness" were two too
+  // many. Density is a property of the bank being looked at, not something a
+  // constant can know.
+  const thin = base * edgeScale();
+  const off = hiddenLinkTypes();
+  graph.forEachEdge((e, attr) => {
+    graph.setEdgeAttribute(e, "size", thin * (0.6 + (attr.weight ?? 0.5) * 0.8));
+    graph.setEdgeAttribute(e, "color", withAlpha(EDGE_COLOR[attr.linkType] || DIM, alpha));
+    graph.setEdgeAttribute(e, "hidden", off.has(attr.linkType));
   });
+}
+
+/** How many edges will actually be drawn — the hidden ones must not drag the
+ *  scale down, or turning `temporal` off would make the rest thinner instead
+ *  of clearer. */
+function visibleEdgeCount() {
+  const off = hiddenLinkTypes();
+  return graph.filterEdges((_, a) => !off.has(a.linkType)).length;
+}
+
+/** The thickness knob, 0.25x to 3x, default 1.5, remembered across reloads —
+ *  retuning it every visit would be its own annoyance. 1.5 was picked by
+ *  looking at the live bank rather than derived from anything. */
+function edgeScale() {
+  const el = $("#f-edge-scale");
+  return el ? Number(el.value) : 1;
+}
+
+/** Link types the reader has switched off. `temporal` is the one that
+ *  matters: the live bank holds 105,628 of them against 92,417 semantic, and
+ *  they connect anything that happened on the same day — true, and rarely
+ *  what someone is looking at the graph to find. Filtering here rather than
+ *  server-side keeps it instant and keeps the fetched set honest. */
+function hiddenLinkTypes() {
+  return new Set(
+    [...document.querySelectorAll("#f-links input:not(:checked)")].map((i) => i.value),
+  );
 }
 
 /** Every group a node detail carries, in a fixed order so the same node lays
@@ -427,6 +485,7 @@ function seedEgo(n) {
     });
     start += span;
   }
+  restyleEdges();
   sigmaRenderer().refresh();
   fitView();
   reportGraph(`${total} neighbours of the selected memory`);
@@ -462,6 +521,7 @@ async function expand(id) {
         addEdge(n.id, r.id, linkType, r.weight);
       }
     }
+    restyleEdges();
     relayout();
     reportGraph(added ? `+${added} new` : "no new neighbours");
   } catch (e) {
@@ -561,6 +621,7 @@ async function drawFiltered() {
       });
     }
     for (const l of out.links ?? []) addEdge(l.from, l.to, l.type, l.weight);
+    restyleEdges();
     sigmaRenderer().refresh();
     relayout();
     reportGraph(`${(out.nodes ?? []).length} drawn`);
@@ -573,6 +634,23 @@ async function drawFiltered() {
 
 $("#detail-close").addEventListener("click", () => { detailPanel.hidden = true; });
 $("#f-apply").addEventListener("click", drawFiltered);
+// Link-type toggles restyle what is already drawn — no refetch, because the
+// edges are all present and only their visibility changes.
+const restyleLive = () => {
+  if (!graph.order) return;
+  restyleEdges();
+  sigmaRenderer().refresh();
+  reportGraph(`${visibleEdgeCount()} edges shown`);
+};
+for (const box of document.querySelectorAll("#f-links input")) {
+  box.addEventListener("change", restyleLive);
+}
+const edgeScaleInput = $("#f-edge-scale");
+edgeScaleInput.value = localStorage.getItem("mg-edge-scale") || "1.5";
+edgeScaleInput.addEventListener("input", () => {
+  localStorage.setItem("mg-edge-scale", edgeScaleInput.value);
+  restyleLive();
+});
 $("#search-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const q = $("#q").value.trim();
