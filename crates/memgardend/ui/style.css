@@ -202,3 +202,38 @@ svg.ego { width: 100%; height: 100%; }
   opacity: .8;
   dominant-baseline: middle;
 }
+
+/* The hover peek. `pointer-events: none` matters: it follows the cursor, and a
+   panel that could be hovered would steal the pointerleave from the dot under
+   it and flicker. */
+#peek {
+  position: fixed;
+  z-index: 5;
+  max-width: 42ch;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px #0009;
+  pointer-events: none;
+}
+#peek[hidden] { display: none; }
+
+.peek-text {
+  font-size: 13px;
+  line-height: 1.45;
+  /* Long memories peek, they do not unroll. */
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.peek-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--dim);
+}

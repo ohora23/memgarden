@@ -15,6 +15,11 @@
   <p id="canvas-empty">Select a result to see its neighbourhood.</p>
 </div>
 
+<!-- Hover preview for graph nodes. `aria-hidden` like the canvas it serves:
+     every node it describes is also a button in the detail panel, which is the
+     keyboard path and the accessible one. -->
+<div id="peek" hidden aria-hidden="true"></div>
+
 <section id="search-panel" aria-label="Search">
   <header>
     <h1>MemGarden</h1>

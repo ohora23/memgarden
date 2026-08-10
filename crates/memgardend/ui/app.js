@@ -266,6 +266,56 @@ const radiusFor = (w) =>
     ? (R_NEAR + R_FAR) / 2
     : R_FAR - Math.min(Math.max((w - 0.7) / 0.3, 0), 1) * (R_FAR - R_NEAR);
 
+/** Hover reads, click travels.
+ *
+ *  This was an SVG `<title>`, which is the browser's native tooltip: it waits
+ *  about a second before appearing and cannot be styled. The effect was that
+ *  hovering appeared to do nothing, so the only way to learn what a dot was
+ *  became clicking it — and clicking is the *navigation* gesture, so reading
+ *  the neighbourhood meant walking it. A peek that appears on the same frame
+ *  as the cursor separates the two: hover to read, click to go.
+ *
+ *  It shows the label the response already carries (truncated to 160
+ *  characters by `/graph`'s `MAX_LABEL_LEN`), so peeking costs no request. */
+const peek = $("#peek");
+
+function bindPeek(node, text, factType, linkType, weight) {
+  node.addEventListener("pointerenter", (e) => {
+    peek.replaceChildren(
+      el("div", { className: "peek-text" }, text),
+      el("div", { className: "peek-meta" }, [
+        el("span", { className: `type ${factType}` }, factType),
+        el("span", {}, linkType),
+        ...(weight == null ? [] : [el("span", {}, `w ${fmt(weight)}`)]),
+      ]),
+    );
+    peek.hidden = false;
+    movePeek(e);
+  });
+  node.addEventListener("pointermove", movePeek);
+  node.addEventListener("pointerleave", hidePeek);
+}
+
+/** Follows the cursor, and flips to the other side rather than leaving the
+ *  viewport — the outer ring reaches the edges of the canvas, so a peek that
+ *  only ever opened down-right would be clipped for every node on the right
+ *  half. */
+function movePeek(e) {
+  const gap = 14;
+  const w = peek.offsetWidth;
+  const h = peek.offsetHeight;
+  let x = e.clientX + gap;
+  let y = e.clientY + gap;
+  if (x + w > window.innerWidth - 8) x = e.clientX - w - gap;
+  if (y + h > window.innerHeight - 8) y = e.clientY - h - gap;
+  peek.style.left = `${Math.max(8, x)}px`;
+  peek.style.top = `${Math.max(8, y)}px`;
+}
+
+function hidePeek() {
+  peek.hidden = true;
+}
+
 function drawEgo(n) {
   const groups = egoGroups(n);
   const total = groups.reduce((sum, [, list]) => sum + list.length, 0);
@@ -305,10 +355,8 @@ function drawEgo(n) {
         "stroke-width": r.weight == null ? 1 : 1 + r.weight * 1.5,
         opacity: 0.4,
       }));
-      const dot = svg("circle", { cx: x, cy: y, r: 7, class: `ego-node ${r.type}` }, [
-        svg("title", {}, [document.createTextNode(
-          `${r.label}\n${type}${r.weight == null ? "" : ` · w ${fmt(r.weight)}`}`)]),
-      ]);
+      const dot = svg("circle", { cx: x, cy: y, r: 7, class: `ego-node ${r.type}` });
+      bindPeek(dot, r.label, r.type, type, r.weight);
       dot.addEventListener("click", () => showNode({ id: r.id }));
       dots.append(dot);
     });
@@ -327,10 +375,12 @@ function drawEgo(n) {
   }
 
   // Centre last so it sits over the edges leaving it.
-  root.append(edges, labels, dots,
-    svg("circle", { cx: 0, cy: 0, r: 13, class: `ego-node ego-centre ${n.type}` }, [
-      svg("title", {}, [document.createTextNode(n.text.slice(0, 200))]),
-    ]));
+  const centre = svg("circle", {
+    cx: 0, cy: 0, r: 13, class: `ego-node ego-centre ${n.type}`,
+  });
+  bindPeek(centre, n.text, n.type, "selected", null);
+  root.append(edges, labels, dots, centre);
+  hidePeek();
   canvas.replaceChildren(root);
 }
 
