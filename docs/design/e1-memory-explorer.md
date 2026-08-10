@@ -23,9 +23,10 @@ adjacent to *this* node", which is what progressive loading needs.
 | need | endpoint | state |
 |---|---|---|
 | search | `POST /v1/banks/{bank_id}/recall` | ✅ exists, and returns per-arm scores |
-| full text of one node | `GET .../nodes/{id}` | ❌ **this document** |
-| provenance | same | ❌ |
-| neighbours of one node | same | ❌ |
+| full text of one node | `GET .../nodes/{id}` | ✅ E1 |
+| provenance | same | ✅ E1 |
+| neighbours of one node | same | ✅ E1, and it is what E3 expands with |
+| a filtered set to start from | `GET .../graph?types=&session=&since=&until=&limit=` | ✅ `since`/`until` added by E3 |
 | realtime | SSE | ❌ deferred to GV-3 |
 
 ---
@@ -84,6 +85,44 @@ the daemon must work with no network.
 > a 300-unit ring are 47 units apart. The decision above stands unchanged for
 > E3 — when the node count leaves one screen and edges arrive incrementally,
 > a hand-written layout is exactly the risk this section describes.
+>
+> **Resolved for E3: vendor it, in 2D, with pan and zoom.** That is what this
+> section originally decided and nothing has changed the reasoning; E2 only
+> established that the ego-graph did not need it yet.
+>
+> **One correction to the sentence above: sigma does not carry a layout.** It
+> renders and handles the pointer; positions come from somewhere else. The
+> package that would have supplied them, `graphology-library`, is 168 KB and
+> bundles metrics, generators and community detection to deliver one function,
+> so the layout is `d3-force` instead — 17 KB with its three dependencies,
+> computing coordinates and nothing more. sigma still earns its 261 KB,
+> because the WebGL renderer is what lets E3 drop its filters and draw a whole
+> bank. `vendor/README.md` records the measurement.
+
+### 6. 3D is a separate screen, and E3 is not it
+
+The question came up while looking at E2: should the graph be 3D?
+
+**Not for exploration.** The ego-graph already spends both of its axes:
+angle is the link type, distance is the weight. A third axis has nothing to
+carry, and the costs are not hypothetical — nodes occlude each other, depth
+is ambiguous enough that "which of these is closer" stops being readable, a
+node behind the camera does not exist until you rotate, and small targets get
+harder to hit. 3D graph views photograph well and read badly, and this screen
+exists to be read.
+
+**E3 is 2D force with pan and zoom.** Progressive expansion is a
+*narrowing* gesture — filter, expand one node, follow an edge — and narrowing
+wants legibility and precise hit targets, which is exactly where 2D wins.
+
+**Where 3D does win is a different question, so it gets a different screen.**
+Seeing the shape of a whole bank at once — the live one is 5,414 nodes with
+over 90,000 semantic edges — is a *survey*, not a walk, and in a graph that
+dense the extra dimension genuinely relieves occlusion. E6 builds that as its
+own view. Merging the two into one canvas with a toggle would make both
+mediocre: the survey wants the whole bank and no filters, the explorer wants
+a filtered neighbourhood and precise clicking, and every control would have to
+mean two things.
 
 ### 3. The viewer is filter-first and loads progressively
 
@@ -203,9 +242,10 @@ thrown away.
 |---|---|
 | **E1** | `GET .../nodes/{id}`, static serving, the shell: search → results → detail |
 | **E2** | ego-graph for the selected node, in SVG — sigma.js deferred to E3, see §Decisions 2 |
-| E3 | filters (session, type, date) and progressive expansion |
+| **E3** | filters (type, session, date), progressive expansion, sigma + graphology + d3-force vendored — 2D, pan/zoom |
 | E4 | SSE, so a retain appears without a reload (GV-3, AC-4's ≤5 s) |
 | E5 | dashboard and ledger views (DB-1, MX-2, AC-5) |
+| E6 | the 3D overview — a **separate screen**, not a mode of the explorer (see §Decisions 6) |
 
 **Why the dashboard is last** rather than first as the PRD orders it: the
 exploration view is the one that pays immediately. It is the instrument AC-1's

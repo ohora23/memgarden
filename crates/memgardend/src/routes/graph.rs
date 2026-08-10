@@ -43,6 +43,12 @@ pub struct GraphQuery {
     pub types: Option<String>,
     /// Critic Revision R15: filters on the `session:{id}` tag B3 writes.
     pub session: Option<String>,
+    /// Inclusive `event_date` bounds in epoch ms (E3's date filter). Applied
+    /// in SQL rather than by the caller: `limit` takes the newest ids, so a
+    /// range narrowed after the fact could never reach a memory older than
+    /// the newest `limit` of them.
+    pub since: Option<i64>,
+    pub until: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,7 +113,15 @@ pub async fn get_graph(
 
     let db = state.db.clone();
     let (nodes, links) = tokio::task::spawn_blocking(move || {
-        graph::graph_view(&db, &bank_id, limit, &fact_types, q.session.as_deref())
+        graph::graph_view(
+            &db,
+            &bank_id,
+            limit,
+            &fact_types,
+            q.session.as_deref(),
+            q.since,
+            q.until,
+        )
     })
     .await
     .map_err(join_err)??;

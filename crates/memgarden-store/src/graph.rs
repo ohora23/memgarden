@@ -502,12 +502,19 @@ pub struct GraphEdge {
 /// means all; `session` filters on the `session:{id}` tag B3 writes (Critic
 /// Revision R15). Only edges whose *both* endpoints are in the returned node
 /// set come back, so the viewer never draws a dangling edge.
+/// `since` / `until` bound `event_date`, inclusive, in epoch ms. They are in
+/// the query rather than applied to its result because this orders by
+/// `id DESC` and takes `limit`: a range narrowed afterwards could only ever
+/// cut into the newest window, and could never reach a memory older than it —
+/// which is the entire reason to ask for a date (E3).
 pub fn graph_view(
     db: &Db,
     bank_id: &str,
     limit: usize,
     fact_types: &[FactType],
     session: Option<&str>,
+    since: Option<i64>,
+    until: Option<i64>,
 ) -> Result<(Vec<GraphNode>, Vec<GraphEdge>)> {
     // Same shape as `search::fts_candidates_filtered`: one prepared statement
     // for every filter combination, values are `FactType::as_str` literals.
@@ -534,13 +541,15 @@ pub fn graph_view(
                AND (?3 IS NULL OR n.fact_type IN (SELECT value FROM json_each(?3)))
                AND (?4 IS NULL OR EXISTS (
                      SELECT 1 FROM node_tags t WHERE t.node_id = n.id AND t.tag = ?4))
+               AND (?5 IS NULL OR n.event_date >= ?5)
+               AND (?6 IS NULL OR n.event_date <= ?6)
              ORDER BY n.id DESC
              LIMIT ?2",
         )
         .map_err(store_err)?;
     let mut nodes = stmt
         .query_map(
-            params![bank_id, limit as i64, types_json, session_tag],
+            params![bank_id, limit as i64, types_json, session_tag, since, until],
             |r| {
                 Ok(GraphNode {
                     id: r.get(0)?,
