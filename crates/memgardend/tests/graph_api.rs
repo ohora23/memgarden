@@ -1043,3 +1043,108 @@ async fn the_ui_is_behind_the_same_host_guard_as_the_api() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
+
+/// **E2's contract.** The ego-graph draws from this response and nothing else,
+/// so what it reads is pinned here rather than left to be discovered when the
+/// canvas silently renders empty.
+///
+/// A graph that draws nothing looks exactly like a node with no neighbours,
+/// which is why this is a test and not a manual check: rename `label`, flatten
+/// `neighbors` into one array, or drop `weight`, and `ui/app.js`'s `drawEgo`
+/// stops finding what it walks — with no error anywhere.
+///
+/// The four properties it depends on:
+///
+/// 1. `neighbors` is an **object keyed by link type**. Each key becomes one
+///    sector and supplies the sector's label, so a flat array would collapse
+///    the whole legend.
+/// 2. Every neighbour row carries `id`, `label` and `type` — the click target,
+///    the hover title, and the fact_type that colours the dot.
+/// 3. `weight` is present and inside `[0, 1]` on a link-derived neighbour.
+///    `radiusFor` maps it onto a radius and would place a rogue value off the
+///    canvas.
+/// 4. Provenance rows (`sources` / `cited_by`) have the same shape **minus**
+///    `weight`, which is why the drawing sends them to the midpoint radius
+///    instead of claiming a similarity they do not have.
+#[tokio::test]
+async fn node_detail_carries_what_the_ego_graph_draws() {
+    let (app, db) = read_only_app();
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let subject = nodes::insert(&db, NewNode::new("b1", FactType::World, "the centre")).unwrap();
+    let near = nodes::insert(&db, NewNode::new("b1", FactType::World, "a close one")).unwrap();
+    let later = nodes::insert(&db, NewNode::new("b1", FactType::World, "a same-day one")).unwrap();
+    // A provenance edge, written by the production path, so `sources` is
+    // populated the way consolidation populates it.
+    let obs = memgarden_store::consolidate::insert_observation(
+        &db,
+        "b1",
+        "an observation over the centre",
+        &vec![0.0f32; memgarden_core::EMBEDDING_DIM],
+        &[subject],
+    )
+    .unwrap();
+
+    graph::insert_links(
+        &db,
+        &[
+            NewLink {
+                from_node_id: subject,
+                to_node_id: near,
+                link_type: "semantic",
+                weight: 0.93,
+            },
+            NewLink {
+                from_node_id: subject,
+                to_node_id: later,
+                link_type: "temporal",
+                weight: 0.49,
+            },
+        ],
+        1,
+    )
+    .unwrap();
+
+    let (status, node) = send(&app, get(&format!("/v1/banks/b1/nodes/{subject}"))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // 1. Keyed by link type, one key per sector.
+    let by_type = node["neighbors"]
+        .as_object()
+        .expect("neighbors must be an object keyed by link type, not a flat array");
+    let mut types: Vec<&String> = by_type.keys().collect();
+    types.sort();
+    assert_eq!(types, vec!["semantic", "temporal"]);
+
+    // 2 and 3. Every row is drawable, and its weight is a radius input.
+    for (link_type, rows) in by_type {
+        for row in rows.as_array().expect("each link type holds an array") {
+            assert!(row["id"].is_i64(), "{link_type} row needs an id to click");
+            assert!(
+                row["label"].as_str().is_some_and(|s| !s.is_empty()),
+                "{link_type} row needs a label for the hover title"
+            );
+            assert!(
+                row["type"].as_str().is_some_and(|s| !s.is_empty()),
+                "{link_type} row needs a fact_type to colour the dot"
+            );
+            let w = row["weight"]
+                .as_f64()
+                .unwrap_or_else(|| panic!("{link_type} row needs a weight"));
+            assert!(
+                (0.0..=1.0).contains(&w),
+                "{link_type} weight {w} is outside [0,1] and would land off the canvas"
+            );
+        }
+    }
+
+    // 4. Provenance: same shape, and deliberately weightless.
+    let source_row = &node["cited_by"][0];
+    assert_eq!(source_row["id"].as_i64().unwrap(), obs);
+    assert!(source_row["label"].as_str().is_some_and(|s| !s.is_empty()));
+    assert!(source_row["type"].as_str().is_some_and(|s| !s.is_empty()));
+    assert!(
+        source_row["weight"].is_null(),
+        "provenance carries no similarity; the drawing depends on that absence"
+    );
+}

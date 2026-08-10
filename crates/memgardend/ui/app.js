@@ -140,6 +140,7 @@ async function showNode(ref) {
       `/v1/banks/${encodeURIComponent(bank())}/nodes/${ref.id}`);
     detail.replaceChildren(...detailView(n));
     detail.parentElement.scrollTop = 0;
+    drawEgo(n);
   } catch (e) {
     detail.replaceChildren(el("p", { className: "error" }, e.message));
   }
@@ -207,6 +208,131 @@ const related = (title, items, cap) =>
 
 const date = (ms) =>
   ms == null ? null : new Date(ms).toISOString().slice(0, 16).replace("T", " ");
+
+// --- E2: the ego-graph ----------------------------------------------------
+//
+// SVG, and no library. `e1-memory-explorer.md` §Order planned sigma.js here,
+// and it is still the right answer for E3's progressive expansion, where the
+// node count leaves one screen and a force layout starts earning its keep. An
+// ego-graph does not: one centre and one ring, every edge already in the
+// `get_node` response this drew the panel from, and angles that are
+// arithmetic. Seventy lines against a 200 KB vendored build — the library
+// waits for the problem it is good at.
+//
+// `#canvas` stays `aria-hidden`: every node here is also a button in the
+// detail panel, which is the keyboard path and the accessible one. The graph
+// is a second view of the same data, not a second source of it.
+
+const canvas = $("#canvas");
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+const svg = (tag, attrs = {}, kids = []) => {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v != null) node.setAttribute(k, v);
+  }
+  node.append(...kids);
+  return node;
+};
+
+/** Edge colour by link type. Nodes keep their fact_type colour, so the two
+ *  axes never share a hue and a reader can hold both at once. */
+const EDGE = {
+  semantic: "#7fd1ae",
+  temporal: "#7aa2f7",
+  caused_by: "#f7768e",
+  "built from": "#e0af68",
+  "cited by": "#bb9af7",
+};
+
+/** Groups in a fixed order, so redrawing the same node lands identically and
+ *  a neighbour does not move under the cursor between visits. */
+function egoGroups(n) {
+  const out = Object.entries(n.neighbors ?? {}).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0);
+  if (n.sources?.length) out.push(["built from", n.sources]);
+  if (n.cited_by?.length) out.push(["cited by", n.cited_by]);
+  return out.filter(([, list]) => list?.length);
+}
+
+const R_NEAR = 130;
+const R_FAR = 300;
+
+/** Weight becomes distance: a 1.0 neighbour sits at `R_NEAR`, the 0.7
+ *  `SEMANTIC_LINK_MIN_SIMILARITY` floor at `R_FAR`. Provenance edges carry no
+ *  weight and sit midway rather than claiming a similarity they do not have. */
+const radiusFor = (w) =>
+  w == null
+    ? (R_NEAR + R_FAR) / 2
+    : R_FAR - Math.min(Math.max((w - 0.7) / 0.3, 0), 1) * (R_FAR - R_NEAR);
+
+function drawEgo(n) {
+  const groups = egoGroups(n);
+  const total = groups.reduce((sum, [, list]) => sum + list.length, 0);
+  if (!total) {
+    canvas.replaceChildren(el("p", { className: "empty" },
+      "This memory has no neighbours yet."));
+    return;
+  }
+
+  const root = svg("svg", {
+    class: "ego",
+    viewBox: "-430 -390 860 780",
+    preserveAspectRatio: "xMidYMid meet",
+  });
+  const edges = svg("g");
+  const labels = svg("g");
+  const dots = svg("g");
+
+  // Each group gets arc proportional to its size, minus a gap so the sectors
+  // read as sectors rather than as one undifferentiated ring.
+  const GAP = 0.06;
+  let start = -Math.PI / 2;
+  for (const [type, list] of groups) {
+    const span = (2 * Math.PI * list.length) / total;
+    const inner = Math.max(span - GAP, span * 0.5);
+    const step = inner / list.length;
+    const colour = EDGE[type] ?? "#8b93a7";
+
+    list.forEach((r, i) => {
+      const angle = start + (span - inner) / 2 + step * (i + 0.5);
+      const rad = radiusFor(r.weight);
+      const x = +(Math.cos(angle) * rad).toFixed(1);
+      const y = +(Math.sin(angle) * rad).toFixed(1);
+      edges.append(svg("line", {
+        x1: 0, y1: 0, x2: x, y2: y,
+        stroke: colour,
+        "stroke-width": r.weight == null ? 1 : 1 + r.weight * 1.5,
+        opacity: 0.4,
+      }));
+      const dot = svg("circle", { cx: x, cy: y, r: 7, class: `ego-node ${r.type}` }, [
+        svg("title", {}, [document.createTextNode(
+          `${r.label}\n${type}${r.weight == null ? "" : ` · w ${fmt(r.weight)}`}`)]),
+      ]);
+      dot.addEventListener("click", () => showNode({ id: r.id }));
+      dots.append(dot);
+    });
+
+    // The group's name where its sector points — the legend, without a legend.
+    const mid = start + span / 2;
+    const cos = Math.cos(mid);
+    labels.append(svg("text", {
+      x: +(cos * (R_FAR + 44)).toFixed(1),
+      y: +(Math.sin(mid) * (R_FAR + 44)).toFixed(1),
+      class: "ego-label",
+      fill: colour,
+      "text-anchor": cos > 0.3 ? "start" : cos < -0.3 ? "end" : "middle",
+    }, [document.createTextNode(`${type} (${list.length})`)]));
+    start += span;
+  }
+
+  // Centre last so it sits over the edges leaving it.
+  root.append(edges, labels, dots,
+    svg("circle", { cx: 0, cy: 0, r: 13, class: `ego-node ego-centre ${n.type}` }, [
+      svg("title", {}, [document.createTextNode(n.text.slice(0, 200))]),
+    ]));
+  canvas.replaceChildren(root);
+}
 
 // --- boot -----------------------------------------------------------------
 
