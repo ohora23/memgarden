@@ -29,6 +29,8 @@ adjacent to *this* node", which is what progressive loading needs.
 | a filtered set to start from | `GET .../graph?types=&session=&since=&until=&limit=` | ✅ `since`/`until` added by E3 |
 | the links *between* nodes already on screen | `GET .../graph?ids=` | ✅ E3 — see below |
 | realtime | `GET .../events` (SSE) | ✅ E4 |
+| what each bank holds | `GET /v1/stats` | ✅ E5 |
+| the counters as they were | `GET /v1/metrics/history` | ✅ E5 — the rows `metrics_task` had been writing since MX-1 with no reader |
 
 ---
 
@@ -255,9 +257,8 @@ thrown away.
 | **E2** | ego-graph for the selected node, in SVG — sigma.js deferred to E3, see §Decisions 2 |
 | **E3** | filters (type, session, date), progressive expansion, sigma + graphology + d3-force vendored — 2D, pan/zoom |
 | **E4** | SSE, so a retain appears without a reload (GV-3, AC-4's ≤5 s) — as a badge, never as a graph that moves itself |
-| E5 | dashboard and ledger views (DB-1, MX-2, AC-5) |
+| **E5** | the dashboard and the ledger (DB-1, MX-2, AC-5) — a second page at `/ui/dashboard`, see below |
 | E6 | the 3D overview — a **separate screen**, not a mode of the explorer (see §Decisions 6) |
-
 **Why the dashboard is last** rather than first as the PRD orders it: the
 exploration view is the one that pays immediately. It is the instrument AC-1's
 shadow evidence gets reviewed with, and it makes `proof_count`, entity
@@ -266,6 +267,68 @@ defects in the last three days that were found by writing throwaway SQL.
 
 The dashboard's value is operational monitoring, which matters most once the
 system is the only one running. That is Phase F.
+
+---
+
+## E5 — the dashboard
+
+`/ui/dashboard`, polling five endpoints every 10 seconds: `/healthz` for the
+verdict, `/metrics.json` for the counters, `/v1/stats`, `/v1/metrics/history`
+and `/v1/ledger`. memdash's successor, with the two things AC-5 adds to it —
+a HEALTHY/DEGRADED/UNHEALTHY judgement and the 10-second refresh.
+
+**A second page, not a mode.** It shares `style.css` and the `$`/`el`/`api`/
+`date` helpers, now in `common.js`, and nothing else. The explorer is a graph
+filling a fixed viewport; the dashboard is a scrolling document on a timer.
+Merging them would give every control two meanings — the same argument
+§Decisions 6 makes about E6, arrived at for the same reason.
+
+**The verdict is rendered, not recomputed.** `routes/health.rs` already
+decides HEALTHY vs DEGRADED vs UNHEALTHY, and two definitions of "healthy"
+that can disagree is how a dashboard starts lying. The one verdict the page
+adds is `UNREACHABLE`, which is the one a daemon cannot report about itself.
+`/healthz` answers **503** when the news is bad, which is why this page reads
+that response directly rather than through the shared `api()` helper — a
+helper that throws on non-2xx would turn the report into an absence.
+
+**A failed poll costs one panel, not the screen.** Each section renders from
+its own response and keeps its last good value; only the verdict and the tick
+line change to say a fetch failed. A dashboard whose whole purpose is to show
+a sick daemon is useless if a sick daemon empties it.
+
+**Two new read routes, outside the timing middleware.** `/v1/stats` is a
+`GROUP BY` over `memory_nodes`, `documents` and a `links` join — 46 ms on the
+live database, six times a minute — and `/v1/metrics/history` reads the
+snapshot table. Both sit with `/metrics.json` outside `track_http` for the
+reason that route already gives: an operator watching the numbers must not be
+the reason the numbers move. `/healthz` stays measured; it predates the
+dashboard and an external monitor is expected to call it.
+
+`/v1/stats` is separate from `/v1/banks` rather than a field on it because the
+explorer calls `/v1/banks` to fill a dropdown on every page load, and that
+must not start paying for a 200,000-row join.
+
+### Two things building the screen found
+
+**The ledger API was deleting what the ledger collects.** `LedgerResponse`
+flattened the `detail` column into the five fields of the *manual* case shape,
+so a `retain_cap_saving` row — which records `{raw_tokens, capped_tokens,
+saved, ratio}` and none of those five — came back as a row of nulls. Eight
+automatic rows on the live database rendered as eight rows of `—`. AC-6's
+whole claim is that the ledger collects itself; an endpoint that can only read
+what a human typed into it defeats that. `detail` is now returned whole, and
+`kind` says how to read it — strict about what is written, permissive about
+what is read.
+
+**Skipping hidden tabs made the page freeze while claiming to refresh.** The
+poll originally ran only when `document.visibilityState === "visible"`, to
+save what `/v1/stats` costs. Watched in a real browser with the daemon killed,
+the page sat at HEALTHY for 25 seconds with "every 10s" in the corner: this is
+a screen you leave open on a second monitor, so the one state it must never
+be in is stale-but-confident. The interval now runs regardless — browsers
+throttle background timers to about a minute on their own, which is the only
+budget this needs — and `visibilitychange` still forces a refresh so returning
+to the tab shows current numbers rather than whatever the throttle left.
 
 ---
 
