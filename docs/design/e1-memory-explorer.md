@@ -127,6 +127,11 @@ mediocre: the survey wants the whole bank and no filters, the explorer wants
 a filtered neighbourhood and precise clicking, and every control would have to
 mean two things.
 
+> **Retracted at E6 — the sentence about occlusion was never measured, and it
+> is false for this data.** The separate-screen argument survives; the third
+> dimension does not. §E6 has the experiment. The survey view exists, and it
+> is a panel of numbers.
+
 ### 3. The viewer is filter-first and loads progressively
 
 `MAX_LIMIT` is 2000 and AC-4 asks for 2,500 nodes. That conflict is not the
@@ -258,7 +263,7 @@ thrown away.
 | **E3** | filters (type, session, date), progressive expansion, sigma + graphology + d3-force vendored — 2D, pan/zoom |
 | **E4** | SSE, so a retain appears without a reload (GV-3, AC-4's ≤5 s) — as a badge, never as a graph that moves itself |
 | **E5** | the dashboard and the ledger (DB-1, MX-2, AC-5) — a second page at `/ui/dashboard`, see below |
-| E6 | the 3D overview — a **separate screen**, not a mode of the explorer (see §Decisions 6) |
+| **E6** | the survey view — **measured, not drawn**. The 3D plan was tested and dropped; see §E6 |
 **Why the dashboard is last** rather than first as the PRD orders it: the
 exploration view is the one that pays immediately. It is the instrument AC-1's
 shadow evidence gets reviewed with, and it makes `proof_count`, entity
@@ -329,6 +334,70 @@ be in is stale-but-confident. The interval now runs regardless — browsers
 throttle background timers to about a minute on their own, which is the only
 budget this needs — and `visibilitychange` still forces a refresh so returning
 to the tab shows current numbers rather than whatever the throttle left.
+
+---
+
+## E6 — the survey, measured rather than drawn
+
+`GET /v1/banks/{bank_id}/anatomy`, and a panel on the dashboard that runs it
+on demand. It reports the node and link counts, the split by link type, the
+degree distribution as five numbers, the connected components with what kinds
+of memory each holds, and two counts that turned out to be the whole story:
+links that cross a `fact_type` boundary, and `node_sources` provenance rows.
+
+### The 3D plan was tested before it was built, and it failed
+
+§Decisions 6 promised a WebGL survey on the argument that at this density the
+extra axis relieves occlusion. That was an assertion, so E6 started by
+measuring it: `3d-force-graph` (1.31 MB), the largest live bank (3,200 nodes,
+118,937 links), the same 2,000-node slice the explorer draws.
+
+| condition | edges | result | time |
+|---|---|---|---|
+| 2D (sigma, already vendored) | 37,432 | white hairball, opaque core | instant |
+| **3D, everything** | 63,384 | featureless sphere | 18.6 s |
+| **3D, `semantic` only** (−62% edges) | 24,196 | the same sphere | 21.4 s |
+| 3D, camera inside | — | an even mesh in every direction | — |
+| **three SQL statements** | — | components, the type split, degrees, edge mix | **~3 ms** |
+
+The reason is the degree distribution, not the node count: p50 = 74 and
+p90 = 101, so the bank has no hubs. A force layout separates what has an axis
+to be separated along; a flat degree distribution offers none, and a third
+dimension only makes a rounder ball. Rotation is 3D's real advantage and it
+does not help — a sphere is a sphere from every angle, which is the "photograph
+well and read badly" this document already warned about, arriving on the view
+that was supposed to be the exception.
+
+So 1.31 MB is not vendored, `vendor/` stays at 272 KB, and the cargo feature
+flag that was going to hide the cost is not needed because there is no cost.
+
+### What the measurement found
+
+**The bank is two universes.** Links are only ever written between nodes of the
+same `fact_type` (`links.rs:67` for temporal, `:142` for semantic — legacy
+parity with `link_utils.py:394-395`). On the live bank exactly **one** of
+118,937 links crosses a type boundary: a lone `caused_by` edge that attaches
+the 30 `experience` nodes to the `world` component. The 1,177 `observation`
+nodes share no link at all with the rest of the bank, so no amount of walking
+the graph from a `world` node ever reaches one.
+
+**What does join them is not drawn.** `node_sources` — the "built from"
+relation between an observation and the facts it was consolidated from — holds
+1,418 rows on that bank, 1,396 of them observation→world. They are the bank's
+real connective tissue, they are already in the `nodes/{id}` response as
+`sources` / `cited_by`, and the graph screen renders none of them because they
+are not `links`. `provenance_edges` is on the panel to say how much of the
+structure the explorer is not showing.
+
+Neither fact came from a picture. Both are one `GROUP BY` away, and that is
+the argument for this shape of survey.
+
+### Cost
+
+23–52 ms for the largest live bank (3,200 nodes, 118,937 links), against
+21,439 ms for the 3D layout of a smaller slice. It reads every link in the
+bank, so it is an on-demand route and deliberately not part of the dashboard's
+10-second poll.
 
 ---
 

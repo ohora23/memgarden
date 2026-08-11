@@ -457,3 +457,54 @@ dd.bad { color: #f7768e; }
 /* The ledger's case text is prose and can be long; it wraps rather than
    stretching the table. */
 #ledger td:nth-child(4) { max-width: 46ch; white-space: pre-wrap; word-break: break-word; }
+
+/* --- E6: the anatomy panel ----------------------------------------------- */
+
+.anatomy-pick { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
+.anatomy-pick label { color: var(--dim); }
+.anatomy-pick select { max-width: 320px; }
+#anatomy-run {
+  background: var(--accent); color: #10131a; border: 0; border-radius: 6px;
+  padding: 5px 12px; font: inherit; font-weight: 600; cursor: pointer;
+}
+#anatomy-status { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
+#anatomy-status.bad { color: #f7768e; }
+
+.anatomy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+#anatomy h3 {
+  margin: 0 0 6px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+}
+#anatomy dl.meta { margin: 0; font-size: 13px; }
+#anatomy dd { text-align: right; }
+
+/* The sentence the panel exists to be able to write. */
+.anatomy-note {
+  margin: 14px 0; padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: #ffffff08; border-radius: 0 8px 8px 0;
+  font-size: 13px;
+}
+
+/* Components, as bars against the largest — the split is meant to be visible
+   before the numbers are read. */
+.components { list-style: none; margin: 0; padding: 0; }
+.components li {
+  position: relative;
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 5px 8px; border-top: 1px solid var(--panel-edge);
+  font-size: 13px;
+}
+.comp-size {
+  min-width: 5ch; text-align: right;
+  font-variant-numeric: tabular-nums; font-weight: 600;
+}
+.comp-types { color: var(--dim); flex: 1; }
+.comp-bar {
+  position: absolute; left: 0; bottom: 0; height: 2px;
+  background: var(--accent); opacity: .55;
+}
