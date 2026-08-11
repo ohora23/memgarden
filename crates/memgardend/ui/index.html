@@ -46,10 +46,11 @@
       <div id="f-links" class="type-checks">
         <label><input type="checkbox" value="semantic" checked> semantic</label>
         <label><input type="checkbox" value="caused_by" checked> caused_by</label>
-        <!-- Off by default. The live bank holds more temporal edges than
-             semantic ones and they connect anything from the same day, so
-             leaving them on is what makes a filtered draw a solid mat. -->
-        <label><input type="checkbox" value="temporal"> temporal</label>
+        <!-- On, like the rest. Hiding 71% of the edges by default was a
+             density fix in the wrong place: the mat was caused by line weight
+             and opacity, and those are fixed. Off is a choice the reader
+             makes, not one made for them. -->
+        <label><input type="checkbox" value="temporal" checked> temporal</label>
       </div>
 
       <!-- 1.5 rather than 1: chosen by looking at the live bank, not derived.

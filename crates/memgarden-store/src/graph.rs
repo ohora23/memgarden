@@ -507,6 +507,14 @@ pub struct GraphEdge {
 /// `id DESC` and takes `limit`: a range narrowed afterwards could only ever
 /// cut into the newest window, and could never reach a memory older than it —
 /// which is the entire reason to ask for a date (E3).
+/// `ids`, when non-empty, replaces the newest-`limit` selection with exactly
+/// those nodes — the induced subgraph over a set the caller already holds.
+///
+/// E3 needs it because `nodes/{id}` answers "what is adjacent to *this* one"
+/// and nothing else: an ego view built from it is a star, with no edge drawn
+/// between two neighbours that are themselves linked. Walking the graph then
+/// shows the path taken and not the fabric around it. The other filters still
+/// apply, so a set can be narrowed by type or date on the way back.
 pub fn graph_view(
     db: &Db,
     bank_id: &str,
@@ -515,6 +523,7 @@ pub fn graph_view(
     session: Option<&str>,
     since: Option<i64>,
     until: Option<i64>,
+    ids: &[i64],
 ) -> Result<(Vec<GraphNode>, Vec<GraphEdge>)> {
     // Same shape as `search::fts_candidates_filtered`: one prepared statement
     // for every filter combination, values are `FactType::as_str` literals.
@@ -531,6 +540,11 @@ pub fn graph_view(
         ))
     };
     let session_tag = session.map(|s| format!("session:{s}"));
+    let ids_filter: Option<String> = if ids.is_empty() {
+        None
+    } else {
+        Some(ids_json(ids))
+    };
 
     let conn = db.read()?;
     let mut stmt = conn
@@ -543,13 +557,22 @@ pub fn graph_view(
                      SELECT 1 FROM node_tags t WHERE t.node_id = n.id AND t.tag = ?4))
                AND (?5 IS NULL OR n.event_date >= ?5)
                AND (?6 IS NULL OR n.event_date <= ?6)
+               AND (?7 IS NULL OR n.id IN (SELECT value FROM json_each(?7)))
              ORDER BY n.id DESC
              LIMIT ?2",
         )
         .map_err(store_err)?;
     let mut nodes = stmt
         .query_map(
-            params![bank_id, limit as i64, types_json, session_tag, since, until],
+            params![
+                bank_id,
+                limit as i64,
+                types_json,
+                session_tag,
+                since,
+                until,
+                ids_filter
+            ],
             |r| {
                 Ok(GraphNode {
                     id: r.get(0)?,

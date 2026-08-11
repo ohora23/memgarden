@@ -489,6 +489,9 @@ function seedEgo(n) {
   sigmaRenderer().refresh();
   fitView();
   reportGraph(`${total} neighbours of the selected memory`);
+  fillInterlinks().then((n) => {
+    if (n) reportGraph(`+${n} links between them`);
+  });
 }
 
 // --- expansion -------------------------------------------------------------
@@ -522,10 +525,48 @@ async function expand(id) {
       }
     }
     restyleEdges();
+    const between = await fillInterlinks();
     relayout();
-    reportGraph(added ? `+${added} new` : "no new neighbours");
+    reportGraph(
+      [added ? `+${added} new` : "no new neighbours", between ? `+${between} links` : ""]
+        .filter(Boolean)
+        .join(" · "),
+    );
   } catch (e) {
     reportGraph(`expand failed: ${e.message}`);
+  }
+}
+
+/** Fills in the edges *between* the nodes on screen.
+ *
+ *  `nodes/{id}` only ever answers for one node's own neighbours, so a graph
+ *  built from it is a star: two neighbours that are themselves linked get no
+ *  edge, and a walk shows the path taken rather than the fabric around it.
+ *  `/graph?ids=` returns the induced subgraph over a set, which is exactly
+ *  the missing half.
+ *
+ *  Best-effort: a failure here leaves a graph that is thinner than the truth,
+ *  not a broken one, so it warns and moves on. */
+async function fillInterlinks() {
+  const ids = graph.nodes();
+  if (ids.length < 2) return;
+  try {
+    const out = await api(
+      `/v1/banks/${encodeURIComponent(bank())}/graph?limit=2000&ids=${ids.join(",")}`,
+    );
+    let added = 0;
+    for (const l of out.links ?? []) {
+      const before = graph.size;
+      addEdge(l.from, l.to, l.type, l.weight);
+      if (graph.size > before) added++;
+    }
+    if (added) {
+      restyleEdges();
+      sigmaRenderer().refresh();
+    }
+    return added;
+  } catch (e) {
+    console.warn("interlinks unavailable:", e.message);
   }
 }
 

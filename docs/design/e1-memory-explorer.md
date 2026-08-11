@@ -27,6 +27,7 @@ adjacent to *this* node", which is what progressive loading needs.
 | provenance | same | ✅ E1 |
 | neighbours of one node | same | ✅ E1, and it is what E3 expands with |
 | a filtered set to start from | `GET .../graph?types=&session=&since=&until=&limit=` | ✅ `since`/`until` added by E3 |
+| the links *between* nodes already on screen | `GET .../graph?ids=` | ✅ E3 — see below |
 | realtime | SSE | ❌ deferred to GV-3 |
 
 ---
@@ -191,6 +192,16 @@ One round trip returns everything the detail panel shows.
   }
 }
 ```
+
+**`nodes/{id}` alone draws a star, and that is why `?ids=` exists.** It
+answers "what is adjacent to *this* one" and nothing else, so two neighbours
+that are linked to each other get no edge between them. A graph assembled by
+walking then shows the path taken rather than the fabric around it — measured
+on the live bank, one node's ego view drew 4 edges where the same node set
+actually holds 10, so half the picture was missing. The explorer sends the ids
+it has on screen to `/graph?ids=` after every seed and expansion and fills in
+the rest. Best-effort: a failure there leaves a graph thinner than the truth,
+not a broken one.
 
 **Neighbours union both directions.** `links` is keyed
 `(from_node_id, to_node_id, link_type, entity_id)` and the semantic pass writes
