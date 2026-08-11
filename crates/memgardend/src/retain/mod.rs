@@ -551,6 +551,12 @@ async fn write_facts(
         tracing::warn!(job_id = %task.job_id, error = %e, "retain graph write failed");
     }
 
+    // E4: announce *after* the graph write, so a subscriber that immediately
+    // asks for these ids finds their links already there. Semantic links are
+    // not among them — those land on the backlog worker's next tick, which is
+    // minutes away and is not what AC-4's five seconds is about.
+    crate::events::publish(&state.events, &task.bank_id, "nodes", ids.clone());
+
     Ok(ids.len())
 }
 

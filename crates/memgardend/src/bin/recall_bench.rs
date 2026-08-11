@@ -786,6 +786,7 @@ fn build_state(
             consolidating: Default::default(),
             refreshing: Default::default(),
             retain_tx,
+            events: memgardend::events::channel(),
         },
         retain_rx,
     ))

@@ -38,6 +38,7 @@ fn build() -> (axum::Router, Arc<Db>) {
         consolidating: Default::default(),
         refreshing: Default::default(),
         retain_tx,
+        events: memgardend::events::channel(),
     };
     (routes::router(state), db)
 }

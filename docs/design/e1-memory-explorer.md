@@ -28,7 +28,7 @@ adjacent to *this* node", which is what progressive loading needs.
 | neighbours of one node | same | ✅ E1, and it is what E3 expands with |
 | a filtered set to start from | `GET .../graph?types=&session=&since=&until=&limit=` | ✅ `since`/`until` added by E3 |
 | the links *between* nodes already on screen | `GET .../graph?ids=` | ✅ E3 — see below |
-| realtime | SSE | ❌ deferred to GV-3 |
+| realtime | `GET .../events` (SSE) | ✅ E4 |
 
 ---
 
@@ -254,7 +254,7 @@ thrown away.
 | **E1** | `GET .../nodes/{id}`, static serving, the shell: search → results → detail |
 | **E2** | ego-graph for the selected node, in SVG — sigma.js deferred to E3, see §Decisions 2 |
 | **E3** | filters (type, session, date), progressive expansion, sigma + graphology + d3-force vendored — 2D, pan/zoom |
-| E4 | SSE, so a retain appears without a reload (GV-3, AC-4's ≤5 s) |
+| **E4** | SSE, so a retain appears without a reload (GV-3, AC-4's ≤5 s) — as a badge, never as a graph that moves itself |
 | E5 | dashboard and ledger views (DB-1, MX-2, AC-5) |
 | E6 | the 3D overview — a **separate screen**, not a mode of the explorer (see §Decisions 6) |
 

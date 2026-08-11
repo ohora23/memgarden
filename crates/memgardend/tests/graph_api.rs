@@ -86,6 +86,7 @@ fn build(
         consolidating: Default::default(),
         refreshing: Default::default(),
         retain_tx,
+        events: memgardend::events::channel(),
     };
     (routes::router(state.clone()), db, state, retain_rx)
 }
@@ -1334,4 +1335,72 @@ async fn graph_ids_returns_the_links_between_a_set_the_caller_already_has() {
     // parameter is a selection and not decoration.
     let (_, v) = send(&app, get("/v1/banks/b1/graph?limit=100")).await;
     assert_eq!(v["nodes"].as_array().unwrap().len(), 4);
+}
+
+/// E4: a retain reaches an open `/events` stream, and only the bank that asked
+/// for it.
+///
+/// The stream never ends, so this drives it by hand rather than collecting the
+/// body: `oneshot` would hang. What it pins is the contract the browser
+/// depends on — an `event:` name it can listen for, a `data:` line that parses,
+/// the ids inside it, and silence for other banks.
+#[tokio::test]
+async fn a_retain_reaches_an_open_event_stream_for_its_own_bank_only() {
+    let (app, db, state, rx) = build("http://127.0.0.1:1");
+    std::mem::forget(rx);
+    banks::create(&db, "b1", None, None).unwrap();
+    banks::create(&db, "b2", None, None).unwrap();
+
+    // The router and the worker share one publisher; this is the handle the
+    // retain path writes through.
+    let publisher = state.events.clone();
+
+    let res = app
+        .clone()
+        .oneshot(get("/v1/banks/b1/events"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "text/event-stream",
+        "EventSource will not attach to anything else"
+    );
+    let mut body = res.into_body().into_data_stream();
+
+    // Another bank's traffic must not end the stream or leak into it.
+    memgardend::events::publish(&publisher, "b2", "nodes", vec![99]);
+    memgardend::events::publish(&publisher, "b1", "nodes", vec![7, 8]);
+
+    let frame = tokio::time::timeout(
+        Duration::from_secs(5),
+        futures_util::StreamExt::next(&mut body),
+    )
+    .await
+    .expect("the stream must deliver within five seconds — AC-4's whole point")
+    .expect("a frame")
+    .unwrap();
+    let text = String::from_utf8(frame.to_vec()).unwrap();
+
+    assert!(text.contains("event: nodes"), "got {text:?}");
+    let data = text
+        .lines()
+        .find_map(|l| l.strip_prefix("data: "))
+        .expect("a data line");
+    let v: serde_json::Value = serde_json::from_str(data).unwrap();
+    assert_eq!(v["bank_id"], "b1", "b2's event must not arrive here");
+    assert_eq!(v["ids"], serde_json::json!([7, 8]));
+}
+
+/// An empty publish is not an event. Retain calls this per chunk and a chunk
+/// can yield nothing; a badge that lit up for zero new memories would be
+/// worse than no badge.
+#[tokio::test]
+async fn publishing_no_ids_sends_nothing() {
+    let tx = memgardend::events::channel();
+    let mut rx = tx.subscribe();
+    memgardend::events::publish(&tx, "b1", "nodes", vec![]);
+    memgardend::events::publish(&tx, "b1", "nodes", vec![1]);
+    let got = rx.try_recv().expect("the non-empty one");
+    assert_eq!(got.ids, vec![1], "the empty publish must not occupy a slot");
 }

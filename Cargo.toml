@@ -9,6 +9,9 @@ license = "MIT"
 
 [workspace.dependencies]
 axum = "0.8.9"
+# Already in the tree via axum/tower; declared so the SSE handler may build a
+# stream from a broadcast receiver without hand-rolling a `Stream` impl.
+futures-util = { version = "0.3", default-features = false }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
 tower-http = { version = "0.7", features = ["trace"] }
 tracing = "0.1"

@@ -96,6 +96,7 @@ async fn harness() -> Harness {
         consolidating: Default::default(),
         refreshing: Default::default(),
         retain_tx,
+        events: memgardend::events::channel(),
     };
     Harness {
         app: routes::router(state.clone()),
@@ -538,6 +539,7 @@ async fn an_embed_task_tick_regenerates_an_invalidated_embedding() {
         consolidating: Default::default(),
         refreshing: Default::default(),
         retain_tx,
+        events: memgardend::events::channel(),
     };
 
     let id = store::insert_observation(&db, "b1", "before", &vec![0.1f32; DIM], &[]).unwrap();
@@ -595,6 +597,7 @@ async fn live_consolidation_round() {
         consolidating: Default::default(),
         refreshing: Default::default(),
         retain_tx,
+        events: memgardend::events::channel(),
     };
 
     // ~50 facts, with deliberate near-duplicates so UPDATE and dedup both

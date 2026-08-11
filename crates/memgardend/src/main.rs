@@ -70,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
         consolidating: Default::default(),
         refreshing: Default::default(),
         retain_tx,
+        events: memgardend::events::channel(),
     };
 
     let app = routes::router(state.clone());

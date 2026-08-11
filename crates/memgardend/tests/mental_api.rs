@@ -93,6 +93,7 @@ async fn harness() -> Harness {
         consolidating: Default::default(),
         refreshing: Default::default(),
         retain_tx,
+        events: memgardend::events::channel(),
     };
     Harness {
         app: routes::router(state),
@@ -616,6 +617,7 @@ async fn live_reflect() {
         consolidating: Default::default(),
         refreshing: Default::default(),
         retain_tx,
+        events: memgardend::events::channel(),
     };
     let app = routes::router(state.clone());
 
