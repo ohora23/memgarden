@@ -906,3 +906,349 @@ fn ids_json(ids: &[i64]) -> String {
         ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
     )
 }
+
+// ---------------------------------------------------------------------------
+// E6 — the anatomy of a bank
+// ---------------------------------------------------------------------------
+
+/// One connected component, and what kinds of memory it contains.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Component {
+    pub size: i64,
+    /// `fact_type` -> count. The interesting fact about the live database is
+    /// that these are almost never mixed — see `bank_anatomy`.
+    pub types: Vec<(String, i64)>,
+}
+
+/// Degree distribution, as the five numbers that describe a shape without
+/// drawing it. A histogram would be more information and less answer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Degrees {
+    pub min: i64,
+    pub p50: i64,
+    pub p90: i64,
+    pub max: i64,
+    pub mean: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Anatomy {
+    pub nodes: i64,
+    pub links: i64,
+    pub links_by_type: Vec<(String, i64)>,
+    /// Links whose two ends have different `fact_type`s. On the live bank
+    /// this is **1**, out of 118,937 — see the doc comment on `bank_anatomy`.
+    pub cross_type_links: i64,
+    /// `node_sources` rows: an observation and the fact it was consolidated
+    /// from. Not links, and so never drawn by the explorer, but they are what
+    /// actually joins the fact types to each other.
+    pub provenance_edges: i64,
+    pub isolated: i64,
+    pub degree: Degrees,
+    /// Every component, including the singletons `components` truncates away.
+    /// Without it a bank of 90 components and one of 12 look identical.
+    pub component_count: i64,
+    /// Largest first, capped — a bank with a long tail of singletons should
+    /// not return one entry per singleton.
+    pub components: Vec<Component>,
+}
+
+const MAX_COMPONENTS: usize = 12;
+
+/// What a bank *is*, measured rather than drawn (E6).
+///
+/// # Why this is not a 3D graph
+///
+/// Phase E's plan was a WebGL survey view: the whole bank at once, in three
+/// dimensions, on the argument that at this density the extra axis relieves
+/// occlusion. That was measured before it was built, and it is false for this
+/// data. Rendered with `3d-force-graph` (1.31 MB), the live bank's 2,000-node
+/// slice settles into a featureless sphere in 18.6 s; dropping `temporal` to
+/// cut the edges by 62% produces the same sphere in 21.4 s; flying the camera
+/// inside shows an even mesh in every direction. 2D was already a hairball.
+///
+/// The reason is in `degree` below: p50 = 74 and p90 = 101 on the live bank,
+/// so the graph has no hubs. A force layout separates what has an axis to be
+/// separated along, and a graph with a flat degree distribution has none —
+/// another dimension just makes a rounder ball.
+///
+/// Every structural fact the picture failed to show, three SQL statements
+/// answered in milliseconds, and they are the ones below.
+///
+/// # What it found
+///
+/// The live bank is **two universes**. `links` are written only between nodes
+/// of the same `fact_type` (`links.rs:67` and `:142`, legacy parity with
+/// `link_utils.py:394-395`), so on the largest live bank exactly **one** of
+/// its 118,937 links crosses a type boundary — a lone `caused_by` that
+/// attaches 30 `experience` nodes to the `world` component. The 1,177
+/// `observation` nodes share no link at all with the rest of the bank.
+///
+/// What does join them is `node_sources`: 1,396 observation→world provenance
+/// rows on that same bank. Those are not links, so the explorer never draws
+/// them, and `provenance_edges` is here to say how much of the bank's real
+/// connective tissue is invisible on the graph screen.
+///
+/// # Cost
+///
+/// One pass over the bank's links, in memory. 61 ms for 118,937 edges in a
+/// throwaway Python implementation, so comfortably less here — but it is
+/// linear in the bank's edge count and reads them all, which is why it is an
+/// on-demand route and not part of the dashboard's 10 s poll.
+///
+// ponytail: union-find with path halving and no rank. Rank would be a second
+// array to make a bound tighter than the one that matters at 10^5 edges;
+// revisit if a bank ever reaches the millions.
+pub fn bank_anatomy(db: &Db, bank_id: &str) -> Result<Anatomy> {
+    let conn = db.read()?;
+
+    let mut stmt = conn
+        .prepare("SELECT id, fact_type FROM memory_nodes WHERE bank_id = ?1")
+        .map_err(store_err)?;
+    let node_rows = stmt
+        .query_map(params![bank_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(store_err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(store_err)?;
+
+    let mut fact_type: HashMap<i64, String> = HashMap::with_capacity(node_rows.len());
+    // Dense indices, so union-find is two Vecs rather than two HashMaps.
+    let mut index: HashMap<i64, usize> = HashMap::with_capacity(node_rows.len());
+    for (i, (id, ft)) in node_rows.iter().enumerate() {
+        index.insert(*id, i);
+        fact_type.insert(*id, ft.clone());
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT l.from_node_id, l.to_node_id, l.link_type
+             FROM links l
+             JOIN memory_nodes src ON src.id = l.from_node_id
+             WHERE src.bank_id = ?1",
+        )
+        .map_err(store_err)?;
+    let edges = stmt
+        .query_map(params![bank_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(store_err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(store_err)?;
+
+    let mut parent: Vec<usize> = (0..node_rows.len()).collect();
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+
+    let mut degree = vec![0i64; node_rows.len()];
+    let mut by_type: HashMap<&str, i64> = HashMap::new();
+    let mut cross_type_links = 0i64;
+
+    for (from, to, link_type) in &edges {
+        *by_type.entry(link_type.as_str()).or_insert(0) += 1;
+        let (Some(&a), Some(&b)) = (index.get(from), index.get(to)) else {
+            // The other end lives in another bank. Not possible today — links
+            // are written within a bank — but counting it as an edge of this
+            // bank while not unioning it would be a quiet inconsistency.
+            continue;
+        };
+        degree[a] += 1;
+        degree[b] += 1;
+        if fact_type.get(from) != fact_type.get(to) {
+            cross_type_links += 1;
+        }
+        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+        if ra != rb {
+            parent[ra] = rb;
+        }
+    }
+
+    let provenance_edges: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM node_sources ns
+             JOIN memory_nodes o ON o.id = ns.observation_id
+             WHERE o.bank_id = ?1",
+            params![bank_id],
+            |r| r.get(0),
+        )
+        .map_err(store_err)?;
+
+    let mut grouped: HashMap<usize, HashMap<&str, i64>> = HashMap::new();
+    for (i, (id, _)) in node_rows.iter().enumerate() {
+        let root = find(&mut parent, i);
+        let ft = fact_type.get(id).map(String::as_str).unwrap_or("unknown");
+        *grouped.entry(root).or_default().entry(ft).or_insert(0) += 1;
+    }
+    let mut components: Vec<Component> = grouped
+        .into_values()
+        .map(|types| {
+            let mut types: Vec<(String, i64)> =
+                types.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+            types.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            Component {
+                size: types.iter().map(|(_, n)| n).sum(),
+                types,
+            }
+        })
+        .collect();
+    components.sort_by_key(|c| std::cmp::Reverse(c.size));
+    let component_count = components.len();
+    components.truncate(MAX_COMPONENTS);
+
+    let mut sorted = degree.clone();
+    sorted.sort_unstable();
+    let at = |q: f64| -> i64 {
+        if sorted.is_empty() {
+            return 0;
+        }
+        sorted[((sorted.len() as f64 * q) as usize).min(sorted.len() - 1)]
+    };
+    let degree = Degrees {
+        min: sorted.first().copied().unwrap_or(0),
+        p50: at(0.50),
+        p90: at(0.90),
+        max: sorted.last().copied().unwrap_or(0),
+        mean: if sorted.is_empty() {
+            0.0
+        } else {
+            sorted.iter().sum::<i64>() as f64 / sorted.len() as f64
+        },
+    };
+
+    let mut links_by_type: Vec<(String, i64)> = by_type
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+    links_by_type.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    Ok(Anatomy {
+        nodes: node_rows.len() as i64,
+        links: edges.len() as i64,
+        links_by_type,
+        cross_type_links,
+        provenance_edges,
+        isolated: degree_zero(&sorted),
+        degree,
+        component_count: component_count as i64,
+        components,
+    })
+}
+
+fn degree_zero(sorted_degrees: &[i64]) -> i64 {
+    sorted_degrees.iter().take_while(|&&d| d == 0).count() as i64
+}
+
+#[cfg(test)]
+mod anatomy_tests {
+    use super::*;
+    use crate::models::NewNode;
+    use crate::{banks, nodes};
+    use memgarden_core::types::FactType;
+
+    /// The shape this was built to expose: same-`fact_type` linking splits a
+    /// bank into components that never touch, and the provenance rows that do
+    /// join them are not links and so are counted separately.
+    #[test]
+    fn anatomy_separates_components_and_counts_the_bridges() {
+        let db = Db::open_memory().unwrap();
+        banks::create(&db, "b", None, None).unwrap();
+
+        let w1 = nodes::insert(&db, NewNode::new("b", FactType::World, "w1")).unwrap();
+        let w2 = nodes::insert(&db, NewNode::new("b", FactType::World, "w2")).unwrap();
+        let o1 = nodes::insert(&db, NewNode::new("b", FactType::Observation, "o1")).unwrap();
+        let o2 = nodes::insert(&db, NewNode::new("b", FactType::Observation, "o2")).unwrap();
+        // Touched by nothing at all.
+        nodes::insert(&db, NewNode::new("b", FactType::Experience, "lonely")).unwrap();
+
+        let now = memgarden_core::now_ms();
+        insert_links(
+            &db,
+            &[
+                NewLink {
+                    from_node_id: w1,
+                    to_node_id: w2,
+                    link_type: "semantic",
+                    weight: 1.0,
+                },
+                NewLink {
+                    from_node_id: o1,
+                    to_node_id: o2,
+                    link_type: "semantic",
+                    weight: 1.0,
+                },
+            ],
+            now,
+        )
+        .unwrap();
+
+        // The bridge that is not a link: o1 was consolidated from w1.
+        db.write(|tx| {
+            tx.execute(
+                "INSERT INTO node_sources (observation_id, source_id, created_at)
+                 VALUES (?1, ?2, ?3)",
+                params![o1, w1, memgarden_core::now_ms()],
+            )
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        let a = bank_anatomy(&db, "b").unwrap();
+        assert_eq!(a.nodes, 5);
+        assert_eq!(a.links, 2);
+        assert_eq!(a.cross_type_links, 0, "links never cross fact_type");
+        assert_eq!(
+            a.provenance_edges, 1,
+            "the bridge is counted, and separately"
+        );
+        assert_eq!(a.isolated, 1, "the experience node");
+        assert_eq!(a.component_count, 3, "world pair, observation pair, loner");
+
+        let sizes: Vec<i64> = a.components.iter().map(|c| c.size).collect();
+        assert_eq!(sizes, vec![2, 2, 1]);
+        // No component mixes types — the finding this endpoint exists to show.
+        for c in &a.components {
+            assert_eq!(c.types.len(), 1, "component {c:?} should hold one type");
+        }
+    }
+
+    /// A `caused_by` edge is the one kind that ignores `fact_type`, and one of
+    /// them is enough to fuse two universes — which is exactly what happened
+    /// on the live bank, where a single such edge attaches 30 experience
+    /// nodes to the world component.
+    #[test]
+    fn one_cross_type_edge_fuses_two_components() {
+        let db = Db::open_memory().unwrap();
+        banks::create(&db, "b", None, None).unwrap();
+        let w = nodes::insert(&db, NewNode::new("b", FactType::World, "w")).unwrap();
+        let e = nodes::insert(&db, NewNode::new("b", FactType::Experience, "e")).unwrap();
+
+        insert_links(
+            &db,
+            &[NewLink {
+                from_node_id: e,
+                to_node_id: w,
+                link_type: "caused_by",
+                weight: 1.0,
+            }],
+            memgarden_core::now_ms(),
+        )
+        .unwrap();
+
+        let a = bank_anatomy(&db, "b").unwrap();
+        assert_eq!(a.cross_type_links, 1);
+        assert_eq!(a.component_count, 1, "the single edge fused them");
+        assert_eq!(a.components[0].types.len(), 2);
+        assert_eq!(a.isolated, 0);
+    }
+}

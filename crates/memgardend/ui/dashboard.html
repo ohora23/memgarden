@@ -38,6 +38,20 @@
     <div class="scroll-x"><table id="banks"></table></div>
   </section>
 
+  <!-- E6. The survey view, as measurement rather than as a picture — see
+       docs/design/e1-memory-explorer.md §E6 for the 3D experiment this
+       replaced and why. On demand: it reads every link in the bank. -->
+  <section id="anatomy-card">
+    <h2>Anatomy</h2>
+    <p class="anatomy-pick">
+      <label for="anatomy-bank">Bank</label>
+      <select id="anatomy-bank"></select>
+      <button id="anatomy-run" type="button">Measure</button>
+      <span id="anatomy-status" role="status"></span>
+    </p>
+    <div id="anatomy"></div>
+  </section>
+
   <section id="ledger-card">
     <h2>Benefit ledger</h2>
     <div class="scroll-x"><table id="ledger"></table></div>

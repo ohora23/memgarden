@@ -277,3 +277,87 @@ pub async fn get_node(
         neighbors,
     }))
 }
+
+/// `GET /v1/banks/{bank_id}/anatomy` (E6) — the shape of a bank, measured.
+///
+/// On demand, not on the dashboard's 10 s poll: it reads every link in the
+/// bank. See `memgarden_store::graph::bank_anatomy` for what it found and for
+/// why this is a set of numbers rather than the 3D view Phase E planned.
+pub async fn get_anatomy(
+    State(state): State<AppState>,
+    Path(bank_id): Path<String>,
+) -> Result<Json<AnatomyResponse>, ApiError> {
+    let db = state.db.clone();
+    let id = bank_id.clone();
+    let exists = tokio::task::spawn_blocking(move || banks::get(&db, &id))
+        .await
+        .map_err(join_err)??;
+    if exists.is_none() {
+        return Err(ApiError::not_found("bank not found"));
+    }
+
+    let db = state.db.clone();
+    let a = tokio::task::spawn_blocking(move || graph::bank_anatomy(&db, &bank_id))
+        .await
+        .map_err(join_err)??;
+    Ok(Json(AnatomyResponse::from(a)))
+}
+
+#[derive(Debug, Serialize)]
+pub struct AnatomyResponse {
+    pub nodes: i64,
+    pub links: i64,
+    /// `[[type, count], ...]`, largest first — an object keyed by link type
+    /// would lose that order in every JSON parser that sorts keys.
+    pub links_by_type: Vec<(String, i64)>,
+    pub cross_type_links: i64,
+    pub provenance_edges: i64,
+    pub isolated: i64,
+    pub degree: DegreeResponse,
+    pub component_count: i64,
+    pub components: Vec<ComponentResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DegreeResponse {
+    pub min: i64,
+    pub p50: i64,
+    pub p90: i64,
+    pub max: i64,
+    pub mean: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ComponentResponse {
+    pub size: i64,
+    pub types: Vec<(String, i64)>,
+}
+
+impl From<graph::Anatomy> for AnatomyResponse {
+    fn from(a: graph::Anatomy) -> Self {
+        AnatomyResponse {
+            nodes: a.nodes,
+            links: a.links,
+            links_by_type: a.links_by_type,
+            cross_type_links: a.cross_type_links,
+            provenance_edges: a.provenance_edges,
+            isolated: a.isolated,
+            degree: DegreeResponse {
+                min: a.degree.min,
+                p50: a.degree.p50,
+                p90: a.degree.p90,
+                max: a.degree.max,
+                mean: a.degree.mean,
+            },
+            component_count: a.component_count,
+            components: a
+                .components
+                .into_iter()
+                .map(|c| ComponentResponse {
+                    size: c.size,
+                    types: c.types,
+                })
+                .collect(),
+        }
+    }
+}

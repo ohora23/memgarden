@@ -100,19 +100,20 @@ async function renderHealth() {
 
 const cardsHost = $("#cards");
 
-/** One card: a title and a definition list of label/value pairs. */
-const card = (title, pairs) =>
-  el("article", { className: "card" }, [
-    el("h2", {}, title),
-    el(
-      "dl",
-      { className: "meta" },
-      pairs.flatMap(([k, v, cls]) => [
-        el("dt", {}, k),
-        el("dd", { className: cls ?? "" }, v),
-      ]),
-    ),
-  ]);
+/** A definition list of `[label, value, className?]` rows. */
+const pairs = (rows) =>
+  el(
+    "dl",
+    { className: "meta" },
+    rows.flatMap(([k, v, cls]) => [
+      el("dt", {}, k),
+      el("dd", { className: cls ?? "" }, v),
+    ]),
+  );
+
+/** One card: a title and one of those lists. */
+const card = (title, rows) =>
+  el("article", { className: "card" }, [el("h2", {}, title), pairs(rows)]);
 
 /**
  * AC-2's two recall SLOs, drawn as met or not. The histogram's `under_35ms`
@@ -365,6 +366,123 @@ function renderLedger(rows) {
   );
 }
 
+// --- E6: the anatomy of a bank ---------------------------------------------
+//
+// The survey view Phase E planned as a 3D graph, arrived at as numbers.
+// `docs/design/e1-memory-explorer.md` §E6 carries the experiment: the live
+// bank rendered with a 1.31 MB WebGL renderer is a featureless sphere, and
+// every structural fact it failed to show is on this panel.
+//
+// On demand, not on the 10 s poll — it reads every link in the bank.
+
+const anatomyPick = $("#anatomy-bank");
+const anatomyOut = $("#anatomy");
+const anatomyStatus = $("#anatomy-status");
+
+/** Keeps the picker in step with whatever `/v1/stats` last returned. */
+function syncAnatomyBanks(stats) {
+  const chosen = anatomyPick.value;
+  anatomyPick.replaceChildren(
+    ...stats.map((s) => el("option", { value: s.bank_id }, s.bank_id)),
+  );
+  if (stats.some((s) => s.bank_id === chosen)) anatomyPick.value = chosen;
+}
+
+function renderAnatomy(a) {
+  const typeList = (types) =>
+    types.map(([t, count]) => `${t} ${n(count)}`).join(" + ");
+
+  // The headline, stated from the numbers rather than from a verdict.
+  //
+  // An earlier version asked "does every component hold exactly one
+  // fact_type?" and answered "no" for the live bank — technically true, and
+  // useless: the largest component mixes world and experience *because of a
+  // single caused_by edge*. One edge out of 118,937 is not a bank whose types
+  // are mixed. So the sentence quotes `cross_type_links` and lets the reader
+  // see how thin the join is.
+  const headline =
+    a.component_count <= 1
+      ? `One connected component: every node reaches every other.`
+      : `${n(a.cross_type_links)} of ${n(a.links)} links cross a fact_type ` +
+        `boundary, so the graph stands in ${n(a.component_count)} components. ` +
+        `${n(a.provenance_edges)} provenance rows join them further — and the ` +
+        `explorer does not draw those.`;
+
+  anatomyOut.replaceChildren(
+    el("div", { className: "anatomy-grid" }, [
+      el("div", {}, [
+        el("h3", {}, "Shape"),
+        pairs([
+          ["nodes", n(a.nodes)],
+          ["links", n(a.links)],
+          ["components", n(a.component_count)],
+          ["isolated nodes", n(a.isolated), a.isolated > 0 ? "warn" : ""],
+          ["degree p50", n(a.degree.p50)],
+          ["degree p90", n(a.degree.p90)],
+          ["degree max", n(a.degree.max)],
+          ["degree mean", a.degree.mean.toFixed(1)],
+        ]),
+      ]),
+      el("div", {}, [
+        el("h3", {}, "Edges"),
+        pairs([
+          ...a.links_by_type.map(([t, count]) => [
+            t,
+            `${n(count)} · ${pct(count, a.links)}`,
+          ]),
+          // The number that says whether the graph is one thing or several.
+          [
+            "crossing fact_type",
+            n(a.cross_type_links),
+            a.cross_type_links === 0 ? "warn" : "",
+          ],
+          // Not links, so the explorer never draws them — which is the point
+          // of showing the count here.
+          ["provenance (not drawn)", n(a.provenance_edges)],
+        ]),
+      ]),
+    ]),
+
+    el("p", { className: "anatomy-note" }, headline),
+
+    el("h3", {}, `Components (largest ${Math.min(a.components.length, a.component_count)} of ${n(a.component_count)})`),
+    el(
+      "ul",
+      { className: "components" },
+      a.components.map((c) =>
+        el("li", {}, [
+          el("span", { className: "comp-size" }, n(c.size)),
+          el("span", { className: "comp-types" }, typeList(c.types)),
+          // Width against the largest component, so the split is visible
+          // without reading the numbers.
+          el("span", {
+            className: "comp-bar",
+            style: `width:${(100 * c.size) / a.components[0].size}%`,
+          }),
+        ]),
+      ),
+    ),
+  );
+}
+
+async function measureAnatomy() {
+  const bank = anatomyPick.value;
+  if (!bank) return;
+  anatomyStatus.textContent = "measuring…";
+  anatomyStatus.className = "";
+  const t0 = performance.now();
+  try {
+    const a = await api(`/v1/banks/${encodeURIComponent(bank)}/anatomy`);
+    renderAnatomy(a);
+    anatomyStatus.textContent = `${Math.round(performance.now() - t0)} ms`;
+  } catch (e) {
+    anatomyStatus.textContent = e.message;
+    anatomyStatus.className = "bad";
+  }
+}
+
+$("#anatomy-run").addEventListener("click", measureAnatomy);
+
 // --- the loop --------------------------------------------------------------
 
 const tick = $("#tick");
@@ -379,7 +497,10 @@ async function refresh() {
   const attempts = [
     renderHealth(),
     api("/metrics.json").then(renderMetrics),
-    api("/v1/stats").then(renderBanks),
+    api("/v1/stats").then((stats) => {
+      renderBanks(stats);
+      syncAnatomyBanks(stats);
+    }),
     api("/v1/metrics/history?limit=60").then(renderTrend),
     api("/v1/ledger?limit=20").then(renderLedger),
   ];

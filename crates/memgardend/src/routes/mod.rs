@@ -99,6 +99,9 @@ pub fn router(state: AppState) -> Router {
         // inherits the same Host check and origin.
         .route("/v1/banks/{bank_id}/events", get(events::bank_events))
         .route("/v1/banks/{bank_id}/nodes/{node_id}", get(graph::get_node))
+        // E6. On demand — it reads every link in the bank, so it must not
+        // join the dashboard's 10 s poll.
+        .route("/v1/banks/{bank_id}/anatomy", get(graph::get_anatomy))
         .route(
             "/v1/banks/{bank_id}/mental-models",
             get(mental::list_mental_models).post(mental::create_mental_model),
