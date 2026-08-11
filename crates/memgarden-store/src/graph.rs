@@ -515,16 +515,35 @@ pub struct GraphEdge {
 /// between two neighbours that are themselves linked. Walking the graph then
 /// shows the path taken and not the fabric around it. The other filters still
 /// apply, so a set can be narrowed by type or date on the way back.
+/// Everything that narrows a graph view. A struct rather than five more
+/// parameters: they arrive together from one query string, they are all
+/// optional, and the alternative is a call site where `None, None, &[]` has
+/// to be read positionally.
+#[derive(Debug, Default, Clone)]
+pub struct GraphFilter<'a> {
+    pub fact_types: &'a [FactType],
+    pub session: Option<&'a str>,
+    /// Inclusive `event_date` bounds, epoch ms.
+    pub since: Option<i64>,
+    pub until: Option<i64>,
+    /// When non-empty, replaces the newest-`limit` selection with exactly
+    /// these nodes.
+    pub ids: &'a [i64],
+}
+
 pub fn graph_view(
     db: &Db,
     bank_id: &str,
     limit: usize,
-    fact_types: &[FactType],
-    session: Option<&str>,
-    since: Option<i64>,
-    until: Option<i64>,
-    ids: &[i64],
+    filter: &GraphFilter<'_>,
 ) -> Result<(Vec<GraphNode>, Vec<GraphEdge>)> {
+    let GraphFilter {
+        fact_types,
+        session,
+        since,
+        until,
+        ids,
+    } = *filter;
     // Same shape as `search::fts_candidates_filtered`: one prepared statement
     // for every filter combination, values are `FactType::as_str` literals.
     let types_json: Option<String> = if fact_types.is_empty() {

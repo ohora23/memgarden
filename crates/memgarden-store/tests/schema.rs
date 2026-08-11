@@ -991,7 +991,8 @@ fn graph_view_returns_nodes_entities_and_only_internal_edges() {
     .unwrap();
     graph::write_entities(&db, "b1", &[(ids[0], vec!["ollama".to_string()], 0)], 0).unwrap();
 
-    let (nodes_out, edges) = graph::graph_view(&db, "b1", 100, &[], None, None, None, &[]).unwrap();
+    let (nodes_out, edges) =
+        graph::graph_view(&db, "b1", 100, &graph::GraphFilter::default()).unwrap();
     assert_eq!(nodes_out.len(), 3);
     let first = nodes_out.iter().find(|n| n.id == ids[0]).unwrap();
     assert_eq!(first.entities, vec!["ollama".to_string()]);
@@ -999,7 +1000,8 @@ fn graph_view_returns_nodes_entities_and_only_internal_edges() {
 
     // `limit` is newest-first, so a limit of 1 keeps the last node — and the
     // edge, whose other endpoint fell out of the set, must not come back.
-    let (nodes_out, edges) = graph::graph_view(&db, "b1", 1, &[], None, None, None, &[]).unwrap();
+    let (nodes_out, edges) =
+        graph::graph_view(&db, "b1", 1, &graph::GraphFilter::default()).unwrap();
     assert_eq!(nodes_out.len(), 1);
     assert_eq!(nodes_out[0].id, ids[2]);
     assert!(edges.is_empty(), "no dangling edges");

@@ -136,11 +136,13 @@ pub async fn get_graph(
             &db,
             &bank_id,
             limit,
-            &fact_types,
-            q.session.as_deref(),
-            q.since,
-            q.until,
-            &ids,
+            &graph::GraphFilter {
+                fact_types: &fact_types,
+                session: q.session.as_deref(),
+                since: q.since,
+                until: q.until,
+                ids: &ids,
+            },
         )
     })
     .await
