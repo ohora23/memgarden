@@ -9,6 +9,21 @@ pub struct Bank {
     pub updated_at: i64,
 }
 
+/// What one bank holds, for the dashboard. See `banks::stats`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BankStats {
+    pub bank_id: String,
+    pub nodes: i64,
+    pub world: i64,
+    pub observation: i64,
+    pub experience: i64,
+    /// Nodes still waiting on an embedding. `/healthz` reports whether the
+    /// embedder is up; this reports whether it is behind.
+    pub unembedded: i64,
+    pub documents: i64,
+    pub links: i64,
+}
+
 /// Fields required to insert a new memory node. `uuid`, `created_at`, and
 /// `updated_at` are assigned by `nodes::insert`.
 #[derive(Debug, Clone, Copy)]

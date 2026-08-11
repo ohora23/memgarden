@@ -27,9 +27,18 @@ use crate::state::AppState;
 pub fn router(state: AppState) -> Router {
     // /livez and /metrics.json skip the timing middleware: they'd otherwise
     // be measuring (and slightly skewing) their own numbers.
+    // E5's dashboard polls these every 10 s, so the two it added join
+    // /metrics.json outside the timing middleware for the same reason it is
+    // there: an operator watching the numbers must not be the reason the
+    // numbers move. /v1/stats in particular is a ~46 ms link join on the live
+    // database — six of those a minute would be visible in http_latency p95.
+    // /healthz stays measured: it is three indexed counts, it predates the
+    // dashboard, and it is what an external monitor is expected to call.
     let unmeasured = Router::new()
         .route("/livez", get(health::livez))
-        .route("/metrics.json", get(metrics::get_metrics));
+        .route("/metrics.json", get(metrics::get_metrics))
+        .route("/v1/metrics/history", get(metrics::list_history))
+        .route("/v1/stats", get(banks::get_stats));
 
     let measured = Router::new()
         .route("/healthz", get(health::healthz))
@@ -113,7 +122,11 @@ pub fn router(state: AppState) -> Router {
         .route("/ui", get(ui::index_redirect))
         .route("/ui/", get(ui::index))
         .route("/ui/app.js", get(ui::app_js))
+        .route("/ui/common.js", get(ui::common_js))
         .route("/ui/style.css", get(ui::style_css))
+        // E5's dashboard. No extension, like `/ui/` — it is a page, not a file.
+        .route("/ui/dashboard", get(ui::dashboard))
+        .route("/ui/dashboard.js", get(ui::dashboard_js))
         .route("/ui/vendor/sigma.js", get(ui::sigma_js))
         .route("/ui/vendor/graphology.js", get(ui::graphology_js))
         .route("/ui/vendor/d3-dispatch.js", get(ui::d3_dispatch_js))

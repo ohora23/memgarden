@@ -325,3 +325,135 @@ svg.ego { width: 100%; height: 100%; }
   box-shadow: 0 6px 18px #0007;
 }
 #new-badge[hidden] { display: none; }
+
+/* --- E5: the dashboard --------------------------------------------------- */
+
+/* The explorer's body is a fixed, unscrollable viewport because the graph
+   fills it. The dashboard is a document, so it opts out. */
+body.page {
+  height: auto;
+  overflow: auto;
+  padding: 0 0 40px;
+}
+
+#top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 20px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--panel-edge);
+}
+#top-bar h1 { margin: 0; font-size: 15px; font-weight: 600; }
+#top-bar h1::before { content: "🌱 "; }
+#top-bar nav { flex: 1; }
+#top-bar a { color: var(--accent); text-decoration: none; }
+#top-bar a:hover { text-decoration: underline; }
+#tick { margin: 0; font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
+#tick.bad { color: #f7768e; }
+
+#dash {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+#dash section {
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+#dash h2 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--dim);
+}
+
+/* The verdict. Colour carries it, but the word is the word — a reader who
+   cannot separate the two hues still reads HEALTHY or UNHEALTHY. */
+#hero { border-left: 4px solid var(--dim); }
+#hero .verdict {
+  margin: 0 0 6px;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+#hero .hero-line { margin: 0; color: var(--dim); font-size: 13px; }
+#hero .hero-sub { margin-top: 3px; opacity: .8; }
+.verdict-healthy { border-left-color: var(--accent) !important; }
+.verdict-healthy .verdict { color: var(--accent); }
+.verdict-degraded { border-left-color: var(--experience) !important; }
+.verdict-degraded .verdict { color: var(--experience); }
+.verdict-unhealthy { border-left-color: #f7768e !important; }
+.verdict-unhealthy .verdict { color: #f7768e; }
+
+/* Counters. auto-fit rather than a fixed count: the cards are the same
+   whether this is a wide monitor or half a laptop screen. */
+#cards {
+  background: none !important;
+  border: 0 !important;
+  padding: 0 !important;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 14px;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+.card h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase;
+           letter-spacing: .06em; color: var(--dim); }
+.card dl.meta { margin: 0; font-size: 13px; }
+.card dd { text-align: right; }
+dd.ok { color: var(--accent); }
+dd.warn { color: var(--experience); }
+dd.bad { color: #f7768e; }
+
+/* Trend. Stretched by preserveAspectRatio="none" — the shape is the point,
+   the aspect ratio is not. */
+.spark { width: 100%; height: 90px; display: block; }
+.spark-line { fill: none; stroke: var(--accent); stroke-width: 1.5;
+              vector-effect: non-scaling-stroke; }
+.spark-scale { margin: 6px 0 0; font-size: 11px; color: var(--dim);
+               font-variant-numeric: tabular-nums; }
+
+/* Tables. The bank table outgrows a narrow window, so it scrolls in its own
+   box rather than making the page scroll sideways. */
+.scroll-x { overflow-x: auto; }
+#dash table { width: 100%; border-collapse: collapse; font-size: 13px; }
+#dash th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: 0 10px 6px 0;
+  white-space: nowrap;
+}
+#dash td {
+  padding: 5px 10px 5px 0;
+  border-top: 1px solid var(--panel-edge);
+  vertical-align: top;
+}
+#dash td.num { text-align: right; font-variant-numeric: tabular-nums; }
+#dash td a { color: var(--ink); text-decoration: none; border-bottom: 1px dotted var(--panel-edge); }
+#dash td a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+#dash td.empty { color: var(--dim); }
+
+/* The ledger's case text is prose and can be long; it wraps rather than
+   stretching the table. */
+#ledger td:nth-child(4) { max-width: 46ch; white-space: pre-wrap; word-break: break-word; }

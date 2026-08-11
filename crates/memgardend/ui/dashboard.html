@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MemGarden — dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>🌱</text></svg>">
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body class="page">
+
+<header id="top-bar">
+  <h1>MemGarden</h1>
+  <nav><a href="/ui/">Explorer →</a></nav>
+  <!-- Not decoration: a dashboard that has quietly stopped refreshing looks
+       exactly like one where nothing is happening. -->
+  <p id="tick" role="status">…</p>
+</header>
+
+<main id="dash">
+  <!-- AC-5's verdict. Filled by dashboard.js; the placeholder is what shows
+       if the very first poll is still in flight. -->
+  <section id="hero" class="verdict-unknown">
+    <p class="verdict">…</p>
+    <p class="hero-line"></p>
+    <p class="hero-line hero-sub"></p>
+  </section>
+
+  <section id="cards" aria-label="Counters"></section>
+
+  <section id="trend-card">
+    <h2>Recall p50, last snapshots</h2>
+    <div id="trend"></div>
+  </section>
+
+  <section id="banks-card">
+    <h2>Banks</h2>
+    <div class="scroll-x"><table id="banks"></table></div>
+  </section>
+
+  <section id="ledger-card">
+    <h2>Benefit ledger</h2>
+    <div class="scroll-x"><table id="ledger"></table></div>
+  </section>
+</main>
+
+<script type="module" src="/ui/dashboard.js"></script>
+</body>
+</html>

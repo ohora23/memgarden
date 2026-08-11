@@ -40,6 +40,15 @@ use axum::response::{IntoResponse, Redirect, Response};
 const INDEX_HTML: &str = include_str!("../../ui/index.html");
 const APP_JS: &str = include_str!("../../ui/app.js");
 const STYLE_CSS: &str = include_str!("../../ui/style.css");
+/// E5. A second page rather than a mode of the explorer: it shares the
+/// stylesheet and `common.js`, and nothing else. The explorer is a graph
+/// filling a fixed viewport; the dashboard is a scrolling document that polls
+/// on a timer, and merging them would give every control two meanings — the
+/// same argument `e1-memory-explorer.md` §Decisions 6 makes about E6.
+const DASHBOARD_HTML: &str = include_str!("../../ui/dashboard.html");
+const DASHBOARD_JS: &str = include_str!("../../ui/dashboard.js");
+/// The `$`/`el`/`api`/`date` helpers both pages import.
+const COMMON_JS: &str = include_str!("../../ui/common.js");
 
 /// Vendored, not fetched — see `ui/vendor/README.md` for versions, licenses
 /// and why these two are committed as built files. They are the only assets
@@ -84,6 +93,18 @@ pub async fn app_js() -> Response {
 
 pub async fn style_css() -> Response {
     asset("text/css; charset=utf-8", STYLE_CSS)
+}
+
+pub async fn common_js() -> Response {
+    asset("text/javascript; charset=utf-8", COMMON_JS)
+}
+
+pub async fn dashboard() -> Response {
+    asset("text/html; charset=utf-8", DASHBOARD_HTML)
+}
+
+pub async fn dashboard_js() -> Response {
+    asset("text/javascript; charset=utf-8", DASHBOARD_JS)
 }
 
 pub async fn sigma_js() -> Response {

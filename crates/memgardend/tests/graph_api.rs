@@ -1003,7 +1003,11 @@ async fn the_ui_is_served_from_the_daemon_and_is_not_a_file_server() {
     for (path, needle) in [
         ("/ui/", "<title>MemGarden</title>"),
         ("/ui/app.js", "/v1/banks/"),
+        ("/ui/common.js", "export const el"),
         ("/ui/style.css", "#search-panel"),
+        // E5's dashboard, the second page. Extensionless, like `/ui/`.
+        ("/ui/dashboard", "<title>MemGarden — dashboard</title>"),
+        ("/ui/dashboard.js", "/v1/metrics/history"),
         // E3's vendored libraries. Listed by exact path like everything else
         // here — the point of this test is that the set is exact.
         ("/ui/vendor/sigma.js", "Sigma"),

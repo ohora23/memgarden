@@ -113,7 +113,7 @@ async fn ledger_roundtrip() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = body_json(response).await;
     assert_eq!(body["kind"], "manual");
-    assert_eq!(body["injection_tokens"], 120);
+    assert_eq!(body["detail"]["injection_tokens"], 120);
 
     let response = app
         .clone()
@@ -125,9 +125,38 @@ async fn ledger_roundtrip() {
     let entries = body.as_array().unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(
-        entries[0]["case_text"],
+        entries[0]["detail"]["case_text"],
         "avoided a 400-token recall by reusing cached context"
     );
+}
+
+/// The read path used to flatten `detail` into the manual-case shape, which
+/// deleted every automatic row's contents on the way out — a
+/// `retain_cap_saving` row records none of those keys. This is the
+/// regression test for that: whatever a writer put in `detail`, a reader
+/// gets back.
+#[tokio::test]
+async fn ledger_returns_an_automatic_rows_detail_intact() {
+    let (app, db) = test_app();
+
+    memgarden_store::metrics_store::insert_ledger(
+        &db,
+        "retain_cap_saving",
+        None,
+        Some(r#"{"raw_tokens":39555,"capped_tokens":19423,"saved":20132,"ratio":0.5089}"#),
+    )
+    .unwrap();
+
+    let response = app
+        .oneshot(get_request("/v1/ledger?limit=1"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let detail = &body[0]["detail"];
+    assert_eq!(detail["raw_tokens"], 39555);
+    assert_eq!(detail["capped_tokens"], 19423);
+    assert_eq!(detail["saved"], 20132);
 }
 
 #[tokio::test]
@@ -167,4 +196,57 @@ async fn ledger_invalid_kind_is_400() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_json(response).await;
     assert_eq!(body["error"]["code"], "invalid");
+}
+
+#[tokio::test]
+async fn history_returns_parsed_payloads_newest_first() {
+    let (app, db) = test_app();
+
+    metrics_task::tick(&db, 90).unwrap();
+    metrics_task::tick(&db, 90).unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(get_request("/v1/metrics/history?limit=50"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let rows = body.as_array().unwrap();
+    assert!(rows.len() >= 2);
+    assert!(
+        rows[0]["id"].as_i64() > rows[1]["id"].as_i64(),
+        "newest first"
+    );
+    // An object, not the stored string: the browser must not have to parse
+    // a field of a JSON response.
+    assert!(
+        rows[0]["payload"]["http_requests"].is_number(),
+        "payload is re-emitted as JSON, got {}",
+        rows[0]["payload"]
+    );
+}
+
+#[tokio::test]
+async fn stats_lists_every_bank_including_an_empty_one() {
+    let (app, _db) = test_app();
+
+    let create = json_request("POST", "/v1/banks", json!({ "bank_id": "stats-bank" }));
+    assert_eq!(
+        app.clone().oneshot(create).await.unwrap().status(),
+        StatusCode::CREATED
+    );
+
+    let response = app.oneshot(get_request("/v1/stats")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let bank = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["bank_id"] == "stats-bank")
+        .expect("a bank with nothing in it still appears");
+    assert_eq!(bank["nodes"], 0);
+    assert_eq!(bank["links"], 0);
+    assert_eq!(bank["documents"], 0);
 }

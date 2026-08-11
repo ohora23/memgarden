@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use memgarden_store::banks;
-use memgarden_store::models::Bank;
+use memgarden_store::models::{Bank, BankStats};
 
 use crate::error::{ApiError, join_err};
 use crate::json::ApiJson;
@@ -62,6 +62,50 @@ pub async fn list_banks(
         .await
         .map_err(join_err)??;
     Ok(Json(found.into_iter().map(BankResponse::from).collect()))
+}
+
+#[derive(Debug, Serialize)]
+pub struct BankStatsResponse {
+    pub bank_id: String,
+    pub nodes: i64,
+    pub world: i64,
+    pub observation: i64,
+    pub experience: i64,
+    pub unembedded: i64,
+    pub documents: i64,
+    pub links: i64,
+}
+
+impl From<BankStats> for BankStatsResponse {
+    fn from(s: BankStats) -> Self {
+        BankStatsResponse {
+            bank_id: s.bank_id,
+            nodes: s.nodes,
+            world: s.world,
+            observation: s.observation,
+            experience: s.experience,
+            unembedded: s.unembedded,
+            documents: s.documents,
+            links: s.links,
+        }
+    }
+}
+
+/// `GET /v1/stats` (E5, DB-1) — what every bank holds, in one response.
+///
+/// Separate from `/v1/banks` rather than a field on it: the explorer calls
+/// that one to fill a dropdown on every page load, and it must not start
+/// paying for a 200,000-row link join to do it.
+pub async fn get_stats(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<BankStatsResponse>>, ApiError> {
+    let db = state.db.clone();
+    let found = tokio::task::spawn_blocking(move || banks::stats(&db))
+        .await
+        .map_err(join_err)??;
+    Ok(Json(
+        found.into_iter().map(BankStatsResponse::from).collect(),
+    ))
 }
 
 pub async fn create_bank(

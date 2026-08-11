@@ -9,32 +9,13 @@
 //   POST /v1/banks/{bank}/recall     what would be injected, with arm scores
 //   GET  /v1/banks/{bank}/nodes/{id} one memory in full
 
-const $ = (sel) => document.querySelector(sel);
+import { $, api, date, el } from "/ui/common.js";
+
 const bankSel = $("#bank");
 const results = $("#results");
 const statusLine = $("#search-status");
 const detailPanel = $("#detail-panel");
 const detail = $("#detail");
-
-/** Everything user-supplied goes through here. No innerHTML with data in it. */
-const el = (tag, props = {}, kids = []) => {
-  const node = Object.assign(document.createElement(tag), props);
-  for (const kid of [].concat(kids)) {
-    node.append(kid?.nodeType ? kid : document.createTextNode(kid));
-  }
-  return node;
-};
-
-async function api(path, init) {
-  const res = await fetch(path, {
-    headers: { "content-type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) {
-    throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
-  }
-  return res.json();
-}
 
 const bank = () => bankSel.value;
 
@@ -213,8 +194,6 @@ const related = (title, items, cap) =>
     })),
   ];
 
-const date = (ms) =>
-  ms == null ? null : new Date(ms).toISOString().slice(0, 16).replace("T", " ");
 // --- E3: the graph ---------------------------------------------------------
 //
 // sigma renders and handles the pointer; graphology is the structure it
@@ -792,6 +771,13 @@ $("#search-form").addEventListener("submit", (e) => {
     bankSel.replaceChildren(
       ...usable.map((b) => el("option", { value: b.bank_id }, b.bank_id)),
     );
+    // `?bank=` opens on a named bank, which is what makes a bank row in the
+    // dashboard a link worth clicking. An unknown name is ignored rather
+    // than treated as an error: the selector then keeps its default, which
+    // is a working explorer, not a broken one.
+    const wanted = new URLSearchParams(location.search).get("bank");
+    if (wanted && usable.some((b) => b.bank_id === wanted)) bankSel.value = wanted;
+
     if (!usable.length) statusLine.textContent = "No banks yet.";
     else watchBank();
   } catch (e) {
