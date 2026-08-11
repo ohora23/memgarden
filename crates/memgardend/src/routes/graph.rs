@@ -43,6 +43,18 @@ pub struct GraphQuery {
     pub types: Option<String>,
     /// Critic Revision R15: filters on the `session:{id}` tag B3 writes.
     pub session: Option<String>,
+    /// Inclusive `event_date` bounds in epoch ms (E3's date filter). Applied
+    /// in SQL rather than by the caller: `limit` takes the newest ids, so a
+    /// range narrowed after the fact could never reach a memory older than
+    /// the newest `limit` of them.
+    pub since: Option<i64>,
+    pub until: Option<i64>,
+    /// Comma-separated node ids. When present the newest-`limit` selection is
+    /// replaced by exactly these, which is how the explorer asks for the
+    /// edges *among* the nodes it already has on screen — `nodes/{id}` only
+    /// ever answers for one node's own neighbours, so a graph built from it
+    /// alone is a star.
+    pub ids: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -82,6 +94,19 @@ pub async fn get_graph(
             memgarden_core::Error::Invalid(format!("limit must be 1..={MAX_LIMIT}")).into(),
         );
     }
+    // An id list is a selection, not a way around the cap on how much one
+    // response may carry, so it is bounded by the same ceiling as `limit`.
+    let mut ids: Vec<i64> = q
+        .ids
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .filter_map(|s| s.trim().parse::<i64>().ok())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.truncate(MAX_LIMIT);
+
     let mut fact_types: Vec<FactType> = match &q.types {
         Some(raw) => raw
             .split(',')
@@ -107,7 +132,18 @@ pub async fn get_graph(
 
     let db = state.db.clone();
     let (nodes, links) = tokio::task::spawn_blocking(move || {
-        graph::graph_view(&db, &bank_id, limit, &fact_types, q.session.as_deref())
+        graph::graph_view(
+            &db,
+            &bank_id,
+            limit,
+            &graph::GraphFilter {
+                fact_types: &fact_types,
+                session: q.session.as_deref(),
+                since: q.since,
+                until: q.until,
+                ids: &ids,
+            },
+        )
     })
     .await
     .map_err(join_err)??;

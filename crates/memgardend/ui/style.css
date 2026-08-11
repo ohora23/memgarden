@@ -202,3 +202,106 @@ svg.ego { width: 100%; height: 100%; }
   opacity: .8;
   dominant-baseline: middle;
 }
+
+/* The hover peek. `pointer-events: none` matters: it follows the cursor, and a
+   panel that could be hovered would steal the pointerleave from the dot under
+   it and flicker. */
+#peek {
+  position: fixed;
+  z-index: 5;
+  max-width: 42ch;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px #0009;
+  pointer-events: none;
+}
+#peek[hidden] { display: none; }
+
+.peek-text {
+  font-size: 13px;
+  line-height: 1.45;
+  /* Long memories peek, they do not unroll. */
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.peek-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+/* E3 — the graph canvas is sigma's now; the empty state floats over it. */
+#canvas-empty {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  color: var(--dim);
+  pointer-events: none;
+}
+#canvas-empty[hidden] { display: none; }
+
+.peek-hint { opacity: .7; font-style: italic; }
+
+/* Filters. Collapsed by default — search is the way in, filters are the way
+   to look at a bank you cannot phrase a query for. */
+#filters { margin: 0 0 8px; font-size: 13px; }
+#filters summary { cursor: pointer; color: var(--dim); padding: 4px 0; }
+#filters[open] summary { color: var(--ink); }
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 10px;
+  align-items: center;
+  padding: 6px 0;
+}
+.filter-grid > label { color: var(--dim); }
+.filter-grid input[type="text"],
+.filter-grid input[type="date"],
+.filter-grid input[type="number"] {
+  background: var(--bg);
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  color: var(--ink);
+  padding: 4px 6px;
+  font: inherit;
+  width: 100%;
+}
+.type-checks { display: flex; flex-wrap: wrap; gap: 10px; }
+.type-checks label { display: flex; align-items: center; gap: 4px; color: var(--ink); }
+
+#f-apply {
+  margin-top: 4px;
+  background: var(--accent);
+  color: #10131a;
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Node and edge counts, bottom-left, out of the panels' way. It is also how
+   an expansion announces that it landed. */
+#graph-status {
+  position: fixed;
+  left: 16px;
+  bottom: 14px;
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--dim);
+  pointer-events: none;
+  z-index: 3;
+}

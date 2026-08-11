@@ -110,6 +110,12 @@ pub fn router(state: AppState) -> Router {
         .route("/ui/", get(ui::index))
         .route("/ui/app.js", get(ui::app_js))
         .route("/ui/style.css", get(ui::style_css))
+        .route("/ui/vendor/sigma.js", get(ui::sigma_js))
+        .route("/ui/vendor/graphology.js", get(ui::graphology_js))
+        .route("/ui/vendor/d3-dispatch.js", get(ui::d3_dispatch_js))
+        .route("/ui/vendor/d3-quadtree.js", get(ui::d3_quadtree_js))
+        .route("/ui/vendor/d3-timer.js", get(ui::d3_timer_js))
+        .route("/ui/vendor/d3-force.js", get(ui::d3_force_js))
         .route("/ui/{*rest}", get(ui::not_found))
         .layer(from_fn(track_http));
 

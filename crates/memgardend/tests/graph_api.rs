@@ -1003,6 +1003,14 @@ async fn the_ui_is_served_from_the_daemon_and_is_not_a_file_server() {
         ("/ui/", "<title>MemGarden</title>"),
         ("/ui/app.js", "/v1/banks/"),
         ("/ui/style.css", "#search-panel"),
+        // E3's vendored libraries. Listed by exact path like everything else
+        // here — the point of this test is that the set is exact.
+        ("/ui/vendor/sigma.js", "Sigma"),
+        ("/ui/vendor/graphology.js", "graphology"),
+        ("/ui/vendor/d3-force.js", "d3-force"),
+        ("/ui/vendor/d3-quadtree.js", "d3-quadtree"),
+        ("/ui/vendor/d3-timer.js", "d3-timer"),
+        ("/ui/vendor/d3-dispatch.js", "d3-dispatch"),
     ] {
         let res = app.clone().oneshot(get(path)).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK, "{path}");
@@ -1017,7 +1025,11 @@ async fn the_ui_is_served_from_the_daemon_and_is_not_a_file_server() {
         "/ui/../Cargo.toml",
         "/ui/%2e%2e/Cargo.toml",
         "/ui/nope.js",
-        "/ui/vendor/sigma.js",
+        // A vendored file that exists on disk but is not routed: proof the
+        // vendor directory is a list of routes and not a served directory.
+        "/ui/vendor/README.md",
+        "/ui/vendor/LICENSE-sigma.txt",
+        "/ui/vendor/sigma-3.0.3.min.js",
     ] {
         let res = app.clone().oneshot(get(path)).await.unwrap();
         assert_eq!(
@@ -1147,4 +1159,179 @@ async fn node_detail_carries_what_the_ego_graph_draws() {
         source_row["weight"].is_null(),
         "provenance carries no similarity; the drawing depends on that absence"
     );
+}
+
+/// E3's date filter, and why it is SQL rather than a `.filter()` on the way
+/// out.
+///
+/// `graph_view` orders by `id DESC` and takes `limit`, so it returns the
+/// *newest* N. A range applied after that could only ever narrow the newest
+/// window — it could never reach a memory older than it, which is the entire
+/// reason someone asks for a date. This pins that the bounds run inside the
+/// query: the old node here is outside the newest-1 window and must still
+/// come back when asked for by date.
+#[tokio::test]
+async fn the_graph_date_filter_reaches_past_the_newest_window() {
+    let (app, db) = read_only_app();
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let day = 86_400_000i64;
+    let mk = |text: &str, event_date: i64| {
+        let mut n = NewNode::new("b1", FactType::World, text);
+        n.event_date = Some(event_date);
+        n.mentioned_at = Some(event_date);
+        nodes::insert(&db, n).unwrap()
+    };
+    // Inserted oldest-first, so `id DESC` puts `newest` first.
+    let oldest = mk("a memory from the first day", day);
+    let middle = mk("a memory from the second day", 2 * day);
+    let newest = mk("a memory from the third day", 3 * day);
+
+    let ids = |v: &serde_json::Value| -> Vec<i64> {
+        let mut out: Vec<i64> = v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_i64().unwrap())
+            .collect();
+        out.sort_unstable();
+        out
+    };
+
+    // The window alone: only the newest survives `limit=1`.
+    let (status, v) = send(&app, get("/v1/banks/b1/graph?limit=1")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ids(&v), vec![newest]);
+
+    // The same window, asked for by date. If the bound were applied after the
+    // limit this would be empty, because the newest node is not in range.
+    let (_, v) = send(
+        &app,
+        get(&format!("/v1/banks/b1/graph?limit=1&until={}", day)),
+    )
+    .await;
+    assert_eq!(
+        ids(&v),
+        vec![oldest],
+        "a date range must reach past the newest {{limit}} rows"
+    );
+
+    // `since` alone, and it has to be decisive on its own: with the lower
+    // bound dropped this returns all three.
+    let (_, v) = send(
+        &app,
+        get(&format!("/v1/banks/b1/graph?limit=100&since={}", 3 * day)),
+    )
+    .await;
+    assert_eq!(ids(&v), vec![newest], "since excludes everything older");
+
+    // Both bounds, inclusive at each end.
+    let (_, v) = send(
+        &app,
+        get(&format!(
+            "/v1/banks/b1/graph?limit=100&since={}&until={}",
+            day,
+            2 * day
+        )),
+    )
+    .await;
+    assert_eq!(ids(&v), vec![oldest, middle], "bounds are inclusive");
+
+    // Absent bounds mean unbounded, not zero.
+    let (_, v) = send(&app, get("/v1/banks/b1/graph?limit=100")).await;
+    assert_eq!(ids(&v), vec![oldest, middle, newest]);
+}
+
+/// `?ids=` returns the induced subgraph over a set the caller already holds —
+/// the half of the picture `nodes/{id}` cannot give.
+///
+/// `nodes/{id}` answers "what is adjacent to *this* one" and nothing else, so
+/// an ego view built from it is a star: two neighbours that are themselves
+/// linked get no edge between them, and walking the graph shows the path taken
+/// rather than the fabric around it. Measured on the live bank, one node's ego
+/// view drew 4 edges where the same node set actually holds 10.
+#[tokio::test]
+async fn graph_ids_returns_the_links_between_a_set_the_caller_already_has() {
+    let (app, db) = read_only_app();
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let mk = |t: &str| nodes::insert(&db, NewNode::new("b1", FactType::World, t)).unwrap();
+    let a = mk("a");
+    let b = mk("b");
+    let c = mk("c");
+    let outside = mk("not in the set");
+
+    graph::insert_links(
+        &db,
+        &[
+            // The star `nodes/{a}` would report…
+            NewLink {
+                from_node_id: a,
+                to_node_id: b,
+                link_type: "semantic",
+                weight: 0.9,
+            },
+            NewLink {
+                from_node_id: a,
+                to_node_id: c,
+                link_type: "semantic",
+                weight: 0.8,
+            },
+            // …and the edge it cannot: between two of a's neighbours.
+            NewLink {
+                from_node_id: b,
+                to_node_id: c,
+                link_type: "semantic",
+                weight: 0.85,
+            },
+            // An edge leaving the set, which must not come back.
+            NewLink {
+                from_node_id: c,
+                to_node_id: outside,
+                link_type: "semantic",
+                weight: 0.7,
+            },
+        ],
+        1,
+    )
+    .unwrap();
+
+    let (status, v) = send(
+        &app,
+        get(&format!("/v1/banks/b1/graph?limit=100&ids={a},{b},{c}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let mut got: Vec<i64> = v["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_i64().unwrap())
+        .collect();
+    got.sort_unstable();
+    assert_eq!(got, vec![a, b, c], "exactly the requested set, and no more");
+
+    let pairs: Vec<(i64, i64)> = v["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            let (x, y) = (l["from"].as_i64().unwrap(), l["to"].as_i64().unwrap());
+            if x < y { (x, y) } else { (y, x) }
+        })
+        .collect();
+    assert!(
+        pairs.contains(&(b.min(c), b.max(c))),
+        "the neighbour-to-neighbour edge is the whole point; got {pairs:?}"
+    );
+    assert!(
+        !pairs.iter().any(|(x, y)| *x == outside || *y == outside),
+        "an edge leaving the set must not come back"
+    );
+
+    // Without `ids` the same bank hands back the newest rows instead, so the
+    // parameter is a selection and not decoration.
+    let (_, v) = send(&app, get("/v1/banks/b1/graph?limit=100")).await;
+    assert_eq!(v["nodes"].as_array().unwrap().len(), 4);
 }

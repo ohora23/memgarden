@@ -41,6 +41,23 @@ const INDEX_HTML: &str = include_str!("../../ui/index.html");
 const APP_JS: &str = include_str!("../../ui/app.js");
 const STYLE_CSS: &str = include_str!("../../ui/style.css");
 
+/// Vendored, not fetched — see `ui/vendor/README.md` for versions, licenses
+/// and why these two are committed as built files. They are the only assets
+/// here that are worth caching hard, but they are served on the same
+/// `no-cache` terms as the rest: the binary is what versions them, so a copy
+/// that outlives an upgrade is the failure worth avoiding, and revalidation
+/// over loopback is free.
+const SIGMA_JS: &str = include_str!("../../ui/vendor/sigma-3.0.3.min.js");
+const GRAPHOLOGY_JS: &str = include_str!("../../ui/vendor/graphology-0.26.0.umd.min.js");
+/// The layout, which sigma does not carry: d3-force computes coordinates and
+/// nothing else, and its three dependencies all attach to the same `d3`
+/// global, so they load as four ordinary script tags. See `vendor/README.md`
+/// for why this rather than `graphology-library`.
+const D3_DISPATCH_JS: &str = include_str!("../../ui/vendor/d3-dispatch-3.0.1.min.js");
+const D3_QUADTREE_JS: &str = include_str!("../../ui/vendor/d3-quadtree-3.0.1.min.js");
+const D3_TIMER_JS: &str = include_str!("../../ui/vendor/d3-timer-3.0.1.min.js");
+const D3_FORCE_JS: &str = include_str!("../../ui/vendor/d3-force-3.0.0.min.js");
+
 /// `no-cache` rather than a long max-age: the assets are versioned by the
 /// binary, so a cached copy outliving an upgrade is exactly the failure mode
 /// worth avoiding, and they are served off loopback where revalidation is free.
@@ -67,6 +84,30 @@ pub async fn app_js() -> Response {
 
 pub async fn style_css() -> Response {
     asset("text/css; charset=utf-8", STYLE_CSS)
+}
+
+pub async fn sigma_js() -> Response {
+    asset("text/javascript; charset=utf-8", SIGMA_JS)
+}
+
+pub async fn graphology_js() -> Response {
+    asset("text/javascript; charset=utf-8", GRAPHOLOGY_JS)
+}
+
+pub async fn d3_dispatch_js() -> Response {
+    asset("text/javascript; charset=utf-8", D3_DISPATCH_JS)
+}
+
+pub async fn d3_quadtree_js() -> Response {
+    asset("text/javascript; charset=utf-8", D3_QUADTREE_JS)
+}
+
+pub async fn d3_timer_js() -> Response {
+    asset("text/javascript; charset=utf-8", D3_TIMER_JS)
+}
+
+pub async fn d3_force_js() -> Response {
+    asset("text/javascript; charset=utf-8", D3_FORCE_JS)
 }
 
 /// `/ui` → `/ui/`, so a relative asset reference resolves the same either way.

@@ -9,11 +9,15 @@
 </head>
 <body>
 
-<!-- The graph fills the viewport. E2 replaces the contents with an SVG
-     ego-graph on the first selection; this is the unselected state. -->
-<div id="canvas" aria-hidden="true">
-  <p id="canvas-empty">Select a result to see its neighbourhood.</p>
-</div>
+<!-- The graph fills the viewport; sigma mounts into it (E3). Everything else
+     floats over it. -->
+<div id="canvas" aria-hidden="true"></div>
+<p id="canvas-empty">Search, or open a filter, to draw a graph.</p>
+
+<!-- Hover preview for graph nodes. `aria-hidden` like the canvas it serves:
+     every node it describes is also a button in the detail panel, which is the
+     keyboard path and the accessible one. -->
+<div id="peek" hidden aria-hidden="true"></div>
 
 <section id="search-panel" aria-label="Search">
   <header>
@@ -24,6 +28,53 @@
     <input id="q" type="search" placeholder="What would be recalled for…"
            autocomplete="off" autofocus>
   </form>
+
+  <!-- E3's filters. Collapsed by default: search is the primary way in, and
+       the filters are the way to look at a bank you cannot phrase a query
+       for. -->
+  <details id="filters">
+    <summary>Filters</summary>
+    <div class="filter-grid">
+      <label for="f-types">Types</label>
+      <div id="f-types" class="type-checks">
+        <label><input type="checkbox" value="world" checked> world</label>
+        <label><input type="checkbox" value="observation" checked> observation</label>
+        <label><input type="checkbox" value="experience" checked> experience</label>
+      </div>
+
+      <label for="f-links">Links</label>
+      <div id="f-links" class="type-checks">
+        <label><input type="checkbox" value="semantic" checked> semantic</label>
+        <label><input type="checkbox" value="caused_by" checked> caused_by</label>
+        <!-- On, like the rest. Hiding 71% of the edges by default was a
+             density fix in the wrong place: the mat was caused by line weight
+             and opacity, and those are fixed. Off is a choice the reader
+             makes, not one made for them. -->
+        <label><input type="checkbox" value="temporal" checked> temporal</label>
+      </div>
+
+      <!-- 1.5 rather than 1: chosen by looking at the live bank, not derived.
+           The scale it multiplies is calibrated for edge counts, and edge
+           counts are a property of the bank you happen to be looking at, so
+           the knob stays. -->
+      <label for="f-edge-scale">Edge width</label>
+      <input id="f-edge-scale" type="range" min="0.25" max="3" step="0.25" value="1.5">
+
+      <label for="f-session">Session</label>
+      <input id="f-session" type="text" placeholder="session id" autocomplete="off">
+
+      <label for="f-since">From</label>
+      <input id="f-since" type="date">
+
+      <label for="f-until">To</label>
+      <input id="f-until" type="date">
+
+      <label for="f-limit">Limit</label>
+      <input id="f-limit" type="number" min="1" max="2000" value="200">
+    </div>
+    <button id="f-apply" type="button">Draw</button>
+  </details>
+
   <p id="search-status" role="status"></p>
   <ol id="results"></ol>
 </section>
@@ -33,6 +84,18 @@
   <div id="detail"></div>
 </aside>
 
+<!-- Graph legend and the count, which is also how you notice an expansion
+     landed. -->
+<div id="graph-status" aria-hidden="true"></div>
+
+<!-- Vendored, not fetched: see ui/vendor/README.md. Order matters — the three
+     d3 modules attach to the same `d3` global that d3-force then reads. -->
+<script src="/ui/vendor/graphology.js"></script>
+<script src="/ui/vendor/d3-dispatch.js"></script>
+<script src="/ui/vendor/d3-quadtree.js"></script>
+<script src="/ui/vendor/d3-timer.js"></script>
+<script src="/ui/vendor/d3-force.js"></script>
+<script src="/ui/vendor/sigma.js"></script>
 <script type="module" src="/ui/app.js"></script>
 </body>
 </html>

@@ -502,13 +502,48 @@ pub struct GraphEdge {
 /// means all; `session` filters on the `session:{id}` tag B3 writes (Critic
 /// Revision R15). Only edges whose *both* endpoints are in the returned node
 /// set come back, so the viewer never draws a dangling edge.
+/// `since` / `until` bound `event_date`, inclusive, in epoch ms. They are in
+/// the query rather than applied to its result because this orders by
+/// `id DESC` and takes `limit`: a range narrowed afterwards could only ever
+/// cut into the newest window, and could never reach a memory older than it —
+/// which is the entire reason to ask for a date (E3).
+/// `ids`, when non-empty, replaces the newest-`limit` selection with exactly
+/// those nodes — the induced subgraph over a set the caller already holds.
+///
+/// E3 needs it because `nodes/{id}` answers "what is adjacent to *this* one"
+/// and nothing else: an ego view built from it is a star, with no edge drawn
+/// between two neighbours that are themselves linked. Walking the graph then
+/// shows the path taken and not the fabric around it. The other filters still
+/// apply, so a set can be narrowed by type or date on the way back.
+/// Everything that narrows a graph view. A struct rather than five more
+/// parameters: they arrive together from one query string, they are all
+/// optional, and the alternative is a call site where `None, None, &[]` has
+/// to be read positionally.
+#[derive(Debug, Default, Clone)]
+pub struct GraphFilter<'a> {
+    pub fact_types: &'a [FactType],
+    pub session: Option<&'a str>,
+    /// Inclusive `event_date` bounds, epoch ms.
+    pub since: Option<i64>,
+    pub until: Option<i64>,
+    /// When non-empty, replaces the newest-`limit` selection with exactly
+    /// these nodes.
+    pub ids: &'a [i64],
+}
+
 pub fn graph_view(
     db: &Db,
     bank_id: &str,
     limit: usize,
-    fact_types: &[FactType],
-    session: Option<&str>,
+    filter: &GraphFilter<'_>,
 ) -> Result<(Vec<GraphNode>, Vec<GraphEdge>)> {
+    let GraphFilter {
+        fact_types,
+        session,
+        since,
+        until,
+        ids,
+    } = *filter;
     // Same shape as `search::fts_candidates_filtered`: one prepared statement
     // for every filter combination, values are `FactType::as_str` literals.
     let types_json: Option<String> = if fact_types.is_empty() {
@@ -524,6 +559,11 @@ pub fn graph_view(
         ))
     };
     let session_tag = session.map(|s| format!("session:{s}"));
+    let ids_filter: Option<String> = if ids.is_empty() {
+        None
+    } else {
+        Some(ids_json(ids))
+    };
 
     let conn = db.read()?;
     let mut stmt = conn
@@ -534,13 +574,24 @@ pub fn graph_view(
                AND (?3 IS NULL OR n.fact_type IN (SELECT value FROM json_each(?3)))
                AND (?4 IS NULL OR EXISTS (
                      SELECT 1 FROM node_tags t WHERE t.node_id = n.id AND t.tag = ?4))
+               AND (?5 IS NULL OR n.event_date >= ?5)
+               AND (?6 IS NULL OR n.event_date <= ?6)
+               AND (?7 IS NULL OR n.id IN (SELECT value FROM json_each(?7)))
              ORDER BY n.id DESC
              LIMIT ?2",
         )
         .map_err(store_err)?;
     let mut nodes = stmt
         .query_map(
-            params![bank_id, limit as i64, types_json, session_tag],
+            params![
+                bank_id,
+                limit as i64,
+                types_json,
+                session_tag,
+                since,
+                until,
+                ids_filter
+            ],
             |r| {
                 Ok(GraphNode {
                     id: r.get(0)?,
