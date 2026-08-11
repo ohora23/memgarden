@@ -1276,6 +1276,7 @@ dependencies = [
  "anyhow",
  "axum",
  "fastembed",
+ "futures-util",
  "hf-hub",
  "http-body-util",
  "jiff",

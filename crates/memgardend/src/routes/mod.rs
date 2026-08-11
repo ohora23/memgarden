@@ -1,6 +1,7 @@
 mod banks;
 mod consolidate;
 mod embed;
+mod events;
 mod extract;
 mod graph;
 mod health;
@@ -85,6 +86,9 @@ pub fn router(state: AppState) -> Router {
             get(consolidate::get_consolidation),
         )
         .route("/v1/banks/{bank_id}/graph", get(graph::get_graph))
+        // E4. A GET that never returns, so it sits with the other reads and
+        // inherits the same Host check and origin.
+        .route("/v1/banks/{bank_id}/events", get(events::bank_events))
         .route("/v1/banks/{bank_id}/nodes/{node_id}", get(graph::get_node))
         .route(
             "/v1/banks/{bank_id}/mental-models",

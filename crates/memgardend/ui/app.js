@@ -671,10 +671,96 @@ async function drawFiltered() {
   }
 }
 
+// --- E4: what arrived while you were reading -------------------------------
+//
+// The bank grows behind the window: the hooks retain while you read, and until
+// now the screen showed the state it was opened in. `/events` is an SSE stream
+// of "these ids changed" for one bank.
+//
+// **It never moves the graph on its own.** A view that rearranges itself while
+// being read is worse than a stale one — you lose your place, and the thing
+// you were about to click walks away. New memories collect in a badge; the
+// graph changes when the reader says so. That is also why the badge shows a
+// count rather than quietly merging: the number is information ("this bank is
+// busy right now") even when it is never clicked.
+
+let stream = null;
+const pending = new Set();
+const newBadge = $("#new-badge");
+
+function watchBank() {
+  if (stream) stream.close();
+  pending.clear();
+  renderBadge();
+  const b = bank();
+  if (!b) return;
+  stream = new EventSource(`/v1/banks/${encodeURIComponent(b)}/events`);
+  stream.addEventListener("nodes", (e) => {
+    try {
+      for (const id of JSON.parse(e.data).ids ?? []) {
+        // Already drawn means already known — an expansion that raced the
+        // retain should not leave a badge claiming there is something new.
+        if (!graph.hasNode(String(id))) pending.add(id);
+      }
+      renderBadge();
+    } catch { /* a malformed frame is not worth breaking the stream over */ }
+  });
+  // The server sends this when a subscriber has fallen behind its ring
+  // buffer. The browser cannot know what it missed, so it says so rather than
+  // showing a count it cannot back up.
+  stream.addEventListener("reload", () => {
+    pending.clear();
+    newBadge.hidden = false;
+    newBadge.textContent = "bank changed — reload to catch up";
+  });
+  // `EventSource` reconnects on its own; a logged error per drop would be
+  // noise on a laptop that sleeps.
+  stream.onerror = () => {};
+}
+
+function renderBadge() {
+  newBadge.hidden = pending.size === 0;
+  if (pending.size) {
+    newBadge.textContent = `${pending.size} new — click to add`;
+  }
+}
+
+/** Adding is the reader's gesture, so it behaves like an expansion: the nodes
+ *  join, the interlinks are fetched, and the layout settles. */
+async function absorbPending() {
+  const ids = [...pending];
+  if (!ids.length || !graph.order) return;
+  pending.clear();
+  renderBadge();
+  try {
+    const out = await api(
+      `/v1/banks/${encodeURIComponent(bank())}/graph?limit=2000&ids=${ids.join(",")}`,
+    );
+    for (const n of out.nodes ?? []) {
+      addNode(n.id, {
+        x: (Math.random() - 0.5) * 4,
+        y: (Math.random() - 0.5) * 4,
+        factType: n.type,
+        text: n.text,
+        label: n.text,
+      });
+    }
+    for (const l of out.links ?? []) addEdge(l.from, l.to, l.type, l.weight);
+    await fillInterlinks();
+    restyleEdges();
+    relayout();
+    reportGraph(`+${(out.nodes ?? []).length} just retained`);
+  } catch (e) {
+    reportGraph(`could not add: ${e.message}`);
+  }
+}
+
 // --- boot -----------------------------------------------------------------
 
 $("#detail-close").addEventListener("click", () => { detailPanel.hidden = true; });
 $("#f-apply").addEventListener("click", drawFiltered);
+newBadge.addEventListener("click", absorbPending);
+bankSel.addEventListener("change", watchBank);
 // Link-type toggles restyle what is already drawn — no refetch, because the
 // edges are all present and only their visibility changes.
 const restyleLive = () => {
@@ -707,6 +793,7 @@ $("#search-form").addEventListener("submit", (e) => {
       ...usable.map((b) => el("option", { value: b.bank_id }, b.bank_id)),
     );
     if (!usable.length) statusLine.textContent = "No banks yet.";
+    else watchBank();
   } catch (e) {
     statusLine.textContent = `Cannot reach the daemon: ${e.message}`;
     statusLine.className = "error";

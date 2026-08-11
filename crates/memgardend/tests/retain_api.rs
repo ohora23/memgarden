@@ -115,6 +115,7 @@ fn build(
         consolidating: Default::default(),
         refreshing: Default::default(),
         retain_tx,
+        events: memgardend::events::channel(),
     };
     let app = routes::router(state.clone());
     (Harness { app, db }, retain_rx, state)

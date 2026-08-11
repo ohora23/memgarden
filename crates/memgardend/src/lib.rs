@@ -3,6 +3,7 @@ pub mod embed;
 pub mod embed_task;
 pub mod entities;
 pub mod error;
+pub mod events;
 pub mod extract;
 pub mod json;
 pub mod links;

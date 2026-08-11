@@ -1343,6 +1343,7 @@ fn backlog_state(
             consolidating: Default::default(),
             refreshing: Default::default(),
             retain_tx,
+            events: crate::events::channel(),
         },
         retain_rx,
     ))
@@ -2869,6 +2870,7 @@ mod tests {
             consolidating: Default::default(),
             refreshing: Default::default(),
             retain_tx,
+            events: crate::events::channel(),
         };
 
         assert!(matches!(

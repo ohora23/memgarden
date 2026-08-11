@@ -67,4 +67,8 @@ pub struct AppState {
     /// endpoint reserves a slot with `try_reserve` and answers 429 when the
     /// queue is full rather than buffering transcripts in RAM.
     pub retain_tx: mpsc::Sender<RetainTask>,
+    /// E4's notification fan-out. Cloned per subscriber by the SSE route;
+    /// publishing when nobody is listening is a no-op, so the retain path
+    /// pays nothing for a daemon with no browser attached.
+    pub events: crate::events::Publisher,
 }
