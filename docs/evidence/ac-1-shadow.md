@@ -109,3 +109,72 @@ highest-value class a memory system has, so this is not a rounding error.
 Both legs are independent of retain throughput now. The throughput problem is
 still real and still unfixed — it is what makes `mode = full` premature — but it
 is no longer what blocks AC-1.
+
+---
+
+## The shadow leg, measured (2026-08-12)
+
+The accumulation this document asked for had already happened. **69 records**
+were written after the seed, none of them thin (`returned` 13–20, p50 20,
+633–1,020 tokens), and every one of them joins a legacy injection: the hook
+attaches legacy's `<hindsight_memories>` to the transcript as an `attachment`
+record, so the pairing is exact rather than inferred — **69 of 69 matched
+within 0.1 s** on session id.
+
+Both sides were then compared item by item, normalising away the timestamp and
+type suffix and matching on containment or a 0.82 similarity ratio.
+
+| | legacy | MemGarden |
+|---|---|---|
+| items per prompt | p50 23 | p50 20 |
+| characters per prompt | p50 3,278 | p50 2,887 |
+| **self-duplication** | **10.7%** (163/1,521) | **7.5%** (99/1,323) |
+| shared with the other system | — | 50.7% of its unique items |
+| items the other system did not return | 49.3% | 51.3% |
+
+**Half of each injection is the other system's.** That is why AC-1 is a user
+judgement and not an aggregate: whether the other half is better or worse is a
+question about content. One example, on the prompt *"재부팅할께. 현재 진행중인
+작업들을 재부팅후에도 문제 없게 정리해줘"*: MemGarden's unique half was that
+day's three unresolved defects, the CI registration failure and the
+in-flight PRs; legacy's unique half was two-day-old bisection detail and
+background command ids. A single sample proves nothing, and it is the reason
+the comparison is being read by a person rather than scored.
+
+### The one defect the comparison found
+
+**7.5% of MemGarden's injected items restated another item in the same
+injection.** All 99 were `world` + `observation` pairs — no other shape
+occurred. Consolidation (CE-9a) writes an observation that restates the facts
+it was built from, and both ends can rank for the same query.
+
+Legacy has the same flaw, worse (10.7%), so this is not a parity gap. It is a
+gap MemGarden can close and legacy structurally cannot: `node_sources` records
+the pairing at consolidation time, so the fix reads data instead of guessing
+at similarity. `recall::dedupe_restatements` drops whichever end ranks lower,
+before the token budget is applied, so the freed slot goes to the next
+candidate rather than being lost.
+
+Measured on the live bank, query *"importer normalizes entity names"*:
+
+```
+before   returned 20   tokens 784   self-duplicates 2
+after    returned 20   tokens 871   self-duplicates 0
+```
+
+Latency is unaffected — the provenance comes from `search::hydrate`, which
+every candidate already passes through, so the fix adds one indexed statement
+to an existing blocking hop rather than a new one (this module's own comments
+warn that each extra `spawn_blocking` is a scheduler round trip on the hot
+path). 120 recalls against the live bank after the change:
+
+```
+p50 7.4 ms   p90 8.4 ms   p95 8.7 ms   max 23.0 ms
+AC-2: p50 ≤35 ms PASS · p95 ≤60 ms PASS
+```
+
+### Still outstanding
+
+The user judgement itself. The 69 pairs render to a local page — prompt,
+both injections side by side, what each system returned alone — with a
+verdict per pair. Nothing about the corpus decision below has changed.

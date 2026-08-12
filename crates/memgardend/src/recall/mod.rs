@@ -166,6 +166,55 @@ impl RecallOutcome {
     }
 }
 
+/// Removes a candidate that another candidate already restates.
+///
+/// `node_sources` records, at consolidation time, that an observation was
+/// built from a set of facts (CE-9a). When both ends of such a pair rank into
+/// the same result set the injection carries one memory twice — measured at
+/// 7.5% of injected items in the AC-1 shadow comparison.
+///
+/// The **higher-ranked** end survives, whichever type it is. Preferring the
+/// observation unconditionally would be a claim that consolidation never
+/// loses detail, which is not established; the ranking already expresses what
+/// this particular query wanted.
+///
+/// `scored` must already be sorted best-first — the index *is* the rank.
+///
+// ponytail: one pass, no transitive closure. A source that is itself a
+// sourced observation could in principle chain (A restates B restates C) and
+// this would only collapse the pairs it sees; consolidation does not produce
+// those today, and the cost of being wrong is one extra item, not a wrong
+// one.
+fn dedupe_restatements(
+    scored: &mut Vec<(f64, RecallItem)>,
+    by_id: &std::collections::HashMap<i64, CandidateRow>,
+) {
+    if scored.len() < 2 {
+        return;
+    }
+    let rank: std::collections::HashMap<i64, usize> = scored
+        .iter()
+        .enumerate()
+        .map(|(i, (_, item))| (item.id, i))
+        .collect();
+
+    let mut drop: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for (i, (_, item)) in scored.iter().enumerate() {
+        let Some(row) = by_id.get(&item.id) else {
+            continue;
+        };
+        for source_id in &row.sources {
+            let Some(&j) = rank.get(source_id) else {
+                continue; // the source did not rank; nothing is duplicated
+            };
+            drop.insert(if i <= j { *source_id } else { item.id });
+        }
+    }
+    if !drop.is_empty() {
+        scored.retain(|(_, item)| !drop.contains(&item.id));
+    }
+}
+
 /// A candidate survives if its row is loaded and passes both the type and
 /// the tag filter. A free function rather than a closure because `by_id`
 /// grows once the graph arm hydrates its new nodes, and a closure would hold
@@ -473,6 +522,26 @@ pub async fn recall(
     // Stable sort: candidates whose boosts leave them tied keep RRF order.
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
+    // --- Drop a fact about to be injected twice. -------------------------
+    //
+    // Consolidation writes an observation that restates the facts it was
+    // built from (CE-9a), and both can rank into the same result set — the
+    // AC-1 shadow comparison found 99 of 1,323 injected items were such a
+    // pair, 7.5% of the budget spent saying one thing twice. (Legacy has the
+    // same flaw at 10.7%, so this is not a parity gap; it is a gap we can
+    // close and legacy structurally cannot, because `node_sources` records
+    // the pairing and legacy has no equivalent.)
+    //
+    // **Whichever ranked higher survives.** Not "always keep the
+    // observation": an observation is more consolidated but sometimes drops
+    // detail its source carried, and the ranking already encodes which one
+    // this query wanted. Deduplicating by rank makes no claim about which
+    // fact type is better.
+    //
+    // Before the budget truncation below, so the freed slots are filled by
+    // the next candidate rather than lost.
+    dedupe_restatements(&mut scored, &by_id);
+
     // Two distinct knobs (architect recommendation A): `budget` decides how
     // deep the candidate list is carried, `max_tokens` decides how much text
     // is injected. Legacy sends both and the fork's coding profile sends
@@ -699,5 +768,109 @@ mod tests {
     #[test]
     fn format_utc_survives_a_garbage_timestamp() {
         assert_eq!(format_utc(i64::MAX), i64::MAX.to_string());
+    }
+
+    // --- dedupe_restatements (AC-1) -------------------------------------
+
+    fn ranked(id: i64) -> (f64, RecallItem) {
+        (
+            0.0,
+            RecallItem {
+                id,
+                uuid: format!("u{id}"),
+                text: format!("t{id}"),
+                fact_type: FactType::World,
+                context: None,
+                tags: vec![],
+                occurred_start: None,
+                occurred_end: None,
+                mentioned_at: None,
+                scores: Scores {
+                    final_score: 0.0,
+                    semantic: None,
+                    keyword: None,
+                    rrf: 0.0,
+                    recency: 0.0,
+                    temporal: 0.0,
+                    proof: 0.0,
+                },
+            },
+        )
+    }
+
+    fn sourced(id: i64, sources: Vec<i64>) -> CandidateRow {
+        CandidateRow {
+            id,
+            uuid: format!("u{id}"),
+            fact_type: FactType::Observation,
+            text: format!("t{id}"),
+            context: None,
+            occurred_start: None,
+            occurred_end: None,
+            mentioned_at: None,
+            tags: vec![],
+            proof_count: sources.len() as i64,
+            sources,
+        }
+    }
+
+    fn id_list(scored: &[(f64, RecallItem)]) -> Vec<i64> {
+        scored.iter().map(|(_, i)| i.id).collect()
+    }
+
+    /// Rank decides, not fact type: the observation is second here, so it is
+    /// the one that goes.
+    #[test]
+    fn the_lower_ranked_end_of_a_restatement_is_dropped() {
+        let mut scored = vec![ranked(1), ranked(2)]; // 1 outranks 2
+        let by_id = std::collections::HashMap::from([(2, sourced(2, vec![1]))]);
+        dedupe_restatements(&mut scored, &by_id);
+        assert_eq!(
+            id_list(&scored),
+            vec![1],
+            "the source outranked its observation"
+        );
+
+        // Same pair, opposite ranking — now the source is the one dropped.
+        let mut scored = vec![ranked(2), ranked(1)];
+        let by_id = std::collections::HashMap::from([(2, sourced(2, vec![1]))]);
+        dedupe_restatements(&mut scored, &by_id);
+        assert_eq!(
+            id_list(&scored),
+            vec![2],
+            "the observation outranked its source"
+        );
+    }
+
+    /// An observation whose sources did not rank keeps its place: nothing is
+    /// being said twice.
+    #[test]
+    fn a_source_that_did_not_rank_removes_nothing() {
+        let mut scored = vec![ranked(2), ranked(3)];
+        let by_id = std::collections::HashMap::from([(2, sourced(2, vec![99]))]);
+        dedupe_restatements(&mut scored, &by_id);
+        assert_eq!(id_list(&scored), vec![2, 3]);
+    }
+
+    /// A multi-source observation that outranks them collapses all of them —
+    /// that is the whole point of `proof_count > 1`.
+    #[test]
+    fn a_multi_source_observation_absorbs_every_source_it_outranks() {
+        let mut scored = vec![ranked(10), ranked(1), ranked(2), ranked(3)];
+        let by_id = std::collections::HashMap::from([(10, sourced(10, vec![1, 2, 3]))]);
+        dedupe_restatements(&mut scored, &by_id);
+        assert_eq!(id_list(&scored), vec![10]);
+    }
+
+    /// The pair is data (`node_sources`), not similarity: two unrelated
+    /// candidates with the same text are both kept, because nothing recorded
+    /// that one was built from the other.
+    #[test]
+    fn identical_text_without_provenance_is_left_alone() {
+        let mut scored = vec![ranked(1), ranked(2)];
+        let by_id =
+            std::collections::HashMap::from([(1, sourced(1, vec![])), (2, sourced(2, vec![]))]);
+        dedupe_restatements(&mut scored, &by_id);
+        assert_eq!(id_list(&scored), vec![1, 2]);
     }
 }
