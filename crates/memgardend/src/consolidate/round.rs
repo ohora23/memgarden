@@ -1283,6 +1283,7 @@ mod tests {
             mentioned_at: None,
             tags: vec![],
             proof_count: 1,
+            sources: vec![],
         }
     }
 
@@ -1615,6 +1616,7 @@ mod tests {
                     mentioned_at: None,
                     tags: vec![],
                     proof_count: 1,
+                    sources: vec![],
                 },
                 sources: vec![],
             })

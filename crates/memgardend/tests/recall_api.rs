@@ -1491,7 +1491,12 @@ async fn proof_count_reaches_the_score_breakdown() {
             seed(
                 &db,
                 FactType::World,
-                &format!("retain worker source {i}"),
+                // Deliberately off-query: recall's restatement dedupe (AC-1)
+                // drops whichever end of a provenance pair ranks lower, so a
+                // source that this query also retrieves would sometimes take
+                // the observation this test is measuring with it. Sources
+                // that do not match the query cannot pair against it.
+                &format!("unrelated ledger note {i}"),
                 &[],
             )
         })
@@ -1514,6 +1519,11 @@ async fn proof_count_reaches_the_score_breakdown() {
     )
     .unwrap();
 
+    // A fact no observation was built from: recall's restatement dedupe
+    // (AC-1) removes a source that its own observation outranks, so the
+    // neutral-proof assertion needs a fact that cannot be deduped away.
+    let unrelated = seed(&db, FactType::World, "retain worker plain note", &[]);
+
     let out = recall(&app, json!({ "query": "retain worker" })).await;
     let by_id: std::collections::HashMap<i64, &Value> = out["results"]
         .as_array()
@@ -1525,9 +1535,63 @@ async fn proof_count_reaches_the_score_breakdown() {
     // 0.5 + ln(3)/10.
     let three = by_id[&well_evidenced]["scores"]["proof"].as_f64().unwrap();
     assert!((three - (0.5 + 3f64.ln() / 10.0)).abs() < 1e-12, "{three}");
-    // One source is exactly neutral, and so is every plain fact.
+    // One source is exactly neutral, and so is a plain fact.
     assert_eq!(by_id[&single_source]["scores"]["proof"], 0.5);
-    for f in &facts {
-        assert_eq!(by_id[f]["scores"]["proof"], 0.5, "fact {f}");
-    }
+    assert_eq!(by_id[&unrelated]["scores"]["proof"], 0.5);
+}
+
+/// **AC-1.** Consolidation writes an observation that restates the facts it
+/// was built from, and both ends can rank for the same query — 7.5% of the
+/// items in the shadow comparison were such a pair, budget spent saying one
+/// thing twice.
+///
+/// The pairing is read from `node_sources`, not guessed from similarity, and
+/// the surviving end is whichever ranked higher rather than a fixed
+/// preference for one fact type. So this asserts the invariant rather than a
+/// specific winner: never both, and the pair costs exactly one slot.
+#[tokio::test]
+async fn an_observation_and_the_fact_it_restates_are_never_both_injected() {
+    let (app, db) = test_app(|_| {});
+    banks::create(&db, "b1", None, None).unwrap();
+
+    let source = seed(
+        &db,
+        FactType::World,
+        "the importer normalizes entity names and stops there",
+        &[],
+    );
+    let observation = memgarden_store::consolidate::insert_observation(
+        &db,
+        "b1",
+        "the importer normalizes entity names and stops there.",
+        &vec![0.1f32; memgarden_core::EMBEDDING_DIM],
+        &[source],
+    )
+    .unwrap();
+    // An unrelated fact matching the same query, so the freed slot is
+    // demonstrably reused rather than simply lost.
+    let other = seed(
+        &db,
+        FactType::World,
+        "the importer skips an empty bank entirely",
+        &[],
+    );
+
+    let out = recall(&app, json!({ "query": "importer normalizes" })).await;
+    let ids: Vec<i64> = out["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_i64().unwrap())
+        .collect();
+
+    assert!(
+        ids.contains(&source) != ids.contains(&observation),
+        "exactly one end of the pair must survive, got {ids:?} \
+         (source {source}, observation {observation})"
+    );
+    assert!(
+        ids.contains(&other),
+        "the slot freed by the dedupe should be filled by the next candidate"
+    );
 }

@@ -186,6 +186,16 @@ pub struct CandidateRow {
     /// Distinct source facts backing an observation (CE-9a). 0 for every
     /// other fact type, which `recall::scoring::proof_norm` reads as neutral.
     pub proof_count: i64,
+    /// `node_sources.source_id` — the facts this observation was consolidated
+    /// from. Empty for anything that is not a sourced observation.
+    ///
+    /// Loaded here rather than in a later pass because recall needs it to
+    /// avoid injecting one fact twice (an observation and the source it
+    /// restates can both rank), and `hydrate` is the one place every
+    /// candidate passes through — including the ones the graph arm adds.
+    /// Fetching it later would cost a whole extra `spawn_blocking` on the hot
+    /// path, which this module's own comments warn against.
+    pub sources: Vec<i64>,
 }
 
 /// Loads `CandidateRow`s for `ids` **within `bank_id`**, in arbitrary order
@@ -256,6 +266,31 @@ pub fn hydrate(db: &Db, bank_id: &str, ids: &[i64]) -> Result<Vec<CandidateRow>>
         tags_by_node.entry(node_id).or_default().push(tag);
     }
 
+    // Same shape as the tag pass above, and cheap for the same reason: the
+    // `node_sources` primary key serves it. Measured at 0.078 ms for 400 ids
+    // on the live database.
+    let mut stmt = conn
+        .prepare(
+            "SELECT observation_id, source_id FROM node_sources
+             WHERE observation_id IN (SELECT value FROM json_each(?1))
+             ORDER BY observation_id, source_id",
+        )
+        .map_err(store_err)?;
+    let mut sources_by_node: std::collections::HashMap<i64, Vec<i64>> =
+        std::collections::HashMap::new();
+    let source_rows = stmt
+        .query_map(params![ids_json], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })
+        .map_err(store_err)?;
+    for row in source_rows {
+        let (observation_id, source_id) = row.map_err(store_err)?;
+        sources_by_node
+            .entry(observation_id)
+            .or_default()
+            .push(source_id);
+    }
+
     raw.into_iter()
         .map(
             |(id, uuid, fact_type, text, context, start, end, mentioned, proof_count)| {
@@ -270,6 +305,7 @@ pub fn hydrate(db: &Db, bank_id: &str, ids: &[i64]) -> Result<Vec<CandidateRow>>
                     mentioned_at: mentioned,
                     tags: tags_by_node.remove(&id).unwrap_or_default(),
                     proof_count,
+                    sources: sources_by_node.remove(&id).unwrap_or_default(),
                 })
             },
         )
