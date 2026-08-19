@@ -307,3 +307,8 @@ Configuration: `config.example.toml` → `~/.config/memgarden/config.toml`, env 
 
 - [memgarden-legacy](https://github.com/ohora23/memgarden-legacy) — Python-era system: role-split architecture, ops runbook, fork patches, memdash/memcompare tooling, and the measurement framework whose numbers set this rebuild's acceptance bars
 - [ohora23/hindsight `claude-code-integration`](https://github.com/ohora23/hindsight) — the fork whose caps, tags, and profile presets are ported server-side here
+
+## License
+
+MIT — see [`LICENSE`](LICENSE). Vendored browser libraries keep their own
+notices in `crates/memgardend/ui/vendor/`.
