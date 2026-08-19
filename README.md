@@ -66,14 +66,14 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 | B — Core pipeline | embeddings CE-4 · Ollama extraction CE-5a · retain ingest CE-5b · hybrid recall CE-6 · entities/graph CE-7 · temporal CE-8 · consolidation CE-9 · reflect CE-10 · reranker CE-11, plus vector-space tagging AX-1 and the recall-quality harness AX-2 | ✅ merged |
 | C — Hooks | session/turn state ✅ · CLI foundation + hook-latency harness ✅ · session-start ✅ · recall ✅ · transcript delta ✅ · retain ✅ · install & cutover switch ✅ | ✅ code-complete |
 | D — Migration | read-only legacy snapshot MG-1a ✅ · archive → SQLite importer MG-1b ✅ · AC-3 verifier MG-2 ✅ | ✅ **code-complete** |
-| E — UI & metrics | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views | ⏳ |
-| F — Cutover | quality-parity A/B + performance gates + lossless migration → legacy shutdown | ⏳ |
+| E — UI & metrics | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views, the bank survey | ✅ merged |
+| F — Cutover | quality-parity A/B + performance gates + lossless migration → legacy shutdown | ⏳ AC-1 run, awaiting signature |
 
 **Where the cutover gates stand.** All three must pass before the old system is shut down:
 
 | | requirement | state |
 |---|---|---|
-| **AC-1 quality** | recall quality ≥ legacy on a fixed query set, human-judged | 🔄 **collecting** — shadow-mode install logs what MemGarden *would* have injected, prompt by prompt, while legacy still drives the session. The first 33 records were taken against a bank live retain had filled to 312 nodes of 45 MB posted, so they are not a baseline; the bank has since been seeded from the legacy archive and recording continues against 5,333 nodes. [What was measured and what is left](docs/evidence/ac-1-shadow.md) |
+| **AC-1 quality** | recall quality ≥ legacy on a fixed query set, human-judged | 🔄 **run, awaiting the user's signature** — 20 queries to both live systems on 2026-08-12, against criteria committed before the first query: **6 better / 2 equivalent / 5 worse / 7 unjudgeable**, so the gate condition holds by one query on 13 judgeable. Latency p50 **11.5 ms** to legacy's **51.0 ms**. The PRD assigns the judgement to the user, so this is a recommendation with its evidence under it. [Criteria](docs/evidence/ac-1-criteria.md) · [Result](docs/evidence/ac-1-memcompare.md) · [The fix that was measured and not shipped](docs/evidence/ac-1-ranking-attempt.md) |
 | **AC-2 performance** | recall p50 ≤35ms / p95 ≤60ms, hook overhead <10ms, retain cap savings held | ✅ **met** — 7.1/7.8ms recall, **0.85ms of hook per turn**, −75…−87% savings |
 | **AC-3 lossless migration** | node/link/document counts match across the legacy banks + 50-sample content diff | ✅ **met on the live database**, by the instrument rather than the importer — `mg_migrate verify` exits 0 against the cutover import of 2026-08-08: every Tier-1 equality green (28 documents, 5,311 nodes, 201 causal, 2,125 provenance edges, 3,945 entities), temporal self-consistency exact at 105,199 in both directions, and **no content difference in the 50-sample diff**. Report: [`docs/evidence/ac-3.json`](docs/evidence/ac-3.json) |
 
@@ -124,9 +124,11 @@ deaths was a value read back as malformed JSON rather than a crash, which is a s
 memory under test load" does not cover. Until this closes, a PR's test tally carries the caveat.
 [Details, the numbers, and what to try next](book/src/roadmap.md).
 
-**Next up, in order:** AC-1's two remaining legs — fresh shadow records against the seeded bank,
-and `recall_bench` against `gold/` — then the web UI, then Phase F's remaining work, which is
-now the switch to `mode = full` and the legacy shutdown rather than the import.
+**Next up, in order:** the user's signature on AC-1, then the switch to `mode = full` and the
+legacy shutdown — Phase F's import leg is already done. Two things stand outside that path and
+should be fixed before any further ranking work: the gold harness no longer reproduces its own
+ratified baseline, and AC-1's unjudgeable third is partly a question about what the corpus is
+supposed to contain.
 
 ## Claude Code hooks
 

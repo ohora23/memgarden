@@ -15,8 +15,8 @@ is allowed to replace the system it is copying.
 | **B — Core pipeline** | embeddings · Ollama extraction · retain ingest · hybrid recall · entities/graph · temporal · consolidation · reflect · reranker, plus vector-space tagging and the recall-quality harness | ✅ merged |
 | **C — Hooks** | session/turn state · CLI foundation + latency harness · session-start · recall · transcript delta reader · retain · the cutover switch | ✅ code-complete |
 | **D — Migration** | read-only legacy snapshot (MG-1a) ✅ · archive → SQLite importer (MG-1b) ✅ · the AC-3 verifier (MG-2) ✅ | ✅ code-complete |
-| **E — UI & metrics** | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views | ⏳ |
-| **F — Cutover** | run the AC-1..3 gates → shut the legacy system down → final record in the legacy repo | ⏳ |
+| **E — UI & metrics** | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views, the bank survey | ✅ merged |
+| **F — Cutover** | run the AC-1..3 gates → shut the legacy system down → final record in the legacy repo | ⏳ AC-1 run, awaiting the user's signature |
 
 Dependencies are `A → B → (C, D, E in parallel) → F`. The graph viewer needs
 the link data from Phase B and nothing from C or D.
@@ -27,15 +27,43 @@ the link data from Phase B and nothing from C or D.
 
 The old system is shut down when **all three** are met, and not before.
 
-### AC-1 — quality parity — *collectable now, not yet collected*
+### AC-1 — quality parity — *run, awaiting the user's signature*
 
 Recall quality on a fixed query set (8 existing A/B log entries + 12 new) must
 be at least equal to the current system, judged by the user.
 
-The instrument exists: install the hooks in `shadow` mode alongside the legacy
-ones and every prompt appends what MemGarden *would* have injected to
-`shadow-recall.jsonl`, while the bank fills from the same real sessions. That
-log plus the graded gold set is the evidence.
+Run 2026-08-12, 20 queries to both live systems under the same knobs, against
+criteria committed **before** the first query was sent
+(`docs/evidence/ac-1-criteria.md`).
+
+| | |
+|---|---|
+| better | **6** |
+| equivalent | 2 |
+| worse | **5** |
+| unjudgeable (both scored 0 hits) | 7 |
+
+**The gate condition (`worse ≤ better`) holds, 6 to 5** — by one query, on 13
+judgeable of 20. Latency on the same set: p50 **11.5 ms** against legacy's
+**51.0 ms**. Full result and the five losses quoted:
+`docs/evidence/ac-1-memcompare.md`.
+
+The PRD assigns this judgement to the user, so what is recorded here is a
+recommendation and the evidence under it; the gate is not met until the user
+signs it.
+
+Three findings from the run outlive it:
+
+* **shadow prompts are not a query set.** Five of six real prompts replayed
+  standalone were unjudgeable — "이게 맞나?" has no referent without the
+  conversation around it. The instrument works; prompts lifted from a live
+  session are the wrong thing to feed it.
+* **conclusion-type questions are answered in neither corpus.** They live in
+  the curated `MEMORY.md`, which neither system captures. Either AC-1 gains a
+  second corpus or it is explicitly scoped to auto-captured recall — an open
+  decision, recorded in `docs/evidence/ac-1-shadow.md`.
+* **the diagnosis offered for the five losses did not survive measurement.**
+  See the ranking attempt below.
 
 ### AC-2 — performance — ✅ **met**
 
@@ -99,6 +127,46 @@ PR discipline) are tracked but do not gate the shutdown.
 ## Known limits and open defects
 
 Ordered by what blocks what.
+
+### The gold harness no longer reproduces its own ratified baseline — AX-2, found 2026-08-12
+
+`bench` against the byte-identical frozen corpus returns **0.379 / 0.516 /
+0.317** where the ledger records **0.3881 / 0.5221 / 0.3236** as reproducible
+to the digit. The recall path is not the cause: `97b4df3` built from a
+worktree and benched against the same database matches the current build
+exactly, so nothing merged since moved it. What differs between runs is the
+*import* — embeddings and generated semantic links — which points at
+non-determinism there.
+
+**Why it blocks:** a benchmark that cannot reproduce its own baseline cannot
+ratify a change. Same-database A/B comparisons still hold, which is why the
+ranking attempt below could conclude anything at all; absolute numbers must
+not be quoted against the older ones until this is fixed.
+
+### The ranking fix for AC-1's losses was measured and not shipped — 2026-08-12
+
+The memcompare write-up proposed that four of the five losses came from
+action records ("X was executed") outranking substance. Two candidate fixes
+were built and measured; **neither shipped**, and the diagnosis is downgraded
+to an unsupported hypothesis. Full numbers:
+`docs/evidence/ac-1-ranking-attempt.md`.
+
+* **Narrowing the recency window** (365 d → 30/7/3 d) buys MRR up to +0.133
+  and costs recall@5, 0.218 → 0.192 — the same trade the CE-11 reranker was
+  turned off for. The best window also happens to match the gold corpus's own
+  span, which is a fit to the corpus, not a fix.
+* **Penalising action records** scores 20/20 on inspection and moves the
+  benchmark +0.003–0.006 **at every strength, including 0.0** — noise.
+  It also matches 5 of the 276 nodes the gold set labels *relevant*, one of
+  them the `doctor --dry-run` record the AC-1 judgement called noise. The
+  labeller and the judge disagree, and the judge also wrote the system.
+
+What the run did establish: the score spread is the problem. On the worst
+loss all twelve items land within **0.042** of each other, recency is 0.97 on
+every one (a two-week bank against a 365-day decay) and proof is neutral, so
+semantic similarity alone orders the list — and it scores an action record at
+0.750 against a genuinely relevant item at 0.752.
+
 
 ### `resolve_fact` runs against the whole migrated bank after cutover — CE-7, established by MG-1b and not fixed by it
 
