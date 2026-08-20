@@ -130,7 +130,9 @@ memory under test load" does not cover. Until this closes, a PR's test tally car
 stopped, and MemGarden runs under a systemd user unit as the only memory system wired to Claude Code
 on this machine. 811 memories that existed only in legacy were migrated first — two banks the
 original migration never covered — and `mg_migrate verify` passes on both.
-[What the cutover took, including what it nearly got wrong](docs/evidence/cutover.md).
+[What the cutover took, including what it nearly got wrong](docs/evidence/cutover.md). The Python-era
+system's own repository carries [the final record](https://github.com/ohora23/memgarden-legacy),
+which is where its reproduction steps and runbook still live.
 
 AC-4's rendering benchmark [was taken on 2026-08-19](docs/evidence/ac-4-render.md) and is met —
 3,200 nodes and 57,890 edges at **p50 3.6ms / p95 5.3ms** under pan and zoom, a 3.2× margin on a

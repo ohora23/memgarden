@@ -95,7 +95,7 @@
 **Phase C. 훅 (HK-1~2)**: 서브커맨드 4종(+턴/retention 상태) → 글로벌 settings 전환 스위치
 **Phase D. 마이그레이션 (MG-1~2)**: pg→SQLite 익스포터/임포터 → AC-3 검증 스크립트
 **Phase E. UI·지표 (DB-1, GV-1~3, MX-2)**: 대시보드 → 그래프 API → WebGL 뷰어(마우스 조작) → 실시간(SSE)+필터 → 지표·원장 뷰
-**Phase F. 전환**: AC-1~3 게이트 실행 → 구시스템 종료 → legacy 레포에 최종 기록
+**Phase F. 전환**: AC-1~3 게이트 실행 → 구시스템 종료 → legacy 레포에 최종 기록 — ✅ **2026-08-21 완료.** 게이트 서명(08-20) → 미이전 2뱅크 811노드 구제 → 훅 제거·데몬 종료 → [최종 기록](https://github.com/ohora23/memgarden-legacy). 경과는 `docs/evidence/cutover.md`
 
 **v2 후보 (v1 범위 밖, 착수 금지)**: EX-1 Obsidian vault 내보내기(MemoryNode→마크다운+백링크, Library vault 합류 — 뷰어 대체가 아닌 보관·열람 보완), 컨솔리데이션 고도화, LLM 저지 적중률 지표(Layer 3)
 
