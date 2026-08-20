@@ -136,3 +136,47 @@ final order == RRF order? True
    this corpus.
 4. The panel is independent of the author, which the 2026-08-12 run was not.
    That is the one limit this run removes.
+
+---
+
+## Signed — 2026-08-20
+
+**The user signed AC-1 on this evidence.** The PRD assigns the judgement to
+the user and it stayed there through three rounds of measurement; what is
+recorded above is the recommendation the signature rests on.
+
+**The number signed is the shipping configuration.** Between the panel rounds
+the semantic boost landed ([CE-6b](../design/ce-6b-semantic-boost.md)), so the
+run that matches what a user gets today is round 3:
+
+| | better | worse | equivalent |
+|---|---|---|---|
+| `semantic_alpha = 0` (legacy scoring) | 12 | 4 | 4 |
+| **`semantic_alpha = 0.1` (shipped)** | **13** | **5** | **1** |
+
+Both satisfy `worse ≤ better`. Nothing unjudgeable in either.
+
+**Scope, decided with the signature.** AC-1 measures the recall quality of
+*memories the hooks captured automatically*. Conclusion-type questions are
+answered in the curated `MEMORY.md`, which neither system captures, so they
+are outside this gate rather than a failure of it — closing the open question
+`ac-1-shadow.md` left. Recall over curated notes is a v2 question and does not
+gate the cutover.
+
+**The four losses stay open, and they are not a ranking problem.** Three
+weight changes have been measured against them — a recency window, an
+action-record penalty, and the semantic boost — and none moved them:
+
+* **ab5** — topic drift: the upstream PR's status missed, the budget spent on
+  this project's own PR stack.
+* **en9**, **en15** — the fix retrieved far below the cut while symptoms and
+  command records occupy the window.
+* **en14** — nothing in the bank answers it. No ranking change reaches this
+  one.
+
+They are tracked as quality work after the cutover, not as gate conditions.
+
+**With AC-2 and AC-3 already met, all three cutover gates are now met.** What
+remains is procedural: remove the legacy hooks — `~/.claude/settings.json`
+currently runs both systems side by side — shut the legacy daemon down, and
+write the final record in the legacy repository.
