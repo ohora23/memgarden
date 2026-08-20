@@ -91,7 +91,17 @@ Discard them as a baseline.
    baseline (`gold/results.jsonl` line 8) **bit-identically** across all six
    aggregates — recall@10 0.3881002983944160, MRR 0.5221088435374149, nDCG@10
    0.3235625243282635, recall@5 0.2256905676023324, recall@1 0.0348595848595849,
-   ceiling 0.8587764359823182, 14 of 20 queries scored. Nothing in Phase D moved
+   ceiling 0.8587764359823182, 14 of 20 queries scored.
+
+   > **Superseded, and left standing as written.** Line 8 is the *thin-graph*
+   > number. CE-7's semantic-link fix (PR #2) took the corpus from 681 semantic
+   > edges to 43,830 and the denser graph cost recall, so the standing baseline
+   > has been **0.3792 / 0.5162 / 0.3168** since ledger line 11 — see the table
+   > in `README.md` and `docs/design/mg-1-migration.md`. Quoting the figures
+   > above as current is what produced a false non-determinism report on
+   > 2026-08-12; `bench` now prints the newest matching ledger row beside every
+   > run so the comparison no longer depends on which document was read.
+ Nothing in Phase D moved
    retrieval. It runs on its own database, not the live one: `bench` refuses when
    the node count differs from the corpus line count.
 

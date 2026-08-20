@@ -221,6 +221,46 @@ arm. This table is the index; the superseded figures are kept below because
 Lines 3-4, 6-7 and 9-10 are the matching `top_k = 10` / `top_k = 20` reranked
 arms for each generation (CE-11).
 
+**And `bench` now prints it, because this table was not enough.** On
+2026-08-12 a run was compared against line 8 rather than line 12 and written
+up as evidence that the harness had become non-deterministic — a false defect
+that reached the roadmap and cost an investigation to withdraw. The
+information was correct in three places at the time, including this table; the
+run itself said nothing, so the comparison happened against whichever figure
+the reader had open.
+
+Every `bench` run now ends with the newest ledger row matching its corpus
+digest **and** its `rerank_top_k`, the delta to it, and
+`reproduces line N to the digit` when there is none:
+
+```
+baseline: gold/results.jsonl line 12 (eadbe0ef)
+  recall@5   0.2177540596658244 -> 0.2177540596658244  same
+  recall@10  0.3791717269658446 -> 0.3791717269658446  same
+  mrr        0.5161564625850340 -> 0.5161564625850340  same
+  nDCG@10    0.3167967967859271 -> 0.3167967967859271  same
+  reproduces line 12 to the digit
+```
+
+Three properties, each answering something the incident got wrong:
+
+* **it reads the ledger even when the run writes nothing.** A run without a
+  `results.jsonl` argument appends no row, and that is exactly the run whose
+  numbers get compared against a document instead. The ledger path falls back
+  to `results.jsonl` beside the gold file.
+* **last wins, not first and not best.** The ledger is append-only and a later
+  row at the same configuration supersedes an earlier one — the whole content
+  of the mistake.
+* **matched on `rerank_top_k` too.** A CE-11 arm and the off arm are not each
+  other's baseline; a depth never run reports no baseline rather than
+  borrowing the wrong one.
+
+Comparison is bit equality, not a tolerance. Two imports of the frozen corpus
+produce hash-identical nodes, links, entities and `vec_nodes` vectors, so any
+difference at all is a change in behaviour — and a tolerance would hide
+exactly the small signed moves this benchmark exists to measure (line 12's
++58% edges moved nothing; CE-11 at `top_k = 10` moved recall@10 by 0.0018).
+
 > **Only q17 has ever moved.** Across both re-baselines, every other query
 > reproduces digit-for-digit including its retrieved uuid list. The 2026-08-03
 > ratification changed **no retrieval at all** — `gold/results.pool.json` is

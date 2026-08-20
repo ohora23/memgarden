@@ -101,20 +101,41 @@ harness — shows +0.003.
 The 6-to-5 memcompare margin stands unchanged. It was never resting on this
 fix.
 
-## An unrelated defect this run exposed
+## The defect this run reported, and why it was not one
 
-The gold harness no longer reproduces its own ratified baseline. `ac-1-shadow.md`
-records `recall@10 0.3881002983944160, MRR 0.5221088435374149,
-nDCG@10 0.3235625243282635` as reproduced *bit-identically*; a fresh import of
-the same corpus (sha256 `baee3f40…`, byte-identical) now benches
-**0.379 / 0.516 / 0.317**.
+**Retracted 2026-08-19.** This section originally read "the gold harness no
+longer reproduces its own ratified baseline" and recommended fixing it before
+the next ranking attempt. It was a misreading, and the correction is more
+useful than the claim was.
 
-It is not the recall dedupe — checked directly, by benching commit `97b4df3`
-from a worktree against the same database: **identical to the digit**. The
-recall path is untouched by E4, E5 and E6. That leaves the import — embeddings
-and semantic-link generation — as non-deterministic across runs.
+`ac-1-shadow.md` quotes **0.3881 / 0.5221 / 0.3236** as the baseline the
+harness reproduces bit-identically. That was true when it was written — those
+figures are `gold/results.jsonl` **line 8**. Two later runs at the same corpus
+digest and the same configuration, **lines 11 and 12**, both record
+**0.3792 / 0.5162 / 0.3168**, which is what a fresh import benches today. The
+number moved for a reason that was already written down: CE-7's semantic-link
+fix took the gold corpus from 681 semantic edges to 43,830, and the denser
+graph cost recall — `README.md` tabulates it and
+`docs/design/mg-1-migration.md` explains it. Line 8 is the *thin-graph* number
+and has been superseded since PR #2.
 
-**A benchmark that cannot reproduce its own baseline cannot ratify a change.**
-Every A/B in this note is same-database, so the comparisons above hold; the
-absolute numbers should not be quoted against the older ones. Fixing this
-should come before the next ranking attempt.
+Measured before retracting, because "it is deterministic" is a claim too:
+
+| | |
+|---|---|
+| two imports of the frozen corpus into separate databases | nodes, links, entities and the raw `vec_nodes` vectors all **hash-identical** |
+| benching either database | `0.3791717269658446 / 0.5161564625850340 / 0.3167967967859271` |
+| the ledger's newest matching row (line 12, `eadbe0e`) | the same, to all sixteen digits |
+
+**The harness is reproducible. What was missing was that the run never read
+the ledger it was being compared against** — the comparison happened in a
+person's head, against a figure copied into a document months earlier.
+`recall_bench bench` now prints the newest ledger row for the same corpus and
+`rerank_top_k`, the delta to it, and `reproduces line N to the digit` when
+there is none. It reads the ledger even when the run writes nothing, since
+that is exactly the case where a stale figure in a document is the only thing
+left to compare against.
+
+The A/B results in this note are unaffected: every one of them was
+same-database, and the absolute numbers above are the current baseline rather
+than a drift away from it.

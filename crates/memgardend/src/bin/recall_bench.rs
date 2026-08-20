@@ -680,6 +680,13 @@ async fn bench(
     // caveat only exists in a file nobody opens.
     println!("\nlabels_status: {}", label_status.join(", "));
 
+    // The number this run must be read against, printed beside it. See
+    // `compare_to_ledger`.
+    let ledger_path = out_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| gold_path.with_file_name("results.jsonl"));
+    compare_to_ledger(&ledger_path, &corpus_sha, rerank_top_k, &overall);
+
     let record = json!({
         "run_at_ms": memgarden_core::now_ms(),
         "commit": std::process::Command::new("git")
@@ -747,6 +754,115 @@ async fn bench(
         println!("{}", serde_json::to_string_pretty(&pool)?);
     }
     Ok(())
+}
+
+/// The ledger row this run must be read against: the **last** line matching
+/// both the corpus digest and `rerank_top_k`, with its 1-based line number so
+/// a write-up can cite it.
+///
+/// Last, not best and not first — the ledger is append-only and a later row at
+/// the same configuration supersedes an earlier one. Reading an earlier row as
+/// the standing baseline is the exact mistake this guard was added for.
+/// Unparseable lines are skipped rather than fatal, and they still consume a
+/// line number, because the number has to match what an editor shows.
+fn latest_matching(
+    text: &str,
+    corpus_sha: &str,
+    rerank_top_k: Option<usize>,
+) -> Option<(usize, serde_json::Value)> {
+    let want = rerank_top_k.map_or(serde_json::Value::Null, |k| json!(k));
+    text.lines()
+        .enumerate()
+        .filter_map(|(i, l)| Some((i + 1, serde_json::from_str::<serde_json::Value>(l).ok()?)))
+        .filter(|(_, v)| v["corpus"]["sha256"] == corpus_sha && v["config"]["rerank_top_k"] == want)
+        .last()
+}
+
+/// Print the newest ledger entry taken under this run's corpus and
+/// configuration, and the delta to it.
+///
+/// This exists because of a mistake that cost a full investigation. The
+/// baseline was quoted from ledger line 8 (`recall@10 0.3881`) while lines 11
+/// and 12 — the two most recent runs at the same configuration — both record
+/// **0.3792**, the drop CE-7's semantic-link fix caused and that
+/// `docs/design/mg-1-migration.md` explains. A fresh import reproduced 0.3792
+/// exactly, and the harness was written up as non-deterministic on the
+/// strength of a comparison against a superseded row.
+///
+/// A ledger is only a baseline if the run reads it. Two rules follow from how
+/// the mistake happened:
+///
+/// * it reads the ledger even when `out_path` is `None` — that run writes
+///   nothing, which is exactly when a stale number in a document is the only
+///   thing left to compare against;
+/// * it matches on corpus digest **and** `rerank_top_k`, because a CE-11 run
+///   and a baseline run are not each other's baseline.
+///
+/// A missing or unparseable ledger is not an error: the first run against a
+/// new corpus has nothing to compare to and should still print its numbers.
+fn compare_to_ledger(
+    path: &Path,
+    corpus_sha: &str,
+    rerank_top_k: Option<usize>,
+    overall: &QueryMetrics,
+) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        println!(
+            "\nno ledger at {} — nothing to compare against",
+            path.display()
+        );
+        return;
+    };
+    let Some((line_no, prev)) = latest_matching(&text, corpus_sha, rerank_top_k) else {
+        println!("\nno ledger entry for this corpus at rerank_top_k={rerank_top_k:?} — first run");
+        return;
+    };
+
+    let commit = prev["commit"].as_str().unwrap_or("?");
+    println!(
+        "\nbaseline: {} line {} ({})",
+        path.display(),
+        line_no,
+        &commit[..commit.len().min(8)]
+    );
+    let mut compared = 0usize;
+    let mut identical = true;
+    for (name, now, was) in [
+        ("recall@5", overall.recall_5, &prev["overall"]["recall@5"]),
+        (
+            "recall@10",
+            overall.recall_10,
+            &prev["overall"]["recall@10"],
+        ),
+        ("mrr", overall.mrr, &prev["overall"]["mrr"]),
+        ("nDCG@10", overall.ndcg_10, &prev["overall"]["ndcg@10"]),
+    ] {
+        let Some(was) = was.as_f64() else { continue };
+        // Bit equality, not a tolerance. The harness is deterministic — three
+        // imports of the frozen corpus produced hash-identical nodes, links,
+        // entities and vectors — so any difference at all is a change in
+        // behaviour, and a tolerance here would hide exactly the small signed
+        // moves this benchmark exists to measure.
+        let same = was.to_bits() == now.to_bits();
+        compared += 1;
+        identical &= same;
+        println!(
+            "  {name:<10} {was:.16} -> {now:.16}  {}",
+            if same {
+                "same".to_string()
+            } else {
+                format!("{:+.4}", now - was)
+            }
+        );
+    }
+    // `compared > 0` matters: a row carrying no recognisable aggregate would
+    // otherwise vacuously "reproduce", which is the failure mode this whole
+    // guard exists to prevent, one level down.
+    if identical && compared > 0 {
+        println!("  reproduces line {line_no} to the digit");
+    } else if compared == 0 {
+        println!("  line {line_no} carries none of the aggregates — not a baseline");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -898,6 +1014,81 @@ mod tests {
         let all = vec![2u8; 20];
         let retrieved = vec![2u8; 10];
         assert!((ndcg_at_k(&retrieved, &all, 10) - 1.0).abs() < 1e-12);
+    }
+
+    fn ledger_line(sha: &str, rerank: &str, recall10: f64) -> String {
+        format!(
+            r#"{{"corpus":{{"sha256":"{sha}"}},"config":{{"rerank_top_k":{rerank}}},"commit":"deadbeefcafe","overall":{{"recall@10":{recall10}}}}}"#
+        )
+    }
+
+    /// The regression this guard exists for: the ledger holds an older row at
+    /// 0.3881 and a newer one at 0.3792 for the same corpus and configuration,
+    /// and the baseline is the newer one.
+    #[test]
+    fn a_later_ledger_row_supersedes_an_earlier_one() {
+        let text = format!(
+            "{}\n{}\n",
+            ledger_line("abc", "null", 0.3881),
+            ledger_line("abc", "null", 0.3792)
+        );
+        let (line, row) = latest_matching(&text, "abc", None).expect("a match");
+        assert_eq!(line, 2);
+        assert_eq!(row["overall"]["recall@10"].as_f64(), Some(0.3792));
+    }
+
+    /// A CE-11 run is not the baseline run's baseline, and vice versa.
+    #[test]
+    fn ledger_rows_are_matched_on_corpus_and_rerank_depth() {
+        let text = format!(
+            "{}\n{}\n{}\n",
+            ledger_line("abc", "null", 0.3792),
+            ledger_line("abc", "10", 0.3363),
+            ledger_line("other", "null", 0.9)
+        );
+        assert_eq!(
+            latest_matching(&text, "abc", None).map(|(l, _)| l),
+            Some(1),
+            "the rerank row must not be read as the baseline"
+        );
+        assert_eq!(
+            latest_matching(&text, "abc", Some(10)).map(|(l, _)| l),
+            Some(2)
+        );
+        assert!(
+            latest_matching(&text, "abc", Some(20)).is_none(),
+            "a depth never run has no baseline"
+        );
+        assert!(
+            latest_matching(&text, "unknown-corpus", None).is_none(),
+            "a different corpus is a different measurement"
+        );
+    }
+
+    /// A ledger row carrying none of the aggregates must not be reported as
+    /// reproduced — the vacuous-truth version of the mistake this guard is
+    /// for. `compare_to_ledger` prints the "not a baseline" branch instead;
+    /// what is asserted here is that such a row is still *selected*, so the
+    /// message names a real line.
+    #[test]
+    fn a_row_without_aggregates_is_still_selected() {
+        let text = r#"{"corpus":{"sha256":"abc"},"config":{"rerank_top_k":null},"commit":"c"}"#;
+        let (line, row) = latest_matching(text, "abc", None).expect("a match");
+        assert_eq!(line, 1);
+        assert!(row["overall"]["mrr"].as_f64().is_none());
+    }
+
+    /// A half-written line must not shift the line numbers of the rows after
+    /// it — the number is printed so a person can open the file at it.
+    #[test]
+    fn an_unparseable_ledger_line_is_skipped_but_still_counted() {
+        let text = format!(
+            "{}\nnot json\n{}\n",
+            ledger_line("abc", "null", 0.1),
+            ledger_line("abc", "null", 0.2)
+        );
+        assert_eq!(latest_matching(&text, "abc", None).map(|(l, _)| l), Some(3));
+        assert_eq!(latest_matching("", "abc", None), None);
     }
 
     #[test]
