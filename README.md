@@ -130,6 +130,11 @@ memory under test load" does not cover. Until this closes, a PR's test tally car
 legacy shutdown — Phase F's import leg is already done. One question stands outside that path:
 AC-1's unjudgeable third is partly about what the corpus is supposed to contain.
 
+AC-4's rendering benchmark [was taken on 2026-08-19](docs/evidence/ac-4-render.md) and is met —
+3,200 nodes and 57,890 edges at **p50 3.6ms / p95 5.3ms** under pan and zoom, a 3.2× margin on a
+60fps budget. What has no margin at that size is the layout: d3-force is on the main thread at
+13ms a tick.
+
 ## Claude Code hooks
 
 Four hook subcommands of one small binary (496 KB–1.6 MB, glibc only, no

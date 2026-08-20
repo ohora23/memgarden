@@ -120,7 +120,14 @@ Two things the migration establishes that Phase F will need:
   exit 1 within two runs.
 
 Four further criteria (AC-4 graph viewer, AC-5 dashboard, AC-6 metrics, AC-7
-PR discipline) are tracked but do not gate the shutdown.
+PR discipline) are tracked but do not gate the shutdown. **AC-4's rendering
+benchmark was taken on 2026-08-19** and is met: 3,200 nodes and 57,890 edges
+of the largest live bank draw at **p50 3.6 ms / p95 5.3 ms** under combined
+pan and zoom — a 3.2× margin on a 60 fps budget — with hover hit-testing at
+p95 0.40 ms. The measurement also names the real ceiling, which is not the
+renderer: d3-force runs on the main thread and costs **13 ms per tick** at
+that size, taking 6.1 s to settle.
+[The numbers and the caveat](../../docs/evidence/ac-4-render.md).
 
 ---
 
