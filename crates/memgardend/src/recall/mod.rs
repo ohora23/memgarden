@@ -98,6 +98,8 @@ pub struct RecallParams {
     pub tags: Vec<String>,
     pub tags_match: TagsMatch,
     pub cap_per_source: usize,
+    /// `[recall] semantic_alpha`; `0.0` is legacy scoring exactly.
+    pub semantic_alpha: f64,
     pub preamble: String,
     /// Injected rather than read from the clock so `injected_text` can be
     /// asserted byte-exact (Critic Revision NIT-20).
@@ -512,6 +514,13 @@ pub async fn recall(
     };
 
     let n = merged.len();
+    // Min/max over the candidates the semantic arm actually scored. A set with
+    // none of them leaves `lo > hi`, which `semantic_norm` reads as a
+    // degenerate span and answers NEUTRAL — the boost is then exactly 1.0.
+    let (sem_lo, sem_hi) = merged
+        .iter()
+        .filter_map(|m| m.semantic)
+        .fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
     let mut scored: Vec<(f64, RecallItem)> = merged
         .into_iter()
         .enumerate()
@@ -548,7 +557,19 @@ pub async fn recall(
             // this is the same number CE-6 shipped until B8's batch round
             // starts producing multi-source observations.
             let proof = scoring::proof_norm(row.proof_count);
-            let final_score = scoring::combined(base, recency, temporal, proof);
+            // Where this candidate's cosine sits in the spread this query
+            // produced. Raw cosine is a narrow high band and would be another
+            // near-constant multiplier; the position inside the band is what
+            // carries information.
+            let semantic = scoring::semantic_norm(m.semantic, sem_lo, sem_hi);
+            let final_score = scoring::combined_with_semantic(
+                base,
+                recency,
+                temporal,
+                proof,
+                semantic,
+                p.semantic_alpha,
+            );
             Some((
                 final_score,
                 RecallItem {

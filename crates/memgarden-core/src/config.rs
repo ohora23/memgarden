@@ -311,6 +311,11 @@ pub struct RecallConfig {
     /// 100 tokens, which would have invalidated the AC-1 A/B against the
     /// live fork (whose coding profile sends `low` *and* 1024).
     pub max_tokens: usize,
+    /// Weight of the semantic boost, the one term that is **not** legacy's.
+    /// `0.0` is exact legacy scoring. See
+    /// `recall::scoring::combined_with_semantic` for why it exists and what
+    /// it was measured against.
+    pub semantic_alpha: f64,
     /// Per-arm truncation applied *before* fusion (`engine/search/fusion.py:8`)
     /// so one over-expanding arm cannot crowd out the others. `0` disables,
     /// matching legacy's default (`config.py:940`).
@@ -471,6 +476,12 @@ impl Config {
                 types: vec![FactType::World, FactType::Observation, FactType::Experience],
                 limit: 20,
                 max_tokens: 1024,
+                // On, at the middle of the plateau the AX-2 sweep found:
+                // 0.05..=0.15 all beat legacy scoring on every aggregate, so
+                // the value is not a knife-edge argmax. The one term here
+                // that is not legacy's — see
+                // `recall::scoring::combined_with_semantic`.
+                semantic_alpha: 0.1,
                 cap_per_source: 0,
                 preamble: String::new(),
             },
@@ -688,6 +699,9 @@ pub fn from_parts(
             }
             if let Some(v) = recall.max_tokens {
                 cfg.recall.max_tokens = v;
+            }
+            if let Some(v) = recall.semantic_alpha {
+                cfg.recall.semantic_alpha = v;
             }
             if let Some(v) = recall.cap_per_source {
                 cfg.recall.cap_per_source = v;
@@ -1239,6 +1253,7 @@ struct TomlRecall {
     types: Option<Vec<FactType>>,
     limit: Option<usize>,
     max_tokens: Option<usize>,
+    semantic_alpha: Option<f64>,
     cap_per_source: Option<usize>,
     preamble: Option<String>,
 }
@@ -1336,6 +1351,7 @@ mod tests {
                 types: vec![FactType::World, FactType::Observation, FactType::Experience],
                 limit: 20,
                 max_tokens: 1024,
+                semantic_alpha: 0.0,
                 cap_per_source: 0,
                 preamble: String::new(),
             },

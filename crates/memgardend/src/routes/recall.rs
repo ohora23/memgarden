@@ -153,6 +153,7 @@ async fn recall_inner(
         tags: body.tags,
         tags_match: body.tags_match,
         cap_per_source: state.cfg.recall.cap_per_source,
+        semantic_alpha: state.cfg.recall.semantic_alpha,
         preamble: body
             .preamble
             .unwrap_or_else(|| state.cfg.recall.preamble.clone()),

@@ -155,6 +155,31 @@ to it, and `reproduces line N to the digit` when there is none — including on
 runs that write nothing, which is precisely when a stale document is the only
 thing left to compare against.
 
+### The semantic boost — shipped 2026-08-20, on the benchmark's evidence and not the gate's
+
+`combined` gains a fourth multiplicative term, weighted by where a candidate's
+cosine sits in the spread its own query produced (`alpha = 0.1`). It is the
+**first term in the scoring module that is not a port of legacy**, and it
+exists because legacy scores on RRF *rank* alone: the cosine — measured live at
+0.715-0.866 against three boosts that are flat constants — reaches the final
+order only as an ordinal, so a keyword arm matching a command log literally
+weighs the same as a semantic match on the answer.
+
+**AX-2, ledger line 14: MRR +0.193, recall@10 +0.032, nDCG@10 +0.067**, and
+0.1 is the middle of a plateau — every value in 0.05..=0.15 beats legacy
+scoring on all four aggregates, which is the test the recency-window candidate
+failed. 8 queries improved, 4 regressed, 2 unchanged. The `temporal` stratum
+pays 0.10 recall@10, all of it q17.
+
+**It does not fix the four AC-1 losses it was built for**, and the blind panel
+says so: 12/4/4 at `alpha = 0` against 13/5/1 at `0.1`. One of the 27
+relevant-but-not-injected items entered the window. The evidence that started
+it was misread — those items outscored the *worst* injected item, not the cut.
+
+Three weight changes have now been measured against these losses and none has
+moved them. **They are not a scoring-weight problem.** Full numbers and the
+retraction: [CE-6b](../../docs/design/ce-6b-semantic-boost.md).
+
 ### The ranking fix for AC-1's losses was measured and not shipped — 2026-08-12
 
 The memcompare write-up proposed that four of the five losses came from
