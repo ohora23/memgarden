@@ -737,6 +737,10 @@ async fn pool_observations(
             tags: vec![],
             tags_match: TagsMatch::Any,
             cap_per_source: state.cfg.recall.cap_per_source,
+            // Legacy scoring on purpose: this path feeds consolidation and
+            // reflection, not the injection, and re-ranking it is a separate
+            // question from the one `semantic_alpha` was measured against.
+            semantic_alpha: 0.0,
             preamble: String::new(),
             now_ms: memgarden_core::now_ms(),
         };

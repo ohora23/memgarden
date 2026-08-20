@@ -535,6 +535,7 @@ async fn bench(
     corpus_path: &Path,
     out_path: Option<&Path>,
     rerank_top_k: Option<usize>,
+    semantic_alpha: f64,
 ) -> anyhow::Result<()> {
     let gold = read_gold(gold_path)?;
     let corpus_sha = sha256_of(corpus_path)?;
@@ -585,6 +586,7 @@ async fn bench(
             tags: vec![],
             tags_match: TagsMatch::Any,
             cap_per_source: 0,
+            semantic_alpha,
             preamble: String::new(),
             now_ms: BENCH_NOW_MS,
         };
@@ -702,6 +704,9 @@ async fn bench(
             "max_tokens": memgarden_core::config::MAX_RECALL_TOKENS,
             // The treatment. `null` is the AX-2 baseline (RRF passthrough).
             "rerank_top_k": rerank_top_k,
+            // The second treatment. `0.0` is legacy scoring, so every row
+            // written before this knob existed is a `0.0` row.
+            "semantic_alpha": semantic_alpha,
         },
         // The **set** of per-query statuses present in this run, sorted. Travels
         // with every number so a figure can never be quoted without the caveat
@@ -942,7 +947,7 @@ async fn load_reranker(state: &AppState) -> anyhow::Result<()> {
 const USAGE: &str = "\
 usage:
   recall_bench import <corpus.jsonl> <db-path>
-  recall_bench bench  <db-path> <gold.jsonl> <corpus.jsonl> [results.jsonl] [rerank=<top_k>]
+  recall_bench bench  <db-path> <gold.jsonl> <corpus.jsonl> [results.jsonl] [rerank=<top_k>] [semantic=<alpha>]
 
 `rerank=<top_k>` turns CE-11's cross-encoder on. Everything else about the
 measurement is pinned to the AX-2 baseline's configuration and is not
@@ -957,6 +962,21 @@ async fn main() -> anyhow::Result<()> {
     // their fixed arity.
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut rerank_top_k: Option<usize> = None;
+    // The second measurement knob: the semantic boost's weight. `0.0` is
+    // legacy scoring exactly, which is the ledger's baseline arm, so a run
+    // without the flag stays comparable to every row already in the file.
+    let mut semantic_alpha: f64 = 0.0;
+    if let Some(i) = args.iter().position(|a| a.starts_with("semantic=")) {
+        let raw = args.remove(i);
+        let value = raw.trim_start_matches("semantic=");
+        semantic_alpha = value
+            .parse()
+            .map_err(|_| anyhow::anyhow!("semantic= wants a number, got {value:?}"))?;
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&semantic_alpha),
+            "semantic= must be in 0.0..=1.0, got {semantic_alpha}"
+        );
+    }
     if let Some(i) = args.iter().position(|a| a.starts_with("rerank=")) {
         let raw = args.remove(i);
         let value = raw.trim_start_matches("rerank=");
@@ -978,9 +998,27 @@ async fn main() -> anyhow::Result<()> {
         .as_slice()
     {
         ["import", _, _] => import(&path(1), &path(2)).await,
-        ["bench", _, _, _] => bench(&path(1), &path(2), &path(3), None, rerank_top_k).await,
+        ["bench", _, _, _] => {
+            bench(
+                &path(1),
+                &path(2),
+                &path(3),
+                None,
+                rerank_top_k,
+                semantic_alpha,
+            )
+            .await
+        }
         ["bench", _, _, _, _] => {
-            bench(&path(1), &path(2), &path(3), Some(&path(4)), rerank_top_k).await
+            bench(
+                &path(1),
+                &path(2),
+                &path(3),
+                Some(&path(4)),
+                rerank_top_k,
+                semantic_alpha,
+            )
+            .await
         }
         _ => {
             eprintln!("{USAGE}");

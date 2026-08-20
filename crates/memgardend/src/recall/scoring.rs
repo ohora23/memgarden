@@ -142,12 +142,111 @@ pub fn combined(base: f64, recency: f64, temporal: f64, proof_norm: f64) -> f64 
         * (1.0 + PROOF_COUNT_ALPHA * (proof_norm - NEUTRAL))
 }
 
+/// Where a candidate's cosine sits inside the spread this query actually
+/// produced, on `[0, 1]`. `None` — a candidate the semantic arm never scored —
+/// is [`NEUTRAL`], which makes the boost exactly 1.0.
+///
+/// **Normalised per query, and it has to be.** Raw cosine over a real bank
+/// occupies a narrow high band: measured across four live queries the spread
+/// was 0.63-0.94, so feeding it in raw would be a near-constant multiplier —
+/// the same way [`recency`] is inert against a two-week bank inside a 365-day
+/// window. What carries information is a candidate's position *within this
+/// query's* range, and min-max is the cheapest statement of that.
+///
+/// A degenerate range (every candidate identical, or one candidate) returns
+/// NEUTRAL rather than dividing by zero, so the boost stays off exactly when
+/// there is nothing to say.
+pub fn semantic_norm(semantic: Option<f64>, lo: f64, hi: f64) -> f64 {
+    let Some(sem) = semantic else { return NEUTRAL };
+    let span = hi - lo;
+    if span <= f64::EPSILON {
+        return NEUTRAL;
+    }
+    ((sem - lo) / span).clamp(0.0, 1.0)
+}
+
+/// [`combined`] with the semantic boost applied on top. `alpha` of `0.0` is
+/// exactly [`combined`], which is how it ships until a measurement says
+/// otherwise.
+///
+/// **A deliberate divergence from legacy**, unlike everything else in this
+/// module. Legacy fuses the arms by RRF and then scores on rank alone, so the
+/// cosine — the one retrieval signal with real spread — reaches the final
+/// order only as an ordinal, and a keyword arm matching a command log
+/// literally carries the same weight as a semantic match on the answer.
+/// Measured on the four queries the blind panel scored as losses: every one of
+/// the twelve relevant items MemGarden retrieved but ranked below its cut on
+/// `@agentmemory/mcp`, and all three on `hindsight`, hold a *higher* cosine
+/// than the worst item that was injected instead.
+pub fn combined_with_semantic(
+    base: f64,
+    recency: f64,
+    temporal: f64,
+    proof_norm: f64,
+    semantic: f64,
+    alpha: f64,
+) -> f64 {
+    combined(base, recency, temporal, proof_norm) * (1.0 + alpha * (semantic - NEUTRAL))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const DAY_MS: i64 = 86_400_000;
     const NOW: i64 = 1_800_000_000_000;
+
+    #[test]
+    fn semantic_norm_places_a_score_inside_the_span_this_query_produced() {
+        // The live spread is narrow and high, which is the whole reason for
+        // normalising: 0.72 is the floor of this query's range, not a bad
+        // score in absolute terms.
+        assert_eq!(semantic_norm(Some(0.72), 0.72, 0.94), 0.0);
+        assert_eq!(semantic_norm(Some(0.94), 0.72, 0.94), 1.0);
+        assert!((semantic_norm(Some(0.83), 0.72, 0.94) - 0.5).abs() < 1e-12);
+        // A candidate the semantic arm never scored is neutral, not zero:
+        // keyword-only hits must not be pushed down for lacking a cosine.
+        assert_eq!(semantic_norm(None, 0.72, 0.94), NEUTRAL);
+        // Degenerate spans say nothing rather than dividing by zero. The
+        // `lo > hi` case is what a candidate set with no semantic arm leaves
+        // behind, since the fold starts at (MAX, MIN).
+        assert_eq!(semantic_norm(Some(0.8), 0.8, 0.8), NEUTRAL);
+        assert_eq!(semantic_norm(Some(0.8), f64::MAX, f64::MIN), NEUTRAL);
+        // Outside the observed span cannot escape the unit interval.
+        assert_eq!(semantic_norm(Some(1.5), 0.72, 0.94), 1.0);
+        assert_eq!(semantic_norm(Some(0.1), 0.72, 0.94), 0.0);
+    }
+
+    /// `alpha = 0.0` has to be `combined` to the last bit, because that is the
+    /// ledger's whole baseline arm and every row written before this term
+    /// existed is a `0.0` row.
+    #[test]
+    fn a_zero_alpha_is_legacy_scoring_exactly() {
+        for &(b, r, t, p, sem) in &[
+            (1.0, 0.9, 0.5, 0.5, 1.0),
+            (0.55, 0.1, 0.0, 1.0, 0.0),
+            (0.31, 0.5, 0.5, 0.5, 0.5),
+        ] {
+            assert_eq!(
+                combined_with_semantic(b, r, t, p, sem, 0.0).to_bits(),
+                combined(b, r, t, p).to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn the_semantic_boost_is_symmetric_around_neutral() {
+        let base = combined(1.0, NEUTRAL, NEUTRAL, NEUTRAL);
+        // NEUTRAL is exactly no boost, whatever alpha says.
+        assert_eq!(
+            combined_with_semantic(1.0, NEUTRAL, NEUTRAL, NEUTRAL, NEUTRAL, 0.6).to_bits(),
+            base.to_bits()
+        );
+        let top = combined_with_semantic(1.0, NEUTRAL, NEUTRAL, NEUTRAL, 1.0, 0.6);
+        let bottom = combined_with_semantic(1.0, NEUTRAL, NEUTRAL, NEUTRAL, 0.0, 0.6);
+        assert!(top > base && base > bottom);
+        assert!(((top - base) - (base - bottom)).abs() < 1e-12);
+    }
 
     #[test]
     fn passthrough_base_endpoints() {

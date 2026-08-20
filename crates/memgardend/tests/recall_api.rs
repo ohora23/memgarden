@@ -639,6 +639,7 @@ async fn reranker_disabled_is_a_pure_passthrough() {
             tags: vec![],
             tags_match: memgardend::recall::TagsMatch::Any,
             cap_per_source: 0,
+            semantic_alpha: 0.0,
             preamble: state.cfg.recall.preamble.clone(),
             now_ms: NOW,
         };
