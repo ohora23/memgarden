@@ -16,7 +16,7 @@ is allowed to replace the system it is copying.
 | **C — Hooks** | session/turn state · CLI foundation + latency harness · session-start · recall · transcript delta reader · retain · the cutover switch | ✅ code-complete |
 | **D — Migration** | read-only legacy snapshot (MG-1a) ✅ · archive → SQLite importer (MG-1b) ✅ · the AC-3 verifier (MG-2) ✅ | ✅ code-complete |
 | **E — UI & metrics** | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views, the bank survey | ✅ merged |
-| **F — Cutover** | run the AC-1..3 gates → shut the legacy system down → final record in the legacy repo | ⏳ **all three gates met**; the shutdown itself remains |
+| **F — Cutover** | run the AC-1..3 gates → shut the legacy system down → final record in the legacy repo | ✅ **done 2026-08-21** — legacy is off; the legacy-repo record remains |
 
 Dependencies are `A → B → (C, D, E in parallel) → F`. The graph viewer needs
 the link data from Phase B and nothing from C or D.
@@ -25,7 +25,7 @@ the link data from Phase B and nothing from C or D.
 
 ## The cutover gates
 
-The old system is shut down when **all three** are met, and not before. **All three are met as of 2026-08-20.**
+The old system is shut down when **all three** are met, and not before. **All three were met on 2026-08-20 and the shutdown ran on 2026-08-21** — [what it took](../../docs/evidence/cutover.md).
 
 ### AC-1 — quality parity — ✅ **met, signed by the user 2026-08-20**
 

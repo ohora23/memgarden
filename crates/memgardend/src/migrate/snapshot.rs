@@ -70,6 +70,11 @@ pub type DroppedBanks<'a> = BTreeSet<&'a str>;
 /// Asked for explicitly so pagination is not something a future corpus
 /// discovers — and [`MigrateError::DocumentListTruncated`] is the backstop for
 /// when it outgrows this too.
+/// The async export is a background job on the legacy daemon; 5 minutes at
+/// two-second intervals covers the largest bank here by a wide margin.
+const EXPORT_POLLS: usize = 150;
+const EXPORT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
 const DOCUMENTS_PAGE_LIMIT: &str = "1000";
 
 /// How much of a 4xx/5xx body to keep in the error. Legacy's `detail` strings
@@ -225,6 +230,131 @@ async fn get(client: &reqwest::Client, url: &Url) -> Result<Vec<u8>> {
     response.bytes().await.map(|b| b.to_vec()).map_err(http)
 }
 
+/// The content oracle, however this daemon is willing to hand it over.
+///
+/// The synchronous `GET …/document-transfer` this was written against now
+/// answers **410** on the live daemon: *"Synchronous document export has been
+/// removed because it could take down the shared API on large banks."* The
+/// same archive is still reachable, in three steps instead of one — POST an
+/// export, poll the operation, download what it names.
+///
+/// Tried in that order rather than switched outright. The archive bytes are
+/// identical either way, so the importer and `verify` are untouched, and a
+/// daemon old enough to still serve the direct GET is exactly the one whose
+/// snapshot was ratified for AC-3. A snapshot tool that only spoke the new
+/// flow could not re-run the migration it is the record of.
+async fn archive(client: &reqwest::Client, base: &str, id: &str) -> Result<Vec<u8>> {
+    let direct = endpoint(
+        base,
+        &["v1", "default", "banks", id, "document-transfer"],
+        &[("include_observations", "true")],
+    );
+    match get(client, &direct).await {
+        Ok(bytes) => return Ok(bytes),
+        // Only 410 falls through. Any other failure is a real one and must
+        // not be retried down a second path that would report it differently.
+        Err(MigrateError::HttpStatus { status: 410, .. }) => {}
+        Err(e) => return Err(e),
+    }
+
+    let start = endpoint(
+        base,
+        &["v1", "default", "banks", id, "document-transfer", "export"],
+        &[("include_observations", "true")],
+    );
+    let http = |url: &Url| {
+        let url = url.to_string();
+        move |source| MigrateError::Http { url, source }
+    };
+    let response = client
+        .post(start.clone())
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(http(&start))?;
+    let status = response.status();
+    let body = response.bytes().await.map_err(http(&start))?;
+    if !status.is_success() {
+        return Err(MigrateError::HttpStatus {
+            url: start.to_string(),
+            status: status.as_u16(),
+            body: String::from_utf8_lossy(&body)
+                .chars()
+                .take(ERROR_BODY_CHARS)
+                .collect(),
+        });
+    }
+    let started: ExportStarted =
+        serde_json::from_slice(&body).map_err(|e| MigrateError::JsonResponse {
+            url: start.to_string(),
+            source: e,
+        })?;
+
+    let op = endpoint(
+        base,
+        &[
+            "v1",
+            "default",
+            "banks",
+            id,
+            "operations",
+            &started.operation_id,
+        ],
+        &[],
+    );
+    for _ in 0..EXPORT_POLLS {
+        let state: OperationState = get_json(client, &op).await?;
+        match state.status.as_str() {
+            "completed" | "succeeded" => {
+                let url = state
+                    .result_metadata
+                    .and_then(|m| m.download_url)
+                    .ok_or_else(|| {
+                        MigrateError::Export(format!(
+                            "export of {id} completed without a download_url"
+                        ))
+                    })?;
+                // The daemon answers a path, not an absolute URL.
+                let full = Url::parse(base)
+                    .and_then(|b| b.join(&url))
+                    .map_err(|e| MigrateError::Export(format!("bad download_url {url:?}: {e}")))?;
+                return get(client, &full).await;
+            }
+            "failed" | "error" => {
+                return Err(MigrateError::Export(format!(
+                    "export of {id} failed: {}",
+                    state.error.unwrap_or_default()
+                )));
+            }
+            _ => tokio::time::sleep(EXPORT_POLL_INTERVAL).await,
+        }
+    }
+    Err(MigrateError::Export(format!(
+        "export of {id} did not finish within {}s",
+        EXPORT_POLLS as u64 * EXPORT_POLL_INTERVAL.as_secs()
+    )))
+}
+
+#[derive(serde::Deserialize)]
+struct ExportStarted {
+    operation_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct OperationState {
+    status: String,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    result_metadata: Option<ExportResult>,
+}
+
+#[derive(serde::Deserialize)]
+struct ExportResult {
+    #[serde(default)]
+    download_url: Option<String>,
+}
+
 async fn get_json<T: serde::de::DeserializeOwned>(
     client: &reqwest::Client,
     url: &Url,
@@ -337,15 +467,7 @@ pub async fn run_from(base: &str, out: &Path, dropped: &DroppedBanks<'_>) -> Res
         //    D2/D3 read.
         let slug = slug(id);
         let zip_path = out.join(format!("{slug}.zip"));
-        let zip_bytes = get(
-            &client,
-            &endpoint(
-                base,
-                &["v1", "default", "banks", id, "document-transfer"],
-                &[("include_observations", "true")],
-            ),
-        )
-        .await?;
+        let zip_bytes = archive(&client, base, id).await?;
         write_file(&zip_path, &zip_bytes)?;
         unpack(&zip_path, &out.join(&slug))?;
 
