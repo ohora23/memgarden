@@ -436,6 +436,10 @@ fn assert_importable(archive: &BankArchive, stats: &Stats) -> Result<()> {
         ("mental_model_count", manifest.mental_model_count),
         ("directive_count", manifest.directive_count),
         ("webhook_count", manifest.webhook_count),
+        // Newer than the rest: a legacy upgrade added knowledge pages after
+        // the four-bank snapshot was ratified. Nothing here imports them, so
+        // the only safe reading of a non-zero count is a refusal.
+        ("knowledge_page_count", manifest.knowledge_page_count),
     ];
     for (field, count) in counters {
         if count != 0 {

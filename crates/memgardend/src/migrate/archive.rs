@@ -262,6 +262,15 @@ pub struct TransferManifest {
     pub directive_count: i64,
     #[serde(default)]
     pub webhook_count: i64,
+    /// Added by a legacy upgrade after the AC-3 snapshot was ratified — the
+    /// live daemon writes it, the archive this crate was built against did
+    /// not. Modelled rather than waved through: `deny_unknown_fields` is the
+    /// module's whole defence against a legacy release growing content we
+    /// would silently not carry, and loosening it for one field spends that
+    /// defence for every field after it. Asserted zero at import beside its
+    /// siblings.
+    #[serde(default)]
+    pub knowledge_page_count: i64,
     #[serde(default)]
     pub includes_history: bool,
     #[serde(default)]

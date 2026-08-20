@@ -69,7 +69,7 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 | C — Hooks | session/turn state ✅ · CLI foundation + hook-latency harness ✅ · session-start ✅ · recall ✅ · transcript delta ✅ · retain ✅ · install & cutover switch ✅ | ✅ code-complete |
 | D — Migration | read-only legacy snapshot MG-1a ✅ · archive → SQLite importer MG-1b ✅ · AC-3 verifier MG-2 ✅ | ✅ **code-complete** |
 | E — UI & metrics | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views, the bank survey | ✅ merged |
-| F — Cutover | quality-parity A/B + performance gates + lossless migration → legacy shutdown | ⏳ all three gates met; shutdown remains |
+| F — Cutover | quality-parity A/B + performance gates + lossless migration → legacy shutdown | ✅ **done 2026-08-21** |
 
 **Where the cutover gates stand.** All three must pass before the old system is shut down:
 
@@ -126,9 +126,11 @@ deaths was a value read back as malformed JSON rather than a crash, which is a s
 memory under test load" does not cover. Until this closes, a PR's test tally carries the caveat.
 [Details, the numbers, and what to try next](book/src/roadmap.md).
 
-**All three cutover gates are met.** What remains is procedural: remove the legacy hooks —
-`~/.claude/settings.json` runs both systems side by side today — shut the legacy daemon down, and
-write the final record in the legacy repository.
+**The cutover ran on 2026-08-21.** The legacy hooks are gone, `hindsight-api` and its dashboard are
+stopped, and MemGarden runs under a systemd user unit as the only memory system wired to Claude Code
+on this machine. 811 memories that existed only in legacy were migrated first — two banks the
+original migration never covered — and `mg_migrate verify` passes on both.
+[What the cutover took, including what it nearly got wrong](docs/evidence/cutover.md).
 
 AC-4's rendering benchmark [was taken on 2026-08-19](docs/evidence/ac-4-render.md) and is met —
 3,200 nodes and 57,890 edges at **p50 3.6ms / p95 5.3ms** under pan and zoom, a 3.2× margin on a

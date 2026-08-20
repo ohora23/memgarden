@@ -116,6 +116,15 @@ pub enum MigrateError {
     #[error("{path}: {message}")]
     MalformedChecksums { path: PathBuf, message: String },
 
+    /// The async export flow (`snapshot::archive`) failed somewhere that is
+    /// not a transport error and not an HTTP status: a completed operation
+    /// with no `download_url`, an operation the daemon reports as failed, or
+    /// a poll budget that ran out. Its own variant rather than a reused one,
+    /// because "the export never produced an archive" and "the archive is
+    /// corrupt" send an operator to different places.
+    #[error("export: {0}")]
+    Export(String),
+
     /// `SHA256SUMS` did not verify — the frozen archive is not the archive on
     /// disk, so nothing downstream may treat it as the oracle.
     #[error("checksum mismatch for {path}: expected {expected}, got {actual}")]
