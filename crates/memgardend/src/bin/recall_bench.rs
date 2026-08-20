@@ -823,7 +823,12 @@ fn compare_to_ledger(
         "\nbaseline: {} line {} ({})",
         path.display(),
         line_no,
-        &commit[..commit.len().min(8)]
+        // `char_indices`, not a byte slice: a hand-edited or replayed ledger
+        // can carry a non-hex `commit`, and cutting mid-character panics.
+        commit
+            .char_indices()
+            .nth(8)
+            .map_or(commit, |(byte, _)| &commit[..byte])
     );
     let mut compared = 0usize;
     let mut identical = true;
@@ -858,10 +863,15 @@ fn compare_to_ledger(
     // `compared > 0` matters: a row carrying no recognisable aggregate would
     // otherwise vacuously "reproduce", which is the failure mode this whole
     // guard exists to prevent, one level down.
-    if identical && compared > 0 {
+    if identical && compared == 4 {
         println!("  reproduces line {line_no} to the digit");
-    } else if compared == 0 {
-        println!("  line {line_no} carries none of the aggregates — not a baseline");
+    } else if identical {
+        // Every aggregate the row *had* matched, but it did not have all four.
+        // "reproduces to the digit" would overclaim on a partial row, which is
+        // the same mistake as the one this guard exists to prevent.
+        println!(
+            "  line {line_no} carries only {compared} of the 4 aggregates — partial match, not a baseline"
+        );
     }
 }
 

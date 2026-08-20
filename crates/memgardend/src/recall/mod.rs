@@ -203,16 +203,72 @@ fn dedupe_restatements(
         let Some(row) = by_id.get(&item.id) else {
             continue;
         };
-        for source_id in &row.sources {
-            let Some(&j) = rank.get(source_id) else {
-                continue; // the source did not rank; nothing is duplicated
-            };
-            drop.insert(if i <= j { *source_id } else { item.id });
+        // Decide the observation once, against *all* of its ranked sources,
+        // rather than pair by pair.
+        //
+        // Pair-by-pair had a hole, found by review and reproduced in
+        // `a_source_is_not_dropped_for_an_observation_that_is_itself_dropped`:
+        // an observation ranking between two of its sources lost to the one
+        // above it — correctly — and then took the one below it down as the
+        // restated end of a pair whose other end no longer existed. The lower
+        // source left the results with nothing standing in for it.
+        //
+        // The relation is one observation to many facts, so the choice is
+        // one-sided: either the observation outranks every source it has and
+        // stands in for all of them, or it does not and they all stay.
+        let ranked_sources: Vec<usize> = row
+            .sources
+            .iter()
+            .filter_map(|source_id| rank.get(source_id).copied())
+            .collect();
+        if ranked_sources.is_empty() {
+            continue; // nothing of this observation's provenance ranked
+        }
+        if ranked_sources.iter().all(|&j| i <= j) {
+            drop.extend(row.sources.iter().filter(|s| rank.contains_key(s)));
+        } else {
+            drop.insert(item.id);
         }
     }
     if !drop.is_empty() {
         scored.retain(|(_, item)| !drop.contains(&item.id));
     }
+}
+
+/// Two nodes holding the same text are one memory, and the injection may
+/// carry it once.
+///
+/// Distinct from [`dedupe_restatements`], which collapses a *provenance* pair
+/// — an observation and the fact it was consolidated from, related through
+/// `node_sources` and rarely worded alike. This collapses plain copies: five
+/// `memory_nodes` rows in the live bank hold the byte-identical text
+/// `PR #3086 … is open with no reviews, comments, or check status updates`,
+/// all five written in the **same millisecond** by one retain, because the
+/// transcript really did contain the line five times and the extractor
+/// faithfully emitted it five times. `content_hash` is per transcript
+/// (`retain/mod.rs:146`), not per fact, so nothing upstream collapses them.
+///
+/// Measured on the query where it shows worst — the AC-1 comparison's fourth
+/// losing query — the twenty injected items were **sixteen** distinct texts,
+/// one of them repeated four times. Four slots of a twenty-slot budget spent
+/// restating one line.
+///
+/// Whitespace is normalised before comparing and nothing else is: two texts
+/// that differ by a word are two claims, and deciding they are one needs a
+/// similarity threshold. CE-7's resolver is the standing lesson about what
+/// character similarity does when trusted to judge identity, so this compares
+/// only what is actually identical and leaves the near-misses alone.
+///
+/// `scored` must already be sorted best-first — `retain` keeps the first
+/// occurrence, which is therefore the highest-ranked one.
+fn dedupe_identical_text(scored: &mut Vec<(f64, RecallItem)>) {
+    if scored.len() < 2 {
+        return;
+    }
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    scored.retain(|(_, item)| {
+        seen.insert(item.text.split_whitespace().collect::<Vec<_>>().join(" "))
+    });
 }
 
 /// A candidate survives if its row is loaded and passes both the type and
@@ -542,6 +598,11 @@ pub async fn recall(
     // the next candidate rather than lost.
     dedupe_restatements(&mut scored, &by_id);
 
+    // And plain copies, which `dedupe_restatements` cannot see: those are
+    // related through `node_sources`, these are unrelated rows that happen to
+    // hold the same text. Also before the truncation, for the same reason.
+    dedupe_identical_text(&mut scored);
+
     // Two distinct knobs (architect recommendation A): `budget` decides how
     // deep the candidate list is carried, `max_tokens` decides how much text
     // is injected. Legacy sends both and the fork's coding profile sends
@@ -812,6 +873,95 @@ mod tests {
             proof_count: sources.len() as i64,
             sources,
         }
+    }
+
+    /// `ranked` gives every item a distinct `t{id}`; this one forces a text.
+    fn worded(id: i64, text: &str) -> (f64, RecallItem) {
+        let mut r = ranked(id);
+        r.1.text = text.to_string();
+        r
+    }
+
+    #[test]
+    fn identical_text_is_injected_once_and_the_best_ranked_copy_survives() {
+        // The live shape: one line captured five times by a single retain.
+        let mut scored = vec![
+            worded(7, "PR #3086 is open with no reviews"),
+            worded(11, "something else entirely"),
+            worded(9, "PR #3086 is open with no reviews"),
+            worded(4, "PR #3086 is open with no reviews"),
+        ];
+        dedupe_identical_text(&mut scored);
+        assert_eq!(
+            id_list(&scored),
+            vec![7, 11],
+            "the first (best-ranked) copy stays, the later ones go"
+        );
+    }
+
+    #[test]
+    fn only_whitespace_is_normalised_before_comparing() {
+        let mut scored = vec![
+            worded(1, "a  fact   about\nthings"),
+            worded(2, "a fact about things"),
+            worded(3, "a fact about other things"),
+        ];
+        dedupe_identical_text(&mut scored);
+        assert_eq!(
+            id_list(&scored),
+            vec![1, 3],
+            "whitespace-equal collapses; a differing word is a different claim"
+        );
+    }
+
+    /// Across fact types on purpose: a `world` fact and an `observation`
+    /// holding the same sentence are one sentence to whoever reads the
+    /// injection, and spending two budget slots on it helps nobody. This is a
+    /// decision rather than a detail — `recall_types_filters_and_defaults_to_all_three`
+    /// had to stop seeding one text three times because of it.
+    #[test]
+    fn identical_text_collapses_across_fact_types() {
+        let mut a = worded(1, "deployment checklist");
+        a.1.fact_type = FactType::World;
+        let mut b = worded(2, "deployment checklist");
+        b.1.fact_type = FactType::Observation;
+        let mut c = worded(3, "deployment checklist");
+        c.1.fact_type = FactType::Experience;
+        let mut scored = vec![a, b, c];
+        dedupe_identical_text(&mut scored);
+        assert_eq!(id_list(&scored), vec![1]);
+    }
+
+    /// Reported by review, and it reproduces: a multi-source observation that
+    /// ranks *between* its own sources takes one of them down with it.
+    ///
+    /// `scored = [F, O, G]`, `O.sources = [F, G]`. The loop sees F above O and
+    /// drops O — correct — then sees G below O and drops G as the "restated"
+    /// end of a pair whose other end has already been removed. G leaves the
+    /// result with nothing standing in for it.
+    #[test]
+    fn a_source_is_not_dropped_for_an_observation_that_is_itself_dropped() {
+        let mut by_id = std::collections::HashMap::new();
+        by_id.insert(1, sourced(1, vec![]));
+        by_id.insert(2, sourced(2, vec![1, 3]));
+        by_id.insert(3, sourced(3, vec![]));
+        let mut scored = vec![ranked(1), ranked(2), ranked(3)];
+        dedupe_restatements(&mut scored, &by_id);
+        assert_eq!(
+            id_list(&scored),
+            vec![1, 3],
+            "the observation loses to its best source; both sources survive"
+        );
+    }
+
+    #[test]
+    fn dedupe_identical_text_is_a_no_op_on_distinct_items() {
+        let mut scored = vec![ranked(1), ranked(2), ranked(3)];
+        dedupe_identical_text(&mut scored);
+        assert_eq!(id_list(&scored), vec![1, 2, 3]);
+        let mut one = vec![ranked(1)];
+        dedupe_identical_text(&mut one);
+        assert_eq!(id_list(&one), vec![1]);
     }
 
     fn id_list(scored: &[(f64, RecallItem)]) -> Vec<i64> {
