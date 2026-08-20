@@ -128,20 +128,25 @@ PR discipline) are tracked but do not gate the shutdown.
 
 Ordered by what blocks what.
 
-### The gold harness no longer reproduces its own ratified baseline — AX-2, found 2026-08-12
+### ~~The gold harness no longer reproduces its own ratified baseline~~ — retracted 2026-08-19, one day after it was filed
 
-`bench` against the byte-identical frozen corpus returns **0.379 / 0.516 /
-0.317** where the ledger records **0.3881 / 0.5221 / 0.3236** as reproducible
-to the digit. The recall path is not the cause: `97b4df3` built from a
-worktree and benched against the same database matches the current build
-exactly, so nothing merged since moved it. What differs between runs is the
-*import* — embeddings and generated semantic links — which points at
-non-determinism there.
+It reproduces exactly. The report compared a fresh run against
+`gold/results.jsonl` **line 8** (0.3881 / 0.5221 / 0.3236) while lines 11 and
+12 — the two newest runs at the same corpus digest and configuration — both
+hold **0.3792 / 0.5162 / 0.3168**, which is what a fresh import benches today,
+to all sixteen digits. Line 8 is the *thin-graph* number, superseded when
+CE-7's fix took the corpus from 681 semantic edges to 43,830; the drop is
+tabulated in `README.md` and explained in `docs/design/mg-1-migration.md`.
+Determinism was measured on the way to retracting it: two imports of the
+frozen corpus produce hash-identical nodes, links, entities and vectors.
 
-**Why it blocks:** a benchmark that cannot reproduce its own baseline cannot
-ratify a change. Same-database A/B comparisons still hold, which is why the
-ranking attempt below could conclude anything at all; absolute numbers must
-not be quoted against the older ones until this is fixed.
+**What was actually missing:** the run never read the ledger. The comparison
+happened against a figure copied into a document months earlier, so a
+correctly-superseded baseline read as drift. `recall_bench bench` now prints
+the newest ledger row matching the corpus digest and `rerank_top_k`, the delta
+to it, and `reproduces line N to the digit` when there is none — including on
+runs that write nothing, which is precisely when a stale document is the only
+thing left to compare against.
 
 ### The ranking fix for AC-1's losses was measured and not shipped — 2026-08-12
 

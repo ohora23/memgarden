@@ -4,6 +4,8 @@
 
 A ground-up **Rust rebuild** of my personal long-term memory system for Claude Code — local-LLM fact extraction, hybrid recall, an interactive memory graph, and overhead-free savings metrics, all in one self-contained daemon.
 
+MIT licensed · runs entirely on the machine it grows on · no network at runtime
+
 ## What it's for
 
 An AI coding assistant starts every session amnesiac. It re-reads the same files, re-derives the same conclusions, and asks you things you settled last week. MemGarden is the layer that stops that: conversations are captured automatically, distilled into facts by a local LLM, linked to each other, and served back — in about seven milliseconds — as the handful of memories that matter for the prompt you just typed.
@@ -125,10 +127,8 @@ memory under test load" does not cover. Until this closes, a PR's test tally car
 [Details, the numbers, and what to try next](book/src/roadmap.md).
 
 **Next up, in order:** the user's signature on AC-1, then the switch to `mode = full` and the
-legacy shutdown — Phase F's import leg is already done. Two things stand outside that path and
-should be fixed before any further ranking work: the gold harness no longer reproduces its own
-ratified baseline, and AC-1's unjudgeable third is partly a question about what the corpus is
-supposed to contain.
+legacy shutdown — Phase F's import leg is already done. One question stands outside that path:
+AC-1's unjudgeable third is partly about what the corpus is supposed to contain.
 
 ## Claude Code hooks
 
