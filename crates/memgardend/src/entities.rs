@@ -196,20 +196,30 @@ fn longest_match(
 /// similarity floor, which is every real spelling variant this resolver was
 /// written for.
 fn digits_differ(a: &str, b: &str) -> bool {
-    fn runs(s: &str) -> Vec<&str> {
-        let bytes = s.as_bytes();
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i].is_ascii_digit() {
-                let start = i;
-                while i < bytes.len() && bytes[i].is_ascii_digit() {
-                    i += 1;
-                }
-                out.push(&s[start..i]);
-            } else {
-                i += 1;
+    fn runs(s: &str) -> Vec<String> {
+        // `char::is_numeric`, not `is_ascii_digit`: an entity name can carry
+        // fullwidth or Arabic-Indic digits, which share no byte with 0x30..0x39
+        // and would make both sides look digit-free — the gate silently off for
+        // exactly the names it exists to separate.
+        let mut out: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        for c in s.chars() {
+            if c.is_numeric() {
+                // Fullwidth digits fold to ASCII — `버전 ３` and `버전 3` are
+                // one number written twice, and CJK input produces both.
+                // Other numeral scripts keep their own characters, so such a
+                // pair stays two entities: the conservative outcome, and the
+                // one this gate exists to reach.
+                cur.push(match c {
+                    '０'..='９' => char::from(b'0' + (c as u32 - '０' as u32) as u8),
+                    _ => c,
+                });
+            } else if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
             }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
         }
         out
     }
@@ -251,6 +261,13 @@ fn can_clear_threshold(len_a: usize, len_b: usize) -> bool {
         return true;
     }
     let ratio_ceiling = 2.0 * len_a.min(len_b) as f64 / total as f64;
+    // `NAME_FLOOR` binds before the threshold does, so a pair whose lengths
+    // cannot reach it is skipped without running the O(n*m) `ratio`. Without
+    // this the prefilter still admitted anything above a 0.2 ceiling, which
+    // has not been the binding constraint since the floor went in.
+    if ratio_ceiling < NAME_FLOOR {
+        return false;
+    }
     // Scored through `resolution_score` itself rather than inlining
     // `* 0.5 + 0.5`: the two are not the same double (0.1+0.3+0.2 lands one
     // ulp above 0.6) and the bound has to be exact, not approximately exact.
@@ -436,15 +453,19 @@ mod tests {
     #[test]
     fn length_prefilter_never_skips_a_candidate_that_could_have_won() {
         // Exhaustive over the length pairs an entity name can take: the
-        // prefilter must reject only pairs whose best possible score is at or
-        // under the threshold.
+        // prefilter must reject only pairs that could not have won *under the
+        // rules as they stand*. Since `NAME_FLOOR`, that is two conditions —
+        // clearing the threshold is no longer sufficient, because a pair whose
+        // length ceiling cannot reach the floor is rejected by `resolve_fact`
+        // however good its circumstantial terms are.
         for la in 1..=64usize {
             for lb in 1..=64usize {
                 let ceiling = 2.0 * la.min(lb) as f64 / (la + lb) as f64;
                 let best_possible = resolution_score(ceiling, 1, 1, Some(0.0));
+                let could_win = best_possible > RESOLUTION_THRESHOLD && ceiling >= NAME_FLOOR;
                 assert_eq!(
                     can_clear_threshold(la, lb),
-                    best_possible > RESOLUTION_THRESHOLD,
+                    could_win,
                     "la={la} lb={lb} ceiling={ceiling} best={best_possible}"
                 );
             }
@@ -672,6 +693,25 @@ mod tests {
 
     /// Runs in order, not a set of digits: `v1.5` and `v5.1` use the same two
     /// characters and are not the same version.
+    /// Reported by review: `is_ascii_digit` sees no digit in a fullwidth or
+    /// Arabic-Indic numeral, so both sides looked digit-free and the gate was
+    /// silently off for exactly the names it exists to separate. Folding to
+    /// the ASCII value also makes `버전 ３` and `버전 3` one entity, which they
+    /// are — the same number written twice.
+    #[test]
+    fn non_ascii_digits_are_seen_and_folded() {
+        assert!(
+            digits_differ("버전 ３", "버전 ２"),
+            "fullwidth digits differ"
+        );
+        assert!(
+            !digits_differ("버전 ３", "버전 3"),
+            "same number, two scripts"
+        );
+        assert!(digits_differ("ce-٣", "ce-٤"), "arabic-indic digits differ");
+        assert!(!digits_differ("버전", "버전 이름"), "no digits either side");
+    }
+
     #[test]
     fn digits_compare_as_ordered_runs() {
         assert!(digits_differ("v1.5", "v5.1"));

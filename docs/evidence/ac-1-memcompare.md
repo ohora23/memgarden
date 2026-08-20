@@ -5,6 +5,17 @@ hindsight on `:9077`, same query, same knobs (`budget=low`,
 `max_tokens=512`, all three fact types — what both hooks send under the
 `coding` profile).
 
+> **Superseded 2026-08-20, and the sentence above is wrong twice.** Neither
+> hook sends `low`/`512` — that pair is `ConsolidationConfig`, a different
+> struct on a different path; both ship **mid / 1024**. And the knobs were not
+> the same: `memgardend` takes `maxTokens`, legacy takes `max_tokens`, neither
+> server rejects an unknown field, so MemGarden ignored the cap and ran on its
+> 1024 default while legacy received 512 — on one query, 12 items against 2.
+> Re-measured blind and on both systems' shipped settings in
+> [`ac-1-blind-panel.md`](ac-1-blind-panel.md): **12 better / 4 worse /
+> 4 equivalent**. The verdicts below stand as what was seen at the time and
+> should not be quoted as the gate result.
+
 Criteria were fixed and committed **before** any query was sent
 (`ac-1-criteria.md`, commit `57f3ff9`). Raw responses and per-item reasoning
 are kept out of the repository under the data policy; the verdict and its

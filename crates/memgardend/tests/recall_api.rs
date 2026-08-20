@@ -174,9 +174,30 @@ async fn long_english_query_recalls_end_to_end() {
 async fn recall_types_filters_and_defaults_to_all_three() {
     let (app, db) = test_app(|_| {});
     banks::create(&db, "b1", None, None).unwrap();
-    seed(&db, FactType::World, "deployment checklist", &[]);
-    seed(&db, FactType::Observation, "deployment checklist", &[]);
-    seed(&db, FactType::Experience, "deployment checklist", &[]);
+    // Distinct texts on purpose. The subject here is the type filter, but
+    // recall drops a memory whose text it has already injected — across fact
+    // types, since the reader sees one sentence either way — so three rows
+    // saying "deployment checklist" would return one and this would look like
+    // a filter bug. `identical_text_collapses_across_fact_types` covers that
+    // behaviour directly.
+    seed(
+        &db,
+        FactType::World,
+        "deployment checklist for the release",
+        &[],
+    );
+    seed(
+        &db,
+        FactType::Observation,
+        "the deployment checklist was read",
+        &[],
+    );
+    seed(
+        &db,
+        FactType::Experience,
+        "deployment felt rushed last time",
+        &[],
+    );
 
     // Server default is all three — the fork improvement over legacy's
     // observation-only client default.

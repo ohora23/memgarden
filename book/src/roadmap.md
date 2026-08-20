@@ -27,43 +27,43 @@ the link data from Phase B and nothing from C or D.
 
 The old system is shut down when **all three** are met, and not before.
 
-### AC-1 — quality parity — *run, awaiting the user's signature*
+### AC-1 — quality parity — *met on a blind re-measurement, awaiting the user's signature*
 
 Recall quality on a fixed query set (8 existing A/B log entries + 12 new) must
 be at least equal to the current system, judged by the user.
 
-Run 2026-08-12, 20 queries to both live systems under the same knobs, against
-criteria committed **before** the first query was sent
-(`docs/evidence/ac-1-criteria.md`).
+**Judged twice.** The 2026-08-12 run was mine, and it was measured wrong: the
+two APIs spell the injection cap differently (`maxTokens` against
+`max_tokens`) and neither server rejects a field it does not know, so legacy
+ran on 512 tokens while MemGarden ignored the cap and ran on its 1024 default
+— 2 items against 12 on one query.
 
-| | |
-|---|---|
-| better | **6** |
-| equivalent | 2 |
-| worse | **5** |
-| unjudgeable (both scored 0 hits) | 7 |
+Re-measured 2026-08-20 with both systems on the settings they actually ship
+(**mid / 1024 / all three types**), on a frozen snapshot, judged **blind** by
+three independent panels per query — a per-query hash decides which side is
+`A`, and the judges are told nothing else:
 
-**The gate condition (`worse ≤ better`) holds, 6 to 5** — by one query, on 13
-judgeable of 20. Latency on the same set: p50 **11.5 ms** against legacy's
-**51.0 ms**. Full result and the five losses quoted:
-`docs/evidence/ac-1-memcompare.md`.
+| | better | worse | equivalent |
+|---|---|---|---|
+| my solo judgement (unfair knobs) | 6 | 5 | 2 + 7 unjudgeable |
+| blind panel, unfair knobs | 16 | 3 | 1 |
+| **blind panel, as deployed** | **12** | **4** | **4** |
 
-The PRD assigns this judgement to the user, so what is recorded here is a
-recommendation and the evidence under it; the gate is not met until the user
-signs it.
+**The gate condition (`worse ≤ better`) holds 4 to 12**, nothing unjudgeable.
+Correcting the knobs moved four queries away from MemGarden — the 16-to-3 was
+a system with six times the budget winning, and it is reported here only so it
+is not mistaken for a result.
 
-Three findings from the run outlive it:
+The PRD assigns this judgement to the user, so what is recorded is a
+recommendation with its evidence; the gate is not met until the user signs it.
+The panel being independent of the author is the one limit the redo removes —
+[the rest are listed with the result](../../docs/evidence/ac-1-blind-panel.md).
 
-* **shadow prompts are not a query set.** Five of six real prompts replayed
-  standalone were unjudgeable — "이게 맞나?" has no referent without the
-  conversation around it. The instrument works; prompts lifted from a live
-  session are the wrong thing to feed it.
-* **conclusion-type questions are answered in neither corpus.** They live in
-  the curated `MEMORY.md`, which neither system captures. Either AC-1 gains a
-  second corpus or it is explicitly scoped to auto-captured recall — an open
-  decision, recorded in `docs/evidence/ac-1-shadow.md`.
-* **the diagnosis offered for the five losses did not survive measurement.**
-  See the ranking attempt below.
+The four losses, in the judges' words: the upstream PR's final status missed
+entirely while the budget went to this project's own PR stack; problems
+retrieved without their fixes; command-execution records crowding out fixes;
+and one query neither system could answer because the bank holds no such
+record.
 
 ### AC-2 — performance — ✅ **met**
 
