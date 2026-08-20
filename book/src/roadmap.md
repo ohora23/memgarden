@@ -16,7 +16,7 @@ is allowed to replace the system it is copying.
 | **C — Hooks** | session/turn state · CLI foundation + latency harness · session-start · recall · transcript delta reader · retain · the cutover switch | ✅ code-complete |
 | **D — Migration** | read-only legacy snapshot (MG-1a) ✅ · archive → SQLite importer (MG-1b) ✅ · the AC-3 verifier (MG-2) ✅ | ✅ code-complete |
 | **E — UI & metrics** | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views, the bank survey | ✅ merged |
-| **F — Cutover** | run the AC-1..3 gates → shut the legacy system down → final record in the legacy repo | ⏳ AC-1 run, awaiting the user's signature |
+| **F — Cutover** | run the AC-1..3 gates → shut the legacy system down → final record in the legacy repo | ⏳ **all three gates met**; the shutdown itself remains |
 
 Dependencies are `A → B → (C, D, E in parallel) → F`. The graph viewer needs
 the link data from Phase B and nothing from C or D.
@@ -25,9 +25,9 @@ the link data from Phase B and nothing from C or D.
 
 ## The cutover gates
 
-The old system is shut down when **all three** are met, and not before.
+The old system is shut down when **all three** are met, and not before. **All three are met as of 2026-08-20.**
 
-### AC-1 — quality parity — *met on a blind re-measurement, awaiting the user's signature*
+### AC-1 — quality parity — ✅ **met, signed by the user 2026-08-20**
 
 Recall quality on a fixed query set (8 existing A/B log entries + 12 new) must
 be at least equal to the current system, judged by the user.
@@ -54,8 +54,15 @@ Correcting the knobs moved four queries away from MemGarden — the 16-to-3 was
 a system with six times the budget winning, and it is reported here only so it
 is not mistaken for a result.
 
-The PRD assigns this judgement to the user, so what is recorded is a
-recommendation with its evidence; the gate is not met until the user signs it.
+**Signed 2026-08-20.** The judgement stayed with the user through three
+rounds; the recommendation above is what the signature rests on. The number
+signed is the shipping configuration — the semantic boost landed between the
+rounds, so the run matching what a user gets today is **13 better / 5 worse /
+1 equivalent**, and both configurations satisfy `worse ≤ better`.
+
+**Scope, decided with it:** AC-1 measures recall over *automatically captured*
+memories. Conclusion-type questions live in the curated `MEMORY.md`, which
+neither system captures, so they sit outside this gate rather than failing it.
 The panel being independent of the author is the one limit the redo removes —
 [the rest are listed with the result](../../docs/evidence/ac-1-blind-panel.md).
 
