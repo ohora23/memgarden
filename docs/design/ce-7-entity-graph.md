@@ -95,12 +95,31 @@ recall
 
 ## Known limits
 
-- **Name similarity alone can never resolve an entity.** `name_ratio * 0.5`
-  peaks at 0.5, under the 0.6 threshold, so a near-name match needs the
-  co-occurrence or temporal term to carry it. That is legacy's formula
-  verbatim, not a porting slip: an *exact* name match never reaches the
-  resolver at all, because it collides on `UNIQUE (bank_id, canonical_name)`.
-  In practice retain always supplies a date, so the temporal term is live.
+- **~~Name similarity alone can never resolve an entity.~~ It still cannot,
+  but it is now allowed to veto.** `name_ratio * 0.5` peaks at 0.5, under the
+  0.6 threshold, so a near-name match needs the co-occurrence or temporal term
+  to carry it — legacy's formula verbatim, not a porting slip. This note filed
+  it as a limit and let it stand. **Measured 2026-08-20 on the largest live
+  bank, it is the resolver's dominant failure mode**: the two circumstantial
+  terms also cap at exactly 0.5, so a mention needs a name ratio of only 0.2
+  to merge when they max out, and 26% of the bank's 2,406 replayable merges
+  rest on a similarity below 0.5 — `ollama` into `ddl`, `llm` into `legacy`.
+  A further 130 sit above 0.7, where no floor reaches them, because the
+  character carrying the meaning is the one not shared: `ce-11` into `ce-9`,
+  `version 0.7.4` into `version 0.7.5`.
+
+  `resolve_fact` now applies two gates before scoring — **a 0.5 name floor**
+  and **differing digits reject**, compared as ordered runs — which block
+  1,089 of the 2,406 (45%). Neither touches `resolution_score`, so the
+  weights stay legacy's and the parity tests still assert them; what changed
+  is that circumstance can no longer *create* an identity the name does not
+  support. The remark that an exact match never reaches the resolver is also
+  wrong for a migrated bank, which is what the 2026-08-09 short-circuit
+  addressed. See `book/src/roadmap.md` for both measurements.
+
+  **Not fixed:** the 1,317 surviving merges include wrong ones character
+  similarity cannot detect — `security-reviewer` into `code-reviewer` at 0.67.
+  That needs a signal the score does not have.
 - **Truncation is silent at every ceiling above.** A bank that exceeds
   `MAX_TEMPORAL_WINDOW_NODES` inside one 24 h window loses the far end of it,
   and nothing reports that. Bounded, not solved — the same trade the CE-6

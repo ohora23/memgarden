@@ -20,6 +20,35 @@ const TEMPORAL_WINDOW_DAYS: f64 = 7.0;
 
 const MS_PER_DAY: f64 = 86_400_000.0;
 
+/// A merge needs the two names to be more alike than not.
+///
+/// **Diverged from legacy, deliberately.** `resolution_score` weights the name
+/// at 0.5 and the two circumstantial terms — co-occurrence and same-day
+/// proximity — at 0.3 + 0.2, against a `RESOLUTION_THRESHOLD` of 0.6. Both
+/// halves cap at exactly 0.5, so *neither can clear the gate alone*: a
+/// **perfect** name match with no circumstantial support scores 0.5 and is
+/// rejected, while a name with **no** similarity at all reaches the same 0.5
+/// from circumstance. Identity is therefore decided by "mentioned together,
+/// recently", with the name as a tiebreak — and a mention needs a ratio of
+/// only 0.2 to merge when the circumstantial terms max out.
+///
+/// That is not a threshold anyone chose; it is what the weights and the gate
+/// do when multiplied out. It is also why the exact-match short-circuit above
+/// had to be added as a special case: without it an exactly-matching name was
+/// *rejected* unless it happened to co-occur.
+///
+/// Replaying the scoring over the largest live bank (2,491 entities, 10,437
+/// mentions, each name held out as if it had just arrived) produced 2,406
+/// distinct merges, of which **26% rest on a name similarity below 0.5** —
+/// `ollama` into `ddl`, `llm` into `legacy`, `rrf` into `critic`, every one
+/// scoring 0.602-0.618, just over the gate and entirely on circumstance.
+///
+/// 0.5 is the smallest claim that can be stated rather than tuned: the names
+/// share at least half their characters. It is far below every real spelling
+/// variant the resolver exists for (`memgardend`/`memgarden` is 0.95,
+/// `claude code`/`claude-code` 0.91).
+const NAME_FLOOR: f64 = 0.5;
+
 /// Canonical form of an entity name: trim + lowercase.
 ///
 /// `to_lowercase` is Unicode-aware and Hangul has no case, so a Korean name
@@ -150,6 +179,43 @@ fn longest_match(
     (besti, bestj, bestsize)
 }
 
+/// Two names whose digits differ are different entities, however alike the
+/// letters around them.
+///
+/// Ratcliff/Obershelp scores `ce-6` against `ce-8` at 0.75 and `pr #28`
+/// against `pr #29` at 0.83 — the character that carries the whole meaning is
+/// one of the few they do not share, so a similarity metric rates them as
+/// near-identical. **130 of the live bank's wrong merges sit at 0.7 or above**,
+/// where no name floor reaches them: `ce-11` into `ce-9`, `phase 0` into
+/// `phase e`, `vec0` into `vec`, `rusqlite 0.40.1` into `r2d2_sqlite 0.35`.
+///
+/// Runs rather than a set: `v1.5` and `v5.1` are not the same version, and
+/// comparing `["1","5"]` to `["5","1"]` says so where a set would not.
+///
+/// Names with no digits on either side compare equal here and are left to the
+/// similarity floor, which is every real spelling variant this resolver was
+/// written for.
+fn digits_differ(a: &str, b: &str) -> bool {
+    fn runs(s: &str) -> Vec<&str> {
+        let bytes = s.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i].is_ascii_digit() {
+                let start = i;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+                out.push(&s[start..i]);
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+    runs(a) != runs(b)
+}
+
 /// `entity_resolver.py:684-712`: name similarity (0-0.5) + co-occurring
 /// entity overlap (0-0.3) + temporal proximity (0-0.2).
 ///
@@ -278,6 +344,16 @@ pub fn resolve_fact(
                 if !can_clear_threshold(mention_len, candidate.canonical_name.chars().count()) {
                     continue;
                 }
+                // Two gates the circumstantial terms cannot talk their way
+                // past. Cheapest first: `digits_differ` is a scan, `ratio` is
+                // the O(n*m) Ratcliff/Obershelp pass.
+                if digits_differ(mention, &candidate.canonical_name) {
+                    continue;
+                }
+                let name_ratio = ratio(mention, &candidate.canonical_name);
+                if name_ratio < NAME_FLOOR {
+                    continue;
+                }
                 let overlap = ctx
                     .cooccurring
                     .get(&candidate.id)
@@ -287,12 +363,7 @@ pub fn resolve_fact(
                     (Some(last), Some(now)) => Some((now - last).abs() as f64 / MS_PER_DAY),
                     _ => None,
                 };
-                let score = resolution_score(
-                    ratio(mention, &candidate.canonical_name),
-                    overlap,
-                    nearby.len(),
-                    days_diff,
-                );
+                let score = resolution_score(name_ratio, overlap, nearby.len(), days_diff);
                 if score > best_score {
                     best_score = score;
                     best = Some(candidate.canonical_name.as_str());
@@ -525,6 +596,93 @@ mod tests {
             resolve_fact(&["메모리시스템".to_string()], Some(now), &c),
             vec!["메모리 시스템".to_string()]
         );
+    }
+
+    /// The floor's own case, taken from the live bank: `ollama` merged into
+    /// `ddl` at 0.611 — a name similarity of 0.22 carried over the gate by
+    /// full co-occurrence and same-day proximity. Nothing about the names
+    /// suggests they are the same thing, and nothing in the old scoring
+    /// looked at that.
+    #[test]
+    fn circumstance_alone_can_no_longer_merge_two_unlike_names() {
+        let now = 1_785_000_000_000i64;
+        let mut c = ctx(vec![EntityCandidate {
+            id: 1,
+            canonical_name: "ddl".to_string(),
+            last_seen: Some(now),
+        }]);
+        c.cooccurring
+            .insert(1, ["sqlite".to_string()].into_iter().collect());
+
+        // What the old scoring made of it, kept as an assertion so the test
+        // fails if the weights move rather than silently agreeing.
+        let r = ratio("ollama", "ddl");
+        assert!(
+            resolution_score(r, 1, 1, Some(0.0)) > RESOLUTION_THRESHOLD,
+            "the pre-fix score cleared the gate on circumstance alone"
+        );
+        assert!(r < NAME_FLOOR);
+
+        let out = resolve_fact(&["ollama".to_string(), "sqlite".to_string()], Some(now), &c);
+        assert_eq!(
+            out[0], "ollama",
+            "a name this unlike must stay its own entity"
+        );
+    }
+
+    /// `ce-6` against `ce-8` scores 0.75 on name similarity — comfortably over
+    /// the floor — because the one character that carries the entire meaning
+    /// is the one they do not share. 130 of the live bank's wrong merges sit
+    /// at 0.7 or above, so the floor alone would not reach them.
+    #[test]
+    fn a_differing_digit_blocks_a_merge_the_floor_would_allow() {
+        let now = 1_785_000_000_000i64;
+        let mut c = ctx(vec![EntityCandidate {
+            id: 1,
+            canonical_name: "ce-8".to_string(),
+            last_seen: Some(now),
+        }]);
+        c.cooccurring
+            .insert(1, ["retain".to_string()].into_iter().collect());
+
+        let r = ratio("ce-6", "ce-8");
+        assert!(r > NAME_FLOOR, "the floor does not reach this pair");
+        assert!(resolution_score(r, 1, 1, Some(0.0)) > RESOLUTION_THRESHOLD);
+
+        let out = resolve_fact(&["ce-6".to_string(), "retain".to_string()], Some(now), &c);
+        assert_eq!(out[0], "ce-6", "a different number is a different entity");
+    }
+
+    /// The variants the resolver exists for must still merge. Both gates are
+    /// silent here: no digits on either side, and 0.95 is nowhere near the
+    /// floor.
+    #[test]
+    fn a_real_spelling_variant_still_merges() {
+        let now = 1_785_000_000_000i64;
+        let c = ctx(vec![EntityCandidate {
+            id: 1,
+            canonical_name: "memgarden".to_string(),
+            last_seen: Some(now),
+        }]);
+        assert!(ratio("memgardend", "memgarden") > NAME_FLOOR);
+        assert!(!digits_differ("memgardend", "memgarden"));
+        let out = resolve_fact(&["memgardend".to_string()], Some(now), &c);
+        assert_eq!(out[0], "memgarden");
+    }
+
+    /// Runs in order, not a set of digits: `v1.5` and `v5.1` use the same two
+    /// characters and are not the same version.
+    #[test]
+    fn digits_compare_as_ordered_runs() {
+        assert!(digits_differ("v1.5", "v5.1"));
+        assert!(digits_differ("pr #28", "pr #29"));
+        assert!(digits_differ("vec0", "vec"), "a digit against none differs");
+        assert!(!digits_differ("ac-1", "ac-1 criteria"));
+        assert!(
+            !digits_differ("retain", "retain cap"),
+            "no digits, no opinion"
+        );
+        assert!(!digits_differ("rusqlite 0.40.1", "rusqlite 0.40.1 pin"));
     }
 
     /// An exactly-matching candidate must win even when a near-match outscores

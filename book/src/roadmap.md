@@ -180,7 +180,7 @@ semantic similarity alone orders the list — and it scores an action record at
 0.750 against a genuinely relevant item at 0.752.
 
 
-### `resolve_fact` runs against the whole migrated bank after cutover — CE-7, established by MG-1b and not fixed by it
+### `resolve_fact` runs against the whole migrated bank after cutover — CE-7, established by MG-1b, closed 2026-08-20
 
 MG-1b measured what `entities::resolve_fact`'s fuzzy pass does over a dense
 candidate set: **77 of 3,917 distinct names dissolved into others, 33 of them
@@ -211,6 +211,12 @@ match is the best possible match by definition and can short-circuit the
 argmax. **What would justify it:** an AX-2 run showing the recall effect, for
 the same reason MG-1b did not change it on the way past. A migration does not
 get to reshape CE-7 while nobody is measuring.
+
+> **Both halves have since landed** — the short-circuit on 2026-08-09, and the
+> two gates below on 2026-08-20. This section is kept as the statement of the
+> problem; the two that follow are what was done about it. Note that
+> `load_resolution_context` is still bank-wide: that part is a cost, not a
+> correctness bug, and it stands.
 
 ### Fixed 2026-08-09, and measured directly rather than through AX-2
 
@@ -247,10 +253,61 @@ co-occurred with anything at all, rather than with the entities named alongside
 *this* mention, and reported 2,771 of 3,945 names at risk. That number measured
 the assumption, not the corpus.
 
-**Still open:** the short-circuit only rescues mentions whose exact match
-already exists as an entity. MG-1b's other observed merges — `ci.yml` into
-`cli.mjs` — are names that were never entities, and no short-circuit reaches
-them. That is a threshold-and-weights question, and a separate decision.
+**What it left open**, and the next section answers: the short-circuit only
+rescues mentions whose exact match already exists as an entity. MG-1b's other
+observed merges — `ci.yml` into `cli.mjs` — are names that were never
+entities, and no short-circuit reaches them.
+
+### The name could never carry a merge on its own — CE-7, fixed 2026-08-20
+
+Multiply the weights out and the resolver has no opinion about names.
+`resolution_score` is `ratio*0.5 + overlap*0.3 + temporal*0.2` against a gate
+of 0.6, so **both halves cap at exactly 0.5 and neither clears it alone**:
+
+| | score | verdict |
+|---|---|---|
+| a **perfect** name match, nothing else | 0.50 | rejected |
+| **no** name similarity, co-occurring and same-day | 0.50 | rejected |
+| ratio 0.2, co-occurring and same-day | 0.61 | **merged** |
+
+Identity was decided by "mentioned together, recently", with the name as a
+tiebreak — and that is also why the exact-match short-circuit had to exist as
+a special case rather than fall out of the scoring.
+
+**Measured on the largest live bank** the way MG-1b measured, and not through
+AX-2: AX-2's harness imports entities directly and never calls the fuzzy pass,
+so it cannot see this. Replaying the scoring over 2,491 entities and 10,437
+mentions, each name held out as if it had just arrived, produced **2,406
+distinct merges**:
+
+* **26% rest on a name similarity below 0.5** — `ollama` into `ddl`, `llm`
+  into `legacy`, `rrf` into `critic`, `sql query` into `memgarden`. All score
+  0.602–0.618: just over the gate, entirely on circumstance.
+* **130 wrong merges sit at 0.7 or above**, where no similarity floor reaches
+  them, because the character carrying the meaning is the one not shared —
+  `ce-11` into `ce-9`, `pr #28` into `pr #29`, `version 0.7.4` into
+  `version 0.7.5`, `stage 1` into `stage 2`, `entity_id_1` into `entity_id_2`.
+
+Two gates in `resolve_fact`, neither of which the circumstantial terms can
+talk past:
+
+* **a name floor of 0.5** — the names must be more alike than not. It is the
+  smallest claim that can be stated rather than tuned, and it sits far below
+  every variant the resolver exists for (`memgardend`/`memgarden` is 0.95).
+* **differing digits reject** — compared as ordered runs, so `v1.5` and `v5.1`
+  differ. Names with no digits on either side are left to the floor.
+
+**Result: 1,089 of 2,406 distinct merges blocked (45%), 37% of mentions.**
+Inspecting the blocked set from the top down — the pairs most likely to be a
+false negative — found no legitimate variant among the highest 22, and none at
+the floor's riskiest edge (0.45–0.50: `cargo.toml` into `config.example.toml`,
+`sanitized_context` into `mentioned_at`).
+
+**Still open, and it is the smaller half:** 1,317 merges survive, and some are
+still wrong — `security-reviewer` into `code-reviewer` at 0.67, `memory_save`
+into `memory_sessions` at 0.69. Character similarity cannot separate those
+from real variants, and no threshold will; it needs a different signal than
+the one the score has.
 
 ### The test suite corrupts memory under concurrent load — `memgarden-store`, not the migration
 
