@@ -640,7 +640,13 @@ async fn write_graph(
                     .collect();
             batch.extend(links::temporal_links(&timed, &window));
         }
-        store_graph::insert_links(&db, &batch, now)?;
+        let written = store_graph::insert_links(&db, &batch, now)?;
+        // Temporal links from the retain path; the semantic pass meters its
+        // own in `embed_task`. Both feed one counter because both are "links
+        // this daemon wrote", which is what the dashboard claims to show.
+        METRICS
+            .links_written
+            .fetch_add(written as u64, Ordering::Relaxed);
         Ok(())
     })
     .await

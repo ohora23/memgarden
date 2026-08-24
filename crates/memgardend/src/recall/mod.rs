@@ -155,6 +155,23 @@ pub struct RecallOutcome {
 }
 
 impl RecallOutcome {
+    /// Record this outcome as an injection a client received.
+    ///
+    /// Called by the HTTP route and by nothing else, which is the whole point
+    /// — see the note where the increment used to live. The meter counts the
+    /// **whole injected block**, framing and preamble and timestamp included,
+    /// because that is what the client pays for; `counts.tokens` stays
+    /// text-only, which is the number the budget enforces and the number
+    /// legacy reports (AC-1 parity).
+    pub fn meter(&self) {
+        METRICS
+            .recall_injected_tokens
+            .fetch_add(token_count(&self.injected_text), Ordering::Relaxed);
+        METRICS
+            .recall_injected_memories
+            .fetch_add(self.results.len() as u64, Ordering::Relaxed);
+    }
+
     fn empty() -> Self {
         RecallOutcome {
             results: vec![],
@@ -645,16 +662,18 @@ pub async fn recall(
 
     let injected_text = build_injection(&results, &p.preamble, p.now_ms);
 
-    // The meter counts the whole injected block — framing, preamble and
-    // timestamp included — because that is what the client actually pays
-    // for. `counts.tokens` stays text-only, which is the number the budget
-    // enforces and the number legacy reports (AC-1 parity).
-    METRICS
-        .recall_injected_tokens
-        .fetch_add(token_count(&injected_text), Ordering::Relaxed);
-    METRICS
-        .recall_injected_memories
-        .fetch_add(results.len() as u64, Ordering::Relaxed);
+    // **The injection meter is not incremented here.** It used to be, and the
+    // number it produced was wrong: this function has five callers and only
+    // one of them injects anything into a client's context. Consolidation
+    // (`consolidate/round.rs`), reflection (`mental/reflect.rs`), mental
+    // models (`mental/mod.rs`) and the benchmark all recall internally, and
+    // every one of those was landing in a counter labelled "injected". A live
+    // daemon read 485 memories against 6 recall *requests* — 81 per request,
+    // four times the limit — which is the shape of a meter counting something
+    // other than what its name says.
+    //
+    // `routes::recall::recall_bank` owns it now: what left the daemon through
+    // the API is exactly what a client paid for. See `RecallOutcome::meter`.
 
     Ok(RecallOutcome {
         counts: RecallCounts {

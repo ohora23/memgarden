@@ -226,7 +226,16 @@ pub async fn on_batch_embedded(db: &Arc<Db>, embedded: Vec<(i64, String, Vec<f32
     })
     .await;
     match result {
-        Ok(Ok(written)) => written,
+        Ok(Ok(written)) => {
+            // Declared since MX-1 and never written until now: the dashboard
+            // read `links written 0` while the live database held 235,219 of
+            // them. The count was already coming back from `insert_links`
+            // and being dropped on the floor.
+            memgarden_core::metrics::METRICS
+                .links_written
+                .fetch_add(written as u64, std::sync::atomic::Ordering::Relaxed);
+            written
+        }
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "semantic link pass failed");
             0

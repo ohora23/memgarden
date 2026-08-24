@@ -146,6 +146,21 @@ function renderMetrics(m) {
       ],
       ["memories injected", n(m.recall_injected_memories)],
       ["tokens injected", n(m.recall_injected_tokens)],
+      // The number anyone actually asks for: what a turn costs. The totals
+      // above are lifetime and reset with the process, so on their own they
+      // answer nothing.
+      [
+        "tokens / turn",
+        m.recall_requests
+          ? Math.round(m.recall_injected_tokens / m.recall_requests).toLocaleString()
+          : "—",
+      ],
+      [
+        "memories / turn",
+        m.recall_requests
+          ? (m.recall_injected_memories / m.recall_requests).toFixed(1)
+          : "—",
+      ],
       ["reranker", m.reranker_loaded ? "loaded" : "off"],
     ]),
 
@@ -193,7 +208,6 @@ function renderMetrics(m) {
       ["http errors", n(m.http_errors), m.http_errors > 0 ? "bad" : ""],
       ["http p50", http?.count ? ms(http.p50_us) : "—"],
       ["http p95", http?.count ? ms(http.p95_us) : "—"],
-      ["hook invocations", n(m.hook_invocations)],
     ]),
   );
 }

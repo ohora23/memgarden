@@ -180,7 +180,6 @@ pub struct Metrics {
     /// `benefit_ledger` rows of kind `retain_cap_saving` written by the
     /// retain ingest (AC-6: the ledger auto-populates, MX-1's deferral).
     pub retain_cap_savings: AtomicU64,
-    pub hook_invocations: AtomicU64,
     pub http_latency: Histogram,
     pub recall_latency: Histogram,
     pub retain_latency: Histogram,
@@ -205,7 +204,6 @@ impl Metrics {
             retain_chunks_failed: AtomicU64::new(0),
             retain_jobs_failed: AtomicU64::new(0),
             retain_cap_savings: AtomicU64::new(0),
-            hook_invocations: AtomicU64::new(0),
             http_latency: Histogram::new(),
             recall_latency: Histogram::new(),
             retain_latency: Histogram::new(),
@@ -247,7 +245,6 @@ impl Metrics {
             retain_chunks_failed: self.retain_chunks_failed.load(Ordering::Relaxed),
             retain_jobs_failed: self.retain_jobs_failed.load(Ordering::Relaxed),
             retain_cap_savings: self.retain_cap_savings.load(Ordering::Relaxed),
-            hook_invocations: self.hook_invocations.load(Ordering::Relaxed),
             retain_tokens_saved,
             retain_saving_ratio,
             http_latency: self.http_latency.snapshot(),
@@ -275,7 +272,6 @@ pub struct MetricsSnapshot {
     pub retain_chunks_failed: u64,
     pub retain_jobs_failed: u64,
     pub retain_cap_savings: u64,
-    pub hook_invocations: u64,
     pub retain_tokens_saved: Option<u64>,
     pub retain_saving_ratio: Option<f64>,
     pub http_latency: Option<HistogramSnapshot>,
@@ -301,12 +297,12 @@ mod tests {
             for _ in 0..8 {
                 scope.spawn(|| {
                     for _ in 0..100_000 {
-                        metrics.hook_invocations.fetch_add(1, Ordering::Relaxed);
+                        metrics.recall_requests.fetch_add(1, Ordering::Relaxed);
                     }
                 });
             }
         });
-        assert_eq!(metrics.hook_invocations.load(Ordering::Relaxed), 800_000);
+        assert_eq!(metrics.recall_requests.load(Ordering::Relaxed), 800_000);
     }
 
     #[test]
