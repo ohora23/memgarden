@@ -22,7 +22,42 @@ this order, and nothing about the content is decided after seeing it:
    is newer than the frozen database's newest memory;
 5. **deduplicated** by normalised text.
 
-Then **random sample of 30, `seed = 3`**, recorded in the result.
+### Amendment, 2026-08-24 — rule 3 was not strong enough
+
+**Recorded rather than quietly applied, and the order matters: this was found
+after the first draw and before either arm was run, so no answer had been
+seen when it was made.**
+
+The keyword form of rule 3 caught bare demonstratives and dropped none of the
+*continuations*. The first 30-task draw contained `GUI에서 HYB 다시 띄워서
+확인해볼게`, `00이랑 loop-upgrade도 마저 확인해줘`, `재시작하고 서브에이전트
+GPU로 잘 도는지 확인해줘` — prompts whose subject lives entirely in the turn
+before them. That is the AC-1 failure reproduced exactly: a live prompt refers
+to the conversation around it, and five of six shadow prompts were unjudgeable
+for it.
+
+Rule 3 is therefore replaced by a mechanical test rather than a longer keyword
+list, because a longer keyword list is the author guessing again:
+
+> **3′.** Each candidate is shown to three independent classifiers, given the
+> prompt and the machine but **not** the conversation, and asked whether a
+> competent engineer could tell what is being asked. Majority of three. The
+> classifiers are told to judge the prompt, not the difficulty of the answer,
+> and not to penalise terseness or Korean.
+
+**This amendment cannot favour the memory arm.** Context-dependent prompts are
+where a memory system most plausibly looks good — it can supply the missing
+referent from the bank while the repository cannot. Removing them takes away
+an advantage rather than granting one.
+
+The original `seed = 3` draw is kept at `tasks-seed3-original.json` for audit.
+The re-draw uses **`seed = 5`** over the filtered pool, so the two samples
+cannot be confused.
+
+---
+
+Then **random sample of 30, `seed = 5`** over the pool surviving rules 1, 2,
+3′, 4 and 5, recorded in the result.
 
 ## The two arms
 
