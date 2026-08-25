@@ -1810,11 +1810,14 @@ fn fresh_database_has_the_0008_retain_cursor_range() {
     let db = Db::open_memory().unwrap();
     let conn = db.read().unwrap();
 
-    assert_eq!(memgarden_store::LATEST_VERSION, 8);
+    // The `LATEST_VERSION` pin moved to `fresh_database_has_the_0009_partial_status`
+    // when v9 landed — the convention is that it lives with the newest
+    // migration. What this test still owns is that v8's columns survived the
+    // v9 table rebuild, which is exactly the kind of thing a rebuild loses.
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    assert!(version >= 8);
 
     for column in ["offset_from", "offset_to"] {
         let (notnull, default): (i64, Option<String>) = conn
@@ -1832,4 +1835,76 @@ fn fresh_database_has_the_0008_retain_cursor_range() {
             "{column} needs a default so existing rows migrate"
         );
     }
+}
+
+/// v9 adds `partial` to the retain-job status CHECK, and the pin lives here
+/// now because this is the newest migration.
+///
+/// The rebuild is the risk this guards: SQLite cannot alter a CHECK in place,
+/// so `0009` recreates `retain_jobs` and copies the rows. A column dropped or
+/// a constraint quietly lost in that copy would not show up anywhere else.
+#[test]
+fn fresh_database_has_the_0009_partial_status() {
+    let db = Db::open_memory().unwrap();
+    let conn = db.read().unwrap();
+
+    assert_eq!(memgarden_store::LATEST_VERSION, 9);
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 9);
+
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'retain_jobs'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        sql.contains("'partial'"),
+        "the CHECK must admit partial: {sql}"
+    );
+    assert!(
+        sql.contains("STRICT"),
+        "the rebuild must stay STRICT: {sql}"
+    );
+    assert!(
+        sql.contains("json_valid(detail)"),
+        "the detail check must survive the rebuild: {sql}"
+    );
+    // The columns v8 added, and the ones the table had before it.
+    for column in [
+        "offset_from",
+        "offset_to",
+        "chunks_skipped",
+        "chunks_failed",
+        "facts_written",
+        "session_id",
+        "document_id",
+    ] {
+        assert!(
+            sql.contains(column),
+            "{column} must survive the rebuild: {sql}"
+        );
+    }
+
+    // And the constraint actually bites: an unknown status is still refused.
+    conn.execute(
+        "INSERT INTO banks (bank_id, created_at, updated_at) VALUES ('b', 0, 0)",
+        [],
+    )
+    .unwrap();
+    let ok = conn.execute(
+        "INSERT INTO retain_jobs (job_id, bank_id, status, created_at, updated_at)
+         VALUES ('j1', 'b', 'partial', 0, 0)",
+        [],
+    );
+    assert!(ok.is_ok(), "partial must be insertable: {ok:?}");
+    let bad = conn.execute(
+        "INSERT INTO retain_jobs (job_id, bank_id, status, created_at, updated_at)
+         VALUES ('j2', 'b', 'halfway', 0, 0)",
+        [],
+    );
+    assert!(bad.is_err(), "an unknown status must still be refused");
 }

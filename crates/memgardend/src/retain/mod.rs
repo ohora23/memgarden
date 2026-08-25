@@ -356,6 +356,17 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
         METRICS.retain_errors.fetch_add(1, Ordering::Relaxed);
         METRICS.retain_jobs_failed.fetch_add(1, Ordering::Relaxed);
         JobStatus::Failed
+    } else if progress.chunks_failed > 0 {
+        // Some facts were written and some chunk's were not. `Done` was the
+        // answer here and it was the wrong one: measured on the live daemon,
+        // four of the last twelve jobs finished `done` having lost chunks, 16
+        // of 95 chunks overall, with the loss visible only in a counter.
+        //
+        // `clean` above already withholds the content hash on this path, so
+        // re-posting the transcript re-ingests it rather than being dismissed
+        // as a duplicate. The gap was never the recovery route — it was that
+        // nothing said recovery was needed.
+        JobStatus::Partial
     } else {
         JobStatus::Done
     };

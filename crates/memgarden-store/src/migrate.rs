@@ -20,6 +20,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         8,
         include_str!("../migrations/0008_retain_cursor_range.sql"),
     ),
+    (
+        9,
+        include_str!("../migrations/0009_retain_partial_status.sql"),
+    ),
 ];
 
 /// The schema version this build expects, i.e. the highest entry in

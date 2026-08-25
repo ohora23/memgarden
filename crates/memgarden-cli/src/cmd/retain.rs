@@ -491,7 +491,13 @@ fn job_status(cfg: &Config, job_id: &str) -> JobOutcome {
         Ok(r) if r.is_success() => {
             let reply: JobReply = serde_json::from_slice(&r.body).unwrap_or_default();
             match reply.status.unwrap_or_default().as_str() {
-                "done" => JobOutcome::Done(reply.chunks_failed),
+                // `partial` settles exactly like `done`: it *is* done, and
+                // `chunks_failed` is the number this arm already reads. The
+                // new status exists so a person can see the loss, not to
+                // change control flow — mapping it to the `_` arm would read
+                // as "still running" and wedge this session's cursor for good,
+                // which is a worse outcome than the silence it replaced.
+                "done" | "partial" => JobOutcome::Done(reply.chunks_failed),
                 "failed" => JobOutcome::Failed,
                 _ => JobOutcome::Unsettled,
             }
