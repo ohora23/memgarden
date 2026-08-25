@@ -22,6 +22,31 @@ use memgarden_core::config::OllamaConfig;
 /// (`retain.wall_timeout_secs`) is what bounds that wait.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// The temperature a given attempt runs at.
+///
+/// **A retry at a fixed temperature is not a retry.** Measured on the live
+/// daemon: one chunk failed to parse four times running at `temperature 0.1`,
+/// breaking at column 315, 315, 315 and 322 — the same computation, spent four
+/// times. And it is not the seed: sampling the same prompt four times with and
+/// without an explicit per-attempt seed both produced **2 distinct outputs of
+/// 4**, because at 0.1 the temperature is what binds, not the entropy source.
+///
+/// Escalating instead gives each attempt a genuinely different sample —
+/// measured **4 distinct outputs of 4** across `0.1 → 0.3 → 0.6 → 0.9`, all
+/// four still valid JSON, so the diversity does not come at the cost of the
+/// structure the grammar is there to guarantee.
+///
+/// The first attempt keeps the configured temperature, so nothing changes for
+/// the calls that succeed — which is nearly all of them.
+fn retry_temperature(base: f64, attempt: u32) -> f64 {
+    match attempt {
+        0 => base,
+        1 => (base + 0.2).min(0.9),
+        2 => (base + 0.5).min(0.9),
+        _ => 0.9,
+    }
+}
+
 /// Retry backoff: starts at 1s, doubles each attempt, capped at 10s
 /// (Critic Revision R14 — legacy's own cap is 60s, `config.py:862-864`, but
 /// a single `max_concurrent=1` permit sitting in a 60s sleep starves every
@@ -219,7 +244,7 @@ impl OllamaClient {
 
             for attempt in 0..outer_attempts {
                 match self
-                    .try_chat(system, user, schema, num_predict, num_ctx)
+                    .try_chat(system, user, schema, num_predict, num_ctx, attempt)
                     .await
                 {
                     Ok(reply) => match serde_json::from_str::<T>(&reply.content) {
@@ -311,9 +336,10 @@ impl OllamaClient {
         schema: &Value,
         num_predict: Option<u32>,
         num_ctx: Option<u32>,
+        attempt: u32,
     ) -> Result<Reply, OllamaError> {
         let mut options = json!({
-            "temperature": self.cfg.temperature,
+            "temperature": retry_temperature(self.cfg.temperature, attempt),
             // A per-call ceiling, never a raise: a config already asking
             // for less keeps its number.
             "num_predict": num_predict
@@ -338,9 +364,28 @@ impl OllamaClient {
         // reply was unparseable at column 4681, four attempts running, and the
         // job finished `done` with a chunk's facts permanently lost.
         //
-        // Here the grammar constrains decoding, so a structurally invalid
-        // reply is not producible. Truncation at the output budget remains —
-        // that is what `done_reason` is read for above.
+        // Here the grammar constrains decoding — but the claim that once
+        // stood in this comment, that a structurally invalid reply "is not
+        // producible", is **false**, and the live daemon disproved it on
+        // 2026-08-23. Quoted from the log:
+        //
+        //     "occurred_start":"2026-08-23T10:06:26.358Z\",\"occurred_end\":\"…
+        //
+        // The model wrote an escaped quote inside the value, so everything
+        // after it became part of that string, and generation ended there —
+        // `done_reason=stop`, `eval_count=139`, an object that never closed.
+        // A grammar that constrains decoding evidently does not stop the model
+        // ending a turn mid-string.
+        //
+        // It is rare and it is **unreproduced**: 22 samples against the same
+        // model, including prompts pushed past the default context window and
+        // schemas with the date fields bounded, produced valid JSON every
+        // time. So this stays documented rather than fixed — the two defences
+        // that did land are an escalating retry temperature (a fixed one made
+        // four attempts into one) and a job status that admits the loss.
+        //
+        // Truncation at the output budget remains a separate outcome — that is
+        // what `done_reason` is read for above.
         //
         // The two-message chat is expressed as `system` + `prompt`, which
         // Ollama renders through the same model template.
@@ -490,6 +535,33 @@ pub async fn run_prober(client: std::sync::Arc<OllamaClient>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The defect this replaced: four attempts at one temperature are one
+    /// attempt billed four times. Measured on the live daemon — the same chunk
+    /// failed at column 315, 315, 315, 322.
+    #[test]
+    fn every_attempt_runs_at_a_different_temperature() {
+        let base = 0.1;
+        let temps: Vec<f64> = (0..4).map(|a| retry_temperature(base, a)).collect();
+        for w in temps.windows(2) {
+            assert!(w[1] > w[0], "attempt temperatures must escalate: {temps:?}");
+        }
+        // The first attempt is untouched, so the calls that already succeed
+        // behave exactly as before.
+        assert_eq!(temps[0], base);
+        // And nothing runs hot enough to lose the structure the grammar is
+        // there for — 0.9 was the top of the range measured as still-valid.
+        assert!(temps.iter().all(|t| *t <= 0.9));
+    }
+
+    /// A configured temperature that is already high must not be pushed past
+    /// the measured ceiling by the escalation.
+    #[test]
+    fn escalation_is_capped_for_an_already_warm_config() {
+        for a in 0..6 {
+            assert!(retry_temperature(0.85, a) <= 0.9);
+        }
+    }
 
     fn test_cfg() -> OllamaConfig {
         OllamaConfig {

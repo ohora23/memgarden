@@ -160,5 +160,10 @@ async fn recall_inner(
         now_ms: memgarden_core::now_ms(),
     };
 
-    Ok(Json(recall::recall(&state, bank_id, params).await?))
+    let outcome = recall::recall(&state, bank_id, params).await?;
+    // Metered here rather than inside `recall::recall`: this is the only
+    // caller whose result reaches a client, so this is the only call that is
+    // an injection.
+    outcome.meter();
+    Ok(Json(outcome))
 }

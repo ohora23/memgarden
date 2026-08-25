@@ -168,7 +168,12 @@ async fn await_job_within(
         let job = memgarden_store::retain_jobs::get(db, job_id)
             .unwrap()
             .expect("job row must exist the moment the 202 lands");
-        if job.status == "done" || job.status == "failed" {
+        // Terminality comes from the type, not from a list of strings kept
+        // in step by hand -- `Partial` was added and this helper hung for its
+        // whole budget because the list did not know about it.
+        if memgarden_store::retain_jobs::JobStatus::parse(&job.status)
+            .is_some_and(|s| s.is_terminal())
+        {
             return job;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -432,7 +437,10 @@ async fn a_partially_failed_job_is_retryable_not_a_permanent_duplicate() {
     )
     .await;
     let job = await_job(&harness.db, first["job_id"].as_str().unwrap()).await;
-    assert_eq!(job.status, "done");
+    // Finished, and honest about what it lost — which is the precondition for
+    // the retry this test is about: the content hash is withheld on exactly
+    // this status, so the second POST is a fresh job rather than a duplicate.
+    assert_eq!(job.status, "partial");
     assert_eq!(
         job.chunks_failed, 1,
         "the fixture must actually fail a chunk"
@@ -776,7 +784,18 @@ async fn one_failed_chunk_does_not_fail_the_job() {
         .to_string();
 
     let job = await_job(&harness.db, &job_id).await;
-    assert_eq!(job.status, "done", "a partial failure is not a failed job");
+    // The invariant this test protects is "one failed chunk must not fail the
+    // whole job". It used to encode that as `== "done"`, which stopped being
+    // the same claim when `partial` arrived: the job is finished, it is not
+    // failed, and it says out loud that it lost something.
+    assert_ne!(
+        job.status, "failed",
+        "a partial failure is not a failed job"
+    );
+    assert_eq!(
+        job.status, "partial",
+        "a job that lost a chunk must not report the same status as one that lost nothing"
+    );
     assert_eq!(job.chunks_failed, 1);
     assert_eq!(job.chunks_done, job.chunks_total - 1);
     assert_eq!(job.facts_written, (job.chunks_total - 1) * 2);

@@ -60,6 +60,16 @@ pub enum JobStatus {
     Pending,
     Running,
     Done,
+    /// Finished, but not with everything it was given: at least one chunk's
+    /// facts were never written and nothing will go back for them.
+    ///
+    /// This exists because `Done` was being reported for it. Measured on the
+    /// live daemon: of the last twelve jobs, **four finished `done` having
+    /// lost chunks** — 16 of 95 chunks failed overall — and the only trace was
+    /// a counter nobody reads. The content hash is already withheld on such a
+    /// run (`retain::mod`), so re-posting the transcript re-ingests it; what
+    /// was missing is anything telling a person that it needs re-posting.
+    Partial,
     Failed,
 }
 
@@ -69,8 +79,36 @@ impl JobStatus {
             JobStatus::Pending => "pending",
             JobStatus::Running => "running",
             JobStatus::Done => "done",
+            JobStatus::Partial => "partial",
             JobStatus::Failed => "failed",
         }
+    }
+    /// Parse the column value back. `None` for anything this build does not
+    /// know, which a caller must treat as "not finished" rather than guessing.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "pending" => JobStatus::Pending,
+            "running" => JobStatus::Running,
+            "done" => JobStatus::Done,
+            "partial" => JobStatus::Partial,
+            "failed" => JobStatus::Failed,
+            _ => return None,
+        })
+    }
+
+    /// Whether the job will never change again.
+    ///
+    /// **Ask the type, do not enumerate the strings.** Adding `Partial` broke
+    /// two separate `status == "done" || status == "failed"` checks — the hook
+    /// CLI, where an unrecognised status reads as "still running" and wedges
+    /// the session cursor, and the integration-test helper, which hung for its
+    /// full budget. Both were the same mistake in two places, which is what a
+    /// method is for.
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            JobStatus::Done | JobStatus::Partial | JobStatus::Failed
+        )
     }
 }
 
@@ -190,6 +228,51 @@ pub fn fail_stale(db: &Db, reason: &str) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every status must round-trip through the column and answer
+    /// `is_terminal` — the property two call sites got wrong by keeping their
+    /// own string lists.
+    #[test]
+    fn every_status_round_trips_and_knows_if_it_is_terminal() {
+        for st in [
+            JobStatus::Pending,
+            JobStatus::Running,
+            JobStatus::Done,
+            JobStatus::Partial,
+            JobStatus::Failed,
+        ] {
+            assert_eq!(JobStatus::parse(st.as_str()), Some(st));
+        }
+        assert!(!JobStatus::Pending.is_terminal());
+        assert!(!JobStatus::Running.is_terminal());
+        assert!(JobStatus::Done.is_terminal());
+        assert!(
+            JobStatus::Partial.is_terminal(),
+            "a job that lost chunks is finished"
+        );
+        assert!(JobStatus::Failed.is_terminal());
+        // An unknown status must not read as finished.
+        assert_eq!(JobStatus::parse("wat"), None);
+    }
+
+    /// `partial` has to survive the round trip through the column, or a job
+    /// that lost chunks reads back as something else entirely.
+    #[test]
+    fn partial_is_a_distinct_status_string() {
+        assert_eq!(JobStatus::Partial.as_str(), "partial");
+        let all = [
+            JobStatus::Pending,
+            JobStatus::Running,
+            JobStatus::Done,
+            JobStatus::Partial,
+            JobStatus::Failed,
+        ];
+        let names: Vec<&str> = all.iter().map(|s| s.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "status strings must be distinct");
+    }
     use crate::banks;
 
     #[test]
