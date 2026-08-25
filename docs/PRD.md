@@ -73,6 +73,12 @@
   판정은 비대칭이 된다: 조용하면 여전히 미결(커널 수정과 코어 제거가 구분 안 됨), **패닉이 나면 CPU-3 가설 기각.**
   근거: `docs/evidence/ac-7.md`
 
+### v1 이후 대기 중인 측정
+- **`include_tool_calls` A/B (미착수).** 명령 로그가 저장 노드의 2.4%인데 주입의 22%를 차지한다.
+  이를 원천 차단하는 손잡이 `[retain] include_tool_calls`는 이미 존재하며 `coding` 프로필이 켜 둔다.
+  끄면 무엇을 잃는지는 **측정되지 않았다** — 같은 세션들을 두 설정으로 재추출해 블라인드 비교해야 한다.
+  프롬프트로 고치려던 시도는 측정에서 반대 방향으로 나와 폐기했다. `docs/evidence/command-log-pollution.md`
+
 ## Assumptions Exposed & Resolved
 | 가정 | 검증 방법 | 결론 |
 |---|---|---|
