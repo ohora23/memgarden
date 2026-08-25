@@ -126,9 +126,23 @@ clean runs inside the first hour of a fresh boot is not evidence against a
 fault that takes hours to surface.
 
 So the CPU-3 experiment — taking `cpu3`/`cpu11` offline and re-soaking — was
-**designed and then dropped**: with the control arm already at zero there is
-nothing for the treatment arm to subtract from, and it would have cost a core
-to measure nothing.
+**designed and then dropped as a measurement**: with the control arm already
+at zero there is nothing for the treatment arm to subtract from.
+
+The user then took `cpu3`/`cpu11` offline anyway at 02:07, **as a precaution
+rather than as an experiment** (`nproc` 16 → 14). That is a different and
+defensible reason: if the hypothesis is right, the machine stops panicking.
+It changes what the coming days can tell us, asymmetrically:
+
+* **quiet past 31 h → still undecided.** A kernel fix and a removed core are
+  not separable from a quiet machine.
+* **a panic → the CPU-3 hypothesis is refuted.** The suspect core was not
+  running, so it cannot be the cause, and kdump writes another dump either
+  way.
+
+The offline state **does not survive a reboot**, which matters because a
+memtest86+ run needs one; `/etc/tmpfiles.d/` will hold it across boots if that
+is wanted.
 
 What discriminates costs nothing: **use the machine.** If `-30` passes 31
 hours of uptime quietly, `-29` was the fault. If it panics, kdump writes
