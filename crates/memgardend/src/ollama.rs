@@ -364,9 +364,28 @@ impl OllamaClient {
         // reply was unparseable at column 4681, four attempts running, and the
         // job finished `done` with a chunk's facts permanently lost.
         //
-        // Here the grammar constrains decoding, so a structurally invalid
-        // reply is not producible. Truncation at the output budget remains —
-        // that is what `done_reason` is read for above.
+        // Here the grammar constrains decoding — but the claim that once
+        // stood in this comment, that a structurally invalid reply "is not
+        // producible", is **false**, and the live daemon disproved it on
+        // 2026-08-23. Quoted from the log:
+        //
+        //     "occurred_start":"2026-08-23T10:06:26.358Z\",\"occurred_end\":\"…
+        //
+        // The model wrote an escaped quote inside the value, so everything
+        // after it became part of that string, and generation ended there —
+        // `done_reason=stop`, `eval_count=139`, an object that never closed.
+        // A grammar that constrains decoding evidently does not stop the model
+        // ending a turn mid-string.
+        //
+        // It is rare and it is **unreproduced**: 22 samples against the same
+        // model, including prompts pushed past the default context window and
+        // schemas with the date fields bounded, produced valid JSON every
+        // time. So this stays documented rather than fixed — the two defences
+        // that did land are an escalating retry temperature (a fixed one made
+        // four attempts into one) and a job status that admits the loss.
+        //
+        // Truncation at the output budget remains a separate outcome — that is
+        // what `done_reason` is read for above.
         //
         // The two-message chat is expressed as `system` + `prompt`, which
         // Ollama renders through the same model template.
