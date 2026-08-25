@@ -144,6 +144,35 @@ Ordered by what blocks what.
 
 ### ~~The gold harness no longer reproduces its own ratified baseline~~ — retracted 2026-08-19, one day after it was filed
 
+
+### MX-3 measured what memory substitutes for, and the sample could not carry the question — 2026-08-25
+
+The first Layer 3 run. 27 real questions, two arms differing only in the
+injected block, judged blind by three panels each.
+
+**The memory arm lost, 11 to 7**, and spent **5% more tokens** doing it. Wall
+clock fell 25%. Judges flagged 32 factual errors against the memory arm to 24
+against the other.
+
+**And the sample cannot answer the question it was built for.** Stratified
+before the arms ran: **24 of 27 answers were already on disk**, memory-only
+n=1. So the run measured "when the answer is written down anyway, does
+injecting help?" — no, slightly worse, faster — and not "when the answer
+exists only because someone said it, does the bank recover it?"
+
+That is a fact about this machine rather than about the system: the knowledge
+is in the vault, the docs and the commit messages already.
+
+**Two things the run got wrong, and one it got right by accident.** The
+harness let agents write to the tree it had pinned — arm B's went as far as
+rebuilding the daemon and restarting the live service — and the harness cannot
+attribute tokens per task. What it found on the way was real: retain jobs
+losing chunks and reporting `done`, now fixed.
+
+[The result and its limits](../../docs/evidence/mx-3-result.md) ·
+[the design](../../docs/design/mx-3-substitution-measurement.md) ·
+[the rules, committed first](../../docs/evidence/mx-3-criteria.md)
+
 It reproduces exactly. The report compared a fresh run against
 `gold/results.jsonl` **line 8** (0.3881 / 0.5221 / 0.3236) while lines 11 and
 12 — the two newest runs at the same corpus digest and configuration — both
