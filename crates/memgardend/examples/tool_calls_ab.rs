@@ -61,10 +61,7 @@ async fn main() {
         .position(|a| a == "--out")
         .and_then(|i| args.get(i + 1))
         .cloned();
-    let files: Vec<&String> = args
-        .iter()
-        .filter(|a| a.ends_with(".jsonl"))
-        .collect();
+    let files: Vec<&String> = args.iter().filter(|a| a.ends_with(".jsonl")).collect();
     assert!(!files.is_empty(), "give at least one transcript .jsonl");
 
     let base = memgarden_core::config::Config::defaults().expect("defaults");
@@ -112,7 +109,12 @@ async fn main() {
                 .await
                 {
                     Ok(fs) => {
-                        eprintln!("  {session}/{arm} chunk {}/{}: {} facts", i + 1, chunks.len(), fs.len());
+                        eprintln!(
+                            "  {session}/{arm} chunk {}/{}: {} facts",
+                            i + 1,
+                            chunks.len(),
+                            fs.len()
+                        );
                         for f in fs {
                             facts.push(serde_json::json!({
                                 "chunk": i,
@@ -121,7 +123,11 @@ async fn main() {
                             }));
                         }
                     }
-                    Err(e) => eprintln!("  {session}/{arm} chunk {}/{}: ERROR {e}", i + 1, chunks.len()),
+                    Err(e) => eprintln!(
+                        "  {session}/{arm} chunk {}/{}: ERROR {e}",
+                        i + 1,
+                        chunks.len()
+                    ),
                 }
             }
             if let Some(d) = &out_dir {
