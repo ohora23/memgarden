@@ -150,9 +150,63 @@ another dump and the CPU number in it decides. Three dumps sat unopened in
 `/var/crash/` through August; that they are worth opening is the durable
 finding here.
 
+## The clause closes — on a 12-hour threshold the user set, not the 31-hour one
+
+**Signed 2026-08-26.** The threshold moved from "quiet past 31 h" to "quiet
+past 12 h", and the reason it is recorded rather than quietly applied is that
+it is a weakening: the three panics fired at **1.7 h, 13 h and 31 h**, so a
+12-hour bar clears two of the three observed intervals and not the third. A
+fault that takes ~31 h to surface would still be missed.
+
+The evidence taken at that point:
+
+| | |
+|---|---|
+| uptime | 22 h 43 m on `7.0.0-30-generic` |
+| new kernel dumps in `/var/crash/` | **none** (newest still `202608260115`) |
+| `cargo test --workspace`, 20 consecutive runs | **20 pass, 0 SIGSEGV** |
+| kernel `WARNING`/`BUG`/`Oops` during the soak | **0** |
+| suite tally | **867 passed, 0 failed, 33 suites** |
+
+Against 2 of 4 dying on `-29` earlier the same day, and 75 of 75 passing since
+the reboot.
+
+**Two confounds stay on the record, unresolved by this.** `cpu3`/`cpu11` are
+offline, so a quiet machine cannot distinguish "the `-29` kernel was the
+fault" from "the suspect core is not running"; and 22 h is short of the
+longest observed interval. AC-7 asks whether the suite passes, and it does.
+It does not ask why the machine used to crash, and that stays open below.
+
+## The CPU-3 comparison, resumable as its own experiment
+
+Decoupling it from AC-7 keeps it alive rather than closing it by assumption.
+The arm now on record is the treatment:
+
+| arm | cores | kernel | result |
+|---|---|---|---|
+| **treatment** (recorded) | `cpu3`/`cpu11` **offline**, 14 threads | `-30` | 22 h 43 m quiet, 20/20 suite runs pass |
+| **control** (to run) | all 16 threads | `-30` | — |
+
+To run the control, bring the cores back and soak to the same 12-hour bar:
+
+```bash
+echo 1 | sudo tee /sys/devices/system/cpu/cpu3/online /sys/devices/system/cpu/cpu11/online
+```
+
+Same kernel, same workload, one variable. Reading it:
+
+* **control also quiet past 12 h** → the core is not the difference; `-29` was
+  the fault, and the cores can stay online for good.
+* **control panics** → `/var/crash/` gets another dump. If it faults on CPU 3
+  again, that is the hypothesis confirmed on the kernel's own evidence.
+
+Neither outcome needs a reboot, and the offline state does not survive one, so
+a reboot for any other reason silently starts the control arm — worth noticing
+rather than being surprised by.
+
 ## Status
 
 | clause | verdict |
 |---|---|
 | every PR follows the template | **yes, as amended** — holds #14–#27 without exception; #1–#13 predate adoption. User-signed 2026-08-26. |
-| `cargo test` passes | **not decidable yet** — 2 of 4 runs died on kernel `-29`; 55 of 55 pass on `-30`, but only at low uptime. Traced to a kernel fault on CPU 3, not to this codebase. Closes when `-30` has run quietly past 31 h of uptime. |
+| `cargo test` passes | **yes** — 867 passed / 0 failed; 20 consecutive workspace runs clean at 22 h 43 m uptime on `-30`, no new crash dumps, no kernel warnings. Signed 2026-08-26 against a 12-hour threshold. The CPU-3 cause stays open as its own experiment. |
