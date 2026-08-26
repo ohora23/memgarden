@@ -50,6 +50,20 @@ Recall quality is measured against a frozen 2,718-fact corpus with 20 graded que
 
 [Every number, per-arm, with conditions and caveats →](docs/performance.md)
 
+## What it actually buys — including where it lost
+
+Against the Python system it replaced: **13 better / 5 worse / 1 equivalent** on a blind recall-quality panel, 7.1ms instead of ~51ms, and 0.845ms of hook per turn against a disabled path that cost 33ms.
+
+On its own terms the record is mixed, and the losses are in the repository next to the wins:
+
+- **It is an index, not an archive.** A census of 60 sampled memories found **0** that state anything not already on disk — under ~5% at 95% confidence. This bank does not hold what the disk lost.
+- **Substitution did not show up.** On questions whose answers were already in the repo, the memory arm was **11–7 worse** on a blind panel and spent **+5% tokens** — while finishing **25% faster**.
+- **Injection is a cost**: 1,325 tokens and 18 memories per turn. The ingest caps save 57.4% of extraction input, but that is the local LLM's input, not yours.
+
+Those three agree on one thing: **the value is retrieval, not storage.** It surfaces the paragraph of yours that answers the question — including, once, a line in `book/src/roadmap.md` that reopened a month-old crash investigation because nobody was going to grep for it.
+
+[The full analysis, with what is still unmeasured →](docs/benefits.md)
+
 ## Getting started
 
 Requires Rust and a running [Ollama](https://ollama.com) with an extraction model (default `qwen3-14b-nothink`).
@@ -97,6 +111,7 @@ The daemon creates its data dir `0700` and speaks plain HTTP on loopback with a 
 
 - **[Wiki](book/src/introduction.md)** — install, usage, how it works, extending it, roadmap. English canonical, Korean alongside. `mdbook serve book`.
 - **[Architecture](docs/architecture.md)** — the decision table and the case for rebuilding
+- **[Benefits](docs/benefits.md)** — every measurement of what it buys, in one place, including the ones that came out against it
 - **[Performance](docs/performance.md)** — every measured number, with conditions
 - **[Status](docs/status.md)** — phases, cutover gates, and what is still open
 - **[Migration runbook](docs/runbook-migration.md)** · **[hooks runbook](docs/runbook-hooks.md)**
