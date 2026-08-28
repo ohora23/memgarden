@@ -177,32 +177,56 @@ fault" from "the suspect core is not running"; and 22 h is short of the
 longest observed interval. AC-7 asks whether the suite passes, and it does.
 It does not ask why the machine used to crash, and that stays open below.
 
-## The CPU-3 comparison, resumable as its own experiment
+## The CPU-3 comparison — run, and the hypothesis is not supported
 
-Decoupling it from AC-7 keeps it alive rather than closing it by assumption.
-The arm now on record is the treatment:
+Decoupling it from AC-7 kept it alive. Both arms have now run on kernel
+`7.0.0-30-generic`, differing in one variable:
 
-| arm | cores | kernel | result |
-|---|---|---|---|
-| **treatment** (recorded) | `cpu3`/`cpu11` **offline**, 14 threads | `-30` | 22 h 43 m quiet, 20/20 suite runs pass |
-| **control** (to run) | all 16 threads | `-30` | — |
+| arm | cores | duration | new panics | kernel warnings |
+|---|---|---|---|---|
+| **treatment** | `cpu3`/`cpu11` **offline**, 14 threads | **43 h 55 m** | **0** | 0 |
+| **control** | all 16 threads | **25 h 27 m** | **0** | 0 |
 
-To run the control, bring the cores back and soak to the same 12-hour bar:
+**The suspect core ran for 25 hours under normal load and nothing happened.**
+That is the result the experiment was built to get, and it points away from the
+core.
 
-```bash
-echo 1 | sudo tee /sys/devices/system/cpu/cpu3/online /sys/devices/system/cpu/cpu11/online
-```
+Two facts beside it point the same way. All three panics were on kernel `-29`;
+**`-30` has now run 2 days 21 hours with zero**, of which 25 hours had the
+suspect core online. And the 08-26 dump's proximate trigger — `irq_fpu_usable`
+warning inside `crc32c` on the ext4 superblock path, then `scheduling while
+atomic` — is a kernel-code shape, not a shape a bad core produces.
 
-Same kernel, same workload, one variable. Reading it:
+**So the CPU-3 conclusion is withdrawn a second time, and this time with a
+control arm rather than a reproduction rate.** It was first withdrawn in August
+when a 12-of-40 reproduction failed to repeat in 160 retries; it came back on
+better evidence — three kernel panics, all faulting on CPU 3, one of them in
+`swapper/3` where no userspace code runs. That evidence was real and is
+unchanged. What it turned out to mean is different: **CPU 3 is where the fault
+landed, not what caused it.** A kernel bug that corrupts scheduler or FPU state
+will fault on whichever CPU is holding the wreckage, and on a machine whose
+workload pins work unevenly that can be the same core three times.
 
-* **control also quiet past 12 h** → the core is not the difference; `-29` was
-  the fault, and the cores can stay online for good.
-* **control panics** → `/var/crash/` gets another dump. If it faults on CPU 3
-  again, that is the hypothesis confirmed on the kernel's own evidence.
+### What this does and does not establish
 
-Neither outcome needs a reboot, and the offline state does not survive one, so
-a reboot for any other reason silently starts the control arm — worth noticing
-rather than being surprised by.
+**Does**: with the suspect core running, 25 hours of ordinary use produced
+nothing. The cores stay online; there is no reason to keep an eighth of the CPU
+parked.
+
+**Does not**: prove `-29` was the cause. It is now the best-supported
+explanation — every panic on it, none on `-30` across 69 hours — but the arms
+are not equal exposure. The treatment ran 43 h and the control 25 h, and the
+longest observed interval between panics was **31 h**, which the control did not
+reach. The user closed the arm at 25 h judging the evidence sufficient; that
+call is recorded here rather than presented as a completed 31-hour run.
+
+**Still open**: nothing actionable. If the machine panics again, `/var/crash/`
+writes another report and the CPU number in it is the next piece of evidence —
+`apport-unpack` on the `.crash` file, which is the durable artifact.
+`systemd-tmpfiles-clean` ages out the multi-gigabyte `vmcore` directories, but
+the ~45 KB reports carrying `VmCoreDmesg` survive, and those are what every
+finding here was read from.
+
 
 ## Status
 
