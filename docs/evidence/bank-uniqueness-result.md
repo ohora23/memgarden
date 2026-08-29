@@ -1,5 +1,20 @@
 # What the bank holds that disk does not — the answer is "almost nothing"
 
+> **Correction, 2026-08-29.** This measurement is **valid for the question it
+> asked and invalid for the question it gets quoted for.** It asked *"is this
+> node's content already on disk?"* — and a test that looks for distinctive
+> terms **cannot judge a synthesis.** An observation that consolidates forty
+> sessions has every constituent fact on disk and the synthesis nowhere; this
+> instrument counts it on-disk because its terms match. The sample contained
+> such nodes, labelled `[obse]`, and they were scored the wrong way.
+>
+> So: the 0-of-60 result stands as *"the bank stores few raw facts that are not
+> also written down somewhere"*. **It does not measure whether the bank's
+> distillation is worth anything**, and it must not be quoted as if it did.
+> What the consolidated layer is worth is unmeasured — see
+> [the correction section](#what-this-measurement-cannot-see) at the end.
+
+
 Run 2026-08-27 against the rules committed in
 [`bank-uniqueness-criteria.md`](bank-uniqueness-criteria.md) before the sample
 was drawn.
@@ -103,3 +118,60 @@ only on *time to find it*, which is where the 25% went.
    history nobody greps counts as on-disk here. That is the whole point of the
    third row in the table above: on-disk and findable are different properties,
    and the gap between them is where this system earns its keep.
+
+## What this measurement cannot see
+
+<a id="what-this-measurement-cannot-see"></a>
+
+The instrument asks whether a node's distinctive terms appear on disk. That is
+the right test for a **raw fact** — *"rusqlite 0.40.1 bundles SQLite 3.53.2"* is
+either written down somewhere or it is not.
+
+It is the wrong test for a **synthesis**. MemGarden's consolidation layer
+(CE-9) turns groups of facts into `observation` nodes with provenance edges back
+to their sources. That layer is **live and producing daily**:
+
+| date | world | observation | experience |
+|---|---|---|---|
+| 2026-08-23 | 32 | 27 | 3 |
+| 2026-08-25 | 78 | 98 | 25 |
+| 2026-08-26 | 223 | 172 | 14 |
+| 2026-08-27 | 52 | 71 | 30 |
+| 2026-08-28 | 81 | 76 | 2 |
+
+**2,770 observations exist and 2,757 of them carry source links** (3,351 rows in
+`node_sources`). Every one of those has constituent facts that are on disk, and
+a synthesis that is not. This measurement scored them on-disk on the strength of
+their terms, which is exactly backwards for the thing they are.
+
+**So one of the three purposes this system was built for went unmeasured, and
+this document read as if it had been settled.** The purposes were: save tokens,
+hold context over time, and periodically distil memory into something better.
+The first is measured and came out negative. The third is what the observation
+layer does, and **it has never been priced.**
+
+### And the tier above it has never run at all
+
+CE-10's mental models — the higher-order distillation, observations synthesised
+into a maintained document — has **0 rows**. The due-ness rule is ported
+(`mental/cron.rs`) and the REST create path exists (`routes/mental.rs`), but
+nothing calls them. `parity-gaps.md` recorded the reason and it was defensible
+at the time:
+
+> "The due-ness rule *is* ported ... only the ticker is missing, and a scheduler
+> that spends GPU with no consumer is the wrong default."
+
+Defensible, and also the exact thing the system was supposed to do. A ticker
+without a consumer is wrong; a consumer without a ticker never gets built. Both
+halves are now on the list.
+
+### What would actually measure it
+
+Not a corpus census. A comparison: **does an observation answer a question
+better than the facts it was made from?** The gold harness can put that
+question directly — the same 20 graded queries, one arm retrieving only
+`world` facts, the other allowed `observation` nodes — and report the delta in
+recall@k / MRR / nDCG rather than a count of what is on disk.
+
+That is the measurement this document should have been, for the question people
+will read it as answering.

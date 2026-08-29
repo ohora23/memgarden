@@ -3,12 +3,19 @@
 Assembled 2026-08-27, after v1 closed. Each row links to the evidence it comes
 from, including the measurements that came out against the system.
 
-**The short version.** MemGarden is **faster than what it replaced, better at
-retrieval than what it replaced, and it is an index rather than an archive** —
-it surfaces knowledge the disk already has and nobody would think to grep, in
-about seven milliseconds. It does not hold things the disk lost, and on
-questions whose answers are already written down it does not improve the
-answer, only the time to reach it.
+**The short version.** MemGarden is **faster than what it replaced and better
+at retrieval than what it replaced.** It surfaces knowledge the disk already has
+and nobody would think to grep, in about seven milliseconds. It does not save
+the user tokens — it spends them.
+
+**Read the "index, not an archive" line below with its correction.** That
+phrasing came from a corpus census that could not see the thing this system was
+partly built for: **distillation**. Consolidation turns facts into observations
+with provenance and runs daily — 2,770 observations, 2,757 with source links —
+and **nobody has ever measured whether that is worth anything.** The tier above
+it, CE-10's mental models, has **never run at all** (0 rows). Two of the three
+purposes behind this project are therefore unmeasured or unbuilt, and this
+document read as if they were settled.
 
 ## Measured against the system it replaced
 
@@ -47,9 +54,16 @@ system's architecture could not have.
    with SIGSEGV in SQLite's FTS5 index"*. That fact was in
    `book/src/roadmap.md` the whole time. Nobody was going to grep for it.
 
-Read together they say the same thing three ways: **the value is retrieval, not
-storage.** Which is a narrower claim than a memory system usually makes, and the
-only one this evidence supports.
+Read together they say **the value measured so far is retrieval, not storage.**
+
+**That is narrower than it sounds, and narrower than it was first written.** All
+three findings are about *raw facts* — whether a fact is on disk, whether
+injecting facts substitutes for reading them. None of them touches the
+**consolidated** layer, where groups of facts become an observation that exists
+nowhere else in that form. The corpus census in particular scored observations
+as "on disk" because their constituent terms are, which is backwards for what
+they are. So the honest statement is: **the value of raw-fact retrieval is
+measured; the value of distillation is not.**
 
 ## Quality of what gets stored
 
@@ -65,6 +79,16 @@ it was right — both corrections are in the record.
 
 ## What is not measured, and should be said out loud
 
+- **Whether distillation is worth anything.** Consolidation (CE-9) runs daily
+  and has produced 2,770 observations with provenance. Nothing has ever compared
+  an observation against the facts it was made from. This is the largest
+  unmeasured claim in the project, and it is one of the three reasons the
+  project exists.
+- **The tier above it has never run.** CE-10's mental models: **0 rows**. The
+  due-ness rule and the create path both exist; no ticker calls them, because
+  `parity-gaps.md` judged that a scheduler with no consumer was the wrong
+  default. Defensible, and also why the periodic-refinement half of the original
+  goal has never happened.
 - **Whether any of this makes the assistant better at the job.** Every number
   here is latency, token count, or retrieval quality. None is task outcome.
   MX-3 is the only attempt and its sample could not answer the question it was
@@ -81,8 +105,10 @@ it was right — both corrections are in the record.
 
 ## Honest summary
 
-If the question is *"does this remember things I would otherwise lose?"* — on
+If the question is *"does this remember raw facts I would otherwise lose?"* — on
 this machine, measurably **no**, because this operator already writes them down.
+(If the question is *"does what it distils out of them have value?"* — **nobody
+has measured that**, and it is the half the project was built for.)
 
 If the question is *"does it put the right paragraph of the twelve thousand I
 have written in front of the model before I finish typing?"* — **yes, in 7ms,
