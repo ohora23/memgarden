@@ -62,7 +62,19 @@ pub const REFLECT_REPLY_MAX_TOKENS: u32 = 1024;
 pub const REFLECT_NUM_CTX: u32 = 8192;
 
 /// Grammar-level cap on the free-text answer, in characters (~4 chars/token).
-const REFLECT_ANSWER_MAX_CHARS: usize = 4 * REFLECT_REPLY_MAX_TOKENS as usize;
+/// Same story as `mental::REFRESH_CONTENT_MAX_CHARS`, and the same fix: the
+/// derived 4096 exceeds what Ollama's `/api/generate` grammar parser accepts
+/// for `maxLength` (2000 compiles, 2031 does not, bisected on 0.21.2), so
+/// every reflect call would have failed the moment one was made. `num_predict`
+/// remains the primary bound.
+const REFLECT_ANSWER_MAX_CHARS: usize = 2000;
+
+/// Readable by the grammar-limit guard in `mental::mod`'s tests, which checks
+/// every `maxLength` this daemon emits in one place rather than per module.
+#[cfg(test)]
+pub(crate) fn answer_max_chars_for_test() -> usize {
+    REFLECT_ANSWER_MAX_CHARS
+}
 
 /// Mental models pulled in beside the recalled memories. Small on purpose:
 /// they are long by construction (a whole document each), and the third
@@ -412,7 +424,7 @@ mod tests {
             REFLECT_PROMPT_MAX_TOKENS + u64::from(REFLECT_REPLY_MAX_TOKENS)
                 <= u64::from(REFLECT_NUM_CTX)
         );
-        assert_eq!(REFLECT_ANSWER_MAX_CHARS, 4096);
+        assert_eq!(REFLECT_ANSWER_MAX_CHARS, 2000);
         assert_eq!(
             reflect_schema()["properties"]["answer"]["maxLength"],
             json!(REFLECT_ANSWER_MAX_CHARS)

@@ -84,7 +84,28 @@ pub const REFRESH_NUM_CTX: u32 = 8192;
 /// token at cl100k on English prose, so this is the [`REFRESH_REPLY_MAX_TOKENS`]
 /// ceiling expressed in the units JSON Schema understands — belt to
 /// `num_predict`'s braces, since Ollama enforces neither reliably on its own.
-const REFRESH_CONTENT_MAX_CHARS: usize = 4 * REFRESH_REPLY_MAX_TOKENS as usize;
+/// The `maxLength` on the one free-text field, and it is **not** derived from
+/// [`REFRESH_REPLY_MAX_TOKENS`] any more.
+///
+/// It used to be `4 * REFRESH_REPLY_MAX_TOKENS` = 8192, and that made every
+/// refresh fail 100% of the time with `HTTP 500: failed to load model
+/// vocabulary required for format`. Ollama compiles `maxLength: N` into a GBNF
+/// grammar as N character repetitions, and on `/api/generate` its parser
+/// refuses past roughly two thousand:
+///
+///     parse: error parsing grammar: number of repetitions exceeds sane
+///     defaults, please reduce the number of repetitions
+///
+/// Bisected on ollama 0.21.2 with qwen3-14b-nothink, `/api/generate`, this
+/// schema shape: **2000 compiles, 2031 does not.** `/api/chat` accepts both,
+/// which is not a fix — it silently ignores `format` entirely, which is the
+/// documented reason `chat_json_inner` posts to `/api/generate` at all.
+///
+/// This is a *second* bound, not the primary one: `num_predict`
+/// ([`REFRESH_REPLY_MAX_TOKENS`]) already stops generation. The grammar length
+/// only has to be large enough not to truncate a legitimate document and small
+/// enough to compile, so it is pinned to the largest value measured to work.
+const REFRESH_CONTENT_MAX_CHARS: usize = 2000;
 
 /// Memories asked of recall for one refresh. The prompt bound is what
 /// actually decides how many survive; this only stops the pipeline hydrating
@@ -764,7 +785,41 @@ mod tests {
             "system prompt is {system} tokens"
         );
         // The schema's character cap tracks the token cap.
-        assert_eq!(REFRESH_CONTENT_MAX_CHARS, 8192);
+        assert_eq!(REFRESH_CONTENT_MAX_CHARS, 2000);
+    }
+
+    /// Every `maxLength` this daemon puts on the wire has to compile to a GBNF
+    /// grammar on `/api/generate`, and Ollama's parser refuses past ~2000
+    /// character repetitions — `parse: error parsing grammar: number of
+    /// repetitions exceeds sane defaults`. Bisected on 0.21.2 with
+    /// qwen3-14b-nothink: 2000 compiles, 2031 does not.
+    ///
+    /// CE-10 shipped with 8192 (refresh) and 4096 (reflect) and therefore
+    /// failed 100% of the time. Nobody noticed because nothing called it: the
+    /// mental-model tier had zero rows for its entire life. The two paths that
+    /// *do* run — CE-9a at 500 and CE-9b at 2000 — sit under the limit by
+    /// accident, not by rule.
+    ///
+    /// This is that rule. It fails on the value, not on a live call, so it
+    /// holds with no Ollama running.
+    #[test]
+    fn every_schema_maxlength_compiles_as_a_grammar() {
+        const GRAMMAR_REPETITION_LIMIT: usize = 2000;
+        let cases: [(&str, usize); 2] = [
+            ("mental::refresh content", REFRESH_CONTENT_MAX_CHARS),
+            (
+                "mental::reflect answer",
+                crate::mental::reflect::answer_max_chars_for_test(),
+            ),
+        ];
+        for (what, len) in cases {
+            assert!(
+                len <= GRAMMAR_REPETITION_LIMIT,
+                "{what} maxLength is {len}, over Ollama's grammar repetition \
+                 limit of {GRAMMAR_REPETITION_LIMIT}; every call would fail \
+                 with `failed to load model vocabulary required for format`"
+            );
+        }
         assert_eq!(
             refresh_schema()["properties"]["content"]["maxLength"],
             json!(REFRESH_CONTENT_MAX_CHARS)
