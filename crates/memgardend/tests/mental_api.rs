@@ -291,6 +291,22 @@ async fn write_routes_reject_bad_input() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "should reject {body}");
     }
 
+    // `@after-consolidation` is the one reserved word the column accepts, and
+    // the contrast with `@daily` above is the point: cron macros stay rejected,
+    // this one does not, and nothing else changed about the column.
+    let (status, body) = h
+        .send(
+            "POST",
+            "/v1/banks/b1/mental-models",
+            Some(json!({"name": "after-consolidation model", "trigger": "@after-consolidation"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "sentinel trigger: {body}");
+    assert_eq!(body["trigger"], "@after-consolidation");
+    // Not time-driven, so the clock must never claim it is due — otherwise the
+    // refresh ticker would fire it on every tick, forever.
+    assert_eq!(body["due"], false, "sentinel reported due: {body}");
+
     // Unknown bank is a 404, not a 400.
     let (status, _) = h
         .send(

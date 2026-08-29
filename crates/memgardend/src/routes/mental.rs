@@ -454,6 +454,9 @@ fn validate(
                 t.len()
             )));
         }
+        if t == cron::AFTER_CONSOLIDATION {
+            return Ok(());
+        }
         if let Err(e) = cron::Cron::parse(t) {
             return Err(invalid(format!("invalid trigger: {e}")));
         }
