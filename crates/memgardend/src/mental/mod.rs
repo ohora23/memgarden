@@ -93,8 +93,10 @@ pub const REFRESH_NUM_CTX: u32 = 8192;
 /// grammar as N character repetitions, and on `/api/generate` its parser
 /// refuses past roughly two thousand:
 ///
-///     parse: error parsing grammar: number of repetitions exceeds sane
-///     defaults, please reduce the number of repetitions
+/// ```text
+/// parse: error parsing grammar: number of repetitions exceeds sane
+/// defaults, please reduce the number of repetitions
+/// ```
 ///
 /// Bisected on ollama 0.21.2 with qwen3-14b-nothink, `/api/generate`, this
 /// schema shape: **2000 compiles, 2031 does not.** `/api/chat` accepts both,
