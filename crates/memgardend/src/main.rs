@@ -91,6 +91,8 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(ollama::run_prober(ollama_client));
     let consolidation_handle =
         tokio::spawn(memgardend::consolidate::round::run_task(state.clone()));
+    // CE-10's missing half. Disabled with `[mental] refresh_interval_secs = 0`.
+    let mental_refresh_handle = tokio::spawn(memgardend::mental::cron::run_task(state.clone()));
     let retain_worker_handle = tokio::spawn(memgardend::retain::run_worker(state, retain_rx));
 
     axum::serve(listener, app)
@@ -108,6 +110,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Err(e) = consolidation_handle.await {
         tracing::warn!(error = %e, "consolidation task join error during shutdown");
+    }
+    if let Err(e) = mental_refresh_handle.await {
+        tracing::warn!(error = %e, "mental refresh task join error during shutdown");
     }
 
     tracing::info!("shutting down: checkpointing WAL");

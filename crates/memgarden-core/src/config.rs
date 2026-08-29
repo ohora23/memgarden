@@ -43,6 +43,7 @@ pub struct Config {
     pub recall: RecallConfig,
     pub reranker: RerankerConfig,
     pub consolidation: ConsolidationConfig,
+    pub mental: MentalConfig,
     pub profile: ProfileConfig,
     pub hooks: HooksConfig,
 }
@@ -249,6 +250,21 @@ pub const MAX_RERANK_TOP_K: usize = 200;
 /// `ollama.max_concurrent = 1` — a second concurrent group would queue on
 /// that semaphore rather than run, so the knob could only ever be a lie.
 /// A config for a value that cannot change is worse than no config.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MentalConfig {
+    /// Seconds between background mental-model refresh ticks. **`0` disables
+    /// the background task**, which was the shipped behaviour for CE-10's
+    /// whole life; `POST /v1/banks/{id}/mental-models/{mm_id}/refresh` still
+    /// works either way.
+    ///
+    /// Default 600. A refresh is one LLM call per *due* model, and dueness is
+    /// the model's own cron expression — the tick only asks who is due, so the
+    /// interval bounds latency-to-due, not GPU spend. Ten minutes is short
+    /// enough that an hourly trigger is honoured to the minute and long enough
+    /// that a tick costs nothing when nothing is due.
+    pub refresh_interval_secs: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConsolidationConfig {
     /// Cosine at or above which a newly created observation is adjudicated
@@ -492,6 +508,9 @@ impl Config {
                 threads: 4,
                 batch_size: 16,
             },
+            mental: MentalConfig {
+                refresh_interval_secs: 600,
+            },
             consolidation: ConsolidationConfig {
                 dedup_threshold: 0.97,
                 interval_secs: 300,
@@ -726,6 +745,9 @@ pub fn from_parts(
             if let Some(v) = r.batch_size {
                 cfg.reranker.batch_size = v;
             }
+        }
+        if let Some(v) = parsed.mental.and_then(|m| m.refresh_interval_secs) {
+            cfg.mental.refresh_interval_secs = v;
         }
         if let Some(c) = parsed.consolidation {
             if let Some(v) = c.dedup_threshold {
@@ -1185,6 +1207,7 @@ struct TomlConfig {
     recall: Option<TomlRecall>,
     reranker: Option<TomlReranker>,
     consolidation: Option<TomlConsolidation>,
+    mental: Option<TomlMental>,
     profile: Option<TomlProfile>,
     hooks: Option<TomlHooks>,
 }
@@ -1225,6 +1248,12 @@ struct TomlReranker {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct TomlMental {
+    refresh_interval_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TomlConsolidation {
     dedup_threshold: Option<f64>,
     interval_secs: Option<u64>,
@@ -1361,6 +1390,9 @@ mod tests {
                 top_k: 10,
                 threads: 4,
                 batch_size: 16,
+            },
+            mental: MentalConfig {
+                refresh_interval_secs: 600,
             },
             consolidation: ConsolidationConfig {
                 dedup_threshold: 0.97,

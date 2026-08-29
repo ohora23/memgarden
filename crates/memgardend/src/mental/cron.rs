@@ -23,6 +23,7 @@
 //! // **Swap it for a maintained crate the day a scheduler exists** — that is
 //! // the point at which the rest of the syntax starts mattering.
 
+use crate::state::AppState;
 use jiff::civil::Date;
 use jiff::{Timestamp, tz::TimeZone};
 
@@ -201,8 +202,129 @@ pub fn is_due(expr: &str, last_refreshed_at: Option<i64>, now_ms: i64) -> bool {
     }
 }
 
+/// The background refresh loop — the half of CE-10 that was missing.
+///
+/// CE-10 shipped [`is_due`] and a manual refresh route and nothing that called
+/// them, on the reasoning recorded in `parity-gaps.md`: *"a scheduler that
+/// spends GPU with no consumer is the wrong default."* That was right when it
+/// was written. It is no longer the situation — `/v1/banks/{id}/reflect` reads
+/// the bank's nearest mental models on every call, so a stale document is a
+/// worse answer rather than an unread one.
+///
+/// The tick is cheap when nothing is due: one `list` per bank and a cron
+/// comparison per model. Only a model whose own trigger has fired since its
+/// `last_refreshed_at` costs an LLM call, so `refresh_interval_secs` bounds
+/// how late a refresh can be, not how much GPU this spends.
+///
+/// Three guards, all borrowed from `consolidate::round::run_task` rather than
+/// invented, because they were paid for there:
+///
+/// * **`0` disables it**, and the manual route still works.
+/// * **`MissedTickBehavior::Delay`**, so a tick that outruns the interval
+///   re-bases the schedule instead of firing every missed tick back to back —
+///   the spacing evaporates exactly when ticks are slow otherwise.
+/// * **Deferred while a retain is in flight.** Refresh and retain contend on
+///   the same ONNX mutex and SQLite write lock, and refresh has no latency
+///   SLO. Waiting one interval removes the contention window rather than
+///   shrinking it.
+pub async fn run_task(state: AppState) {
+    let secs = state.cfg.mental.refresh_interval_secs;
+    if secs == 0 {
+        tracing::info!("mental-model refresh task disabled (refresh_interval_secs = 0)");
+        return;
+    }
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(secs));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let shutdown = crate::shutdown_signal();
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => tick_once(&state).await,
+            _ = &mut shutdown => break,
+        }
+    }
+}
+
+/// One pass over every bank's mental models, refreshing the due ones.
+///
+/// Failures are logged and skipped, never retried inside the tick: a model
+/// whose refresh fails is still due on the next one, which is the retry, and a
+/// tight retry here would spend the GPU a bank at a time on a broken model.
+async fn tick_once(state: &AppState) {
+    if crate::retain::queued_bytes() > 0 {
+        tracing::debug!("retain in flight; deferring the mental-model refresh tick");
+        return;
+    }
+    let now = memgarden_core::now_ms();
+    let db = state.db.clone();
+    let banks = match tokio::task::spawn_blocking(move || memgarden_store::banks::list(&db)).await {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "mental refresh tick: listing banks failed");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "mental refresh tick: bank listing panicked");
+            return;
+        }
+    };
+
+    for bank in banks {
+        let (db, bank_id) = (state.db.clone(), bank.bank_id.clone());
+        // `list` is paged; MAX_PER_TICK bounds one tick's work rather than the
+        // bank's size. A bank with more due models than this catches up over
+        // the following ticks, in `list`'s own order, which is stable.
+        const MAX_PER_TICK: usize = 32;
+        let models = match tokio::task::spawn_blocking(move || {
+            memgarden_store::mental_models::list(&db, &bank_id, MAX_PER_TICK, 0)
+        })
+        .await
+        {
+            Ok(Ok(m)) => m,
+            Ok(Err(e)) => {
+                tracing::warn!(bank = %bank.bank_id, error = %e, "mental refresh tick: list failed");
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(bank = %bank.bank_id, error = %e, "mental refresh tick: list panicked");
+                continue;
+            }
+        };
+
+        for model in models {
+            let Some(trigger) = model.trigger.as_deref() else {
+                continue;
+            };
+            if !is_due(trigger, model.last_refreshed_at, now) {
+                continue;
+            }
+            match super::refresh(state, &bank.bank_id, &model.id).await {
+                Ok(_) => tracing::info!(
+                    bank = %bank.bank_id, mental_model = %model.id,
+                    "mental model refreshed on schedule"
+                ),
+                Err(e) => tracing::warn!(
+                    bank = %bank.bank_id, mental_model = %model.id, error = ?e,
+                    "scheduled mental-model refresh failed; it stays due"
+                ),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// `0` disables the ticker, which is the shipped default's escape hatch and
+    /// the only branch of `run_task` reachable without a live daemon. The loop
+    /// itself is covered end to end by `mental_api.rs`.
+    #[test]
+    fn a_zero_interval_disables_the_refresh_task() {
+        let cfg = memgarden_core::config::Config::defaults().expect("defaults");
+        // The default is on; a deployment turns it off by setting 0, and
+        // `run_task` returns immediately in that case.
+        assert_eq!(cfg.mental.refresh_interval_secs, 600);
+    }
+
     use super::*;
 
     /// 2026-08-03T12:34:00Z (a Monday).
