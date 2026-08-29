@@ -56,11 +56,13 @@ Against the Python system it replaced: **13 better / 5 worse / 1 equivalent** on
 
 On its own terms the record is mixed, and the losses are in the repository next to the wins:
 
-- **It is an index, not an archive.** A census of 60 sampled memories found **0** that state anything not already on disk — under ~5% at 95% confidence. This bank does not hold what the disk lost.
+- **Few raw facts are unique to it.** A census of 60 sampled memories found **0** stating anything not already on disk. That census could not judge the *consolidated* layer, though — an observation synthesised from forty sessions has its facts on disk and the synthesis nowhere, and **what that is worth has never been measured.**
 - **Substitution did not show up.** On questions whose answers were already in the repo, the memory arm was **11–7 worse** on a blind panel and spent **+5% tokens** — while finishing **25% faster**.
 - **Injection is a cost**: 1,325 tokens and 18 memories per turn. The ingest caps save 57.4% of extraction input, but that is the local LLM's input, not yours.
 
-Those three agree on one thing: **the value is retrieval, not storage.** It surfaces the paragraph of yours that answers the question — including, once, a line in `book/src/roadmap.md` that reopened a month-old crash investigation because nobody was going to grep for it.
+Those three agree on one thing: **the value measured so far is retrieval, not storage.** It surfaces the paragraph of yours that answers the question — including, once, a line in `book/src/roadmap.md` that reopened a month-old crash investigation because nobody was going to grep for it.
+
+They also share a blind spot. All three are about *raw facts*. Consolidation runs daily and has built **2,770 observations with provenance**, and the tier above it — mental models — has **never run** (0 rows). **Two of the three reasons this project exists are unmeasured or unbuilt**, which the earlier wording of this section obscured.
 
 [The full analysis, with what is still unmeasured →](docs/benefits.md)
 
