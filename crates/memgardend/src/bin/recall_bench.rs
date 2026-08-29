@@ -536,6 +536,7 @@ async fn bench(
     out_path: Option<&Path>,
     rerank_top_k: Option<usize>,
     semantic_alpha: f64,
+    fact_types: Vec<FactType>,
 ) -> anyhow::Result<()> {
     let gold = read_gold(gold_path)?;
     let corpus_sha = sha256_of(corpus_path)?;
@@ -582,7 +583,12 @@ async fn bench(
             // is a real lever, but it is a *different* lever and CE-11 tunes
             // the ranker.
             max_tokens: memgarden_core::config::MAX_RECALL_TOKENS,
-            fact_types: vec![FactType::World, FactType::Observation, FactType::Experience],
+            // The third measurement knob (`types=`). Default is all three, which
+            // is what every row already in the ledger was measured with, so a
+            // run without the flag stays comparable. Varying it is how the
+            // distillation question is asked: `world` alone against `world`
+            // plus the observations consolidated out of it.
+            fact_types: fact_types.clone(),
             tags: vec![],
             tags_match: TagsMatch::Any,
             cap_per_source: 0,
@@ -966,6 +972,23 @@ async fn main() -> anyhow::Result<()> {
     // legacy scoring exactly, which is the ledger's baseline arm, so a run
     // without the flag stays comparable to every row already in the file.
     let mut semantic_alpha: f64 = 0.0;
+    // `types=world`, `types=world,observation`, ... Default: all three.
+    let mut fact_types = vec![FactType::World, FactType::Observation, FactType::Experience];
+    if let Some(i) = args.iter().position(|a| a.starts_with("types=")) {
+        let raw = args.remove(i);
+        let spec = raw.trim_start_matches("types=");
+        let mut parsed = Vec::new();
+        for name in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            match name {
+                "world" => parsed.push(FactType::World),
+                "observation" => parsed.push(FactType::Observation),
+                "experience" => parsed.push(FactType::Experience),
+                other => anyhow::bail!("unknown fact type in types=: {other}"),
+            }
+        }
+        anyhow::ensure!(!parsed.is_empty(), "types= needs at least one fact type");
+        fact_types = parsed;
+    }
     if let Some(i) = args.iter().position(|a| a.starts_with("semantic=")) {
         let raw = args.remove(i);
         let value = raw.trim_start_matches("semantic=");
@@ -1006,6 +1029,7 @@ async fn main() -> anyhow::Result<()> {
                 None,
                 rerank_top_k,
                 semantic_alpha,
+                fact_types,
             )
             .await
         }
@@ -1017,6 +1041,7 @@ async fn main() -> anyhow::Result<()> {
                 Some(&path(4)),
                 rerank_top_k,
                 semantic_alpha,
+                fact_types,
             )
             .await
         }
