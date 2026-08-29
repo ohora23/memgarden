@@ -1,0 +1,269 @@
+[
+ {
+  "arm": "facts-only",
+  "types": "world",
+  "overall": {
+   "mrr": 0.5380952380952381,
+   "ndcg@10": 0.26223240968691075,
+   "recall@1": 0.038827838827838836,
+   "recall@10": 0.2912298485827898,
+   "recall@10_ceiling": 0.8587764359823182,
+   "recall@5": 0.18013579557697207
+  },
+  "per_stratum": [
+   {
+    "metrics": {
+     "mrr": 0.45,
+     "ndcg@10": 0.22587492664916842,
+     "recall@1": 0.01111111111111111,
+     "recall@10": 0.28191919191919196,
+     "recall@10_ceiling": 0.8747474747474747,
+     "recall@5": 0.1546969696969697
+    },
+    "queries": 5,
+    "stratum": "memcompare"
+   },
+   {
+    "metrics": {
+     "mrr": 0.6875,
+     "ndcg@10": 0.31595381163637337,
+     "recall@1": 0.04423076923076923,
+     "recall@10": 0.34468325791855203,
+     "recall@10_ceiling": 0.8393665158371041,
+     "recall@5": 0.18710407239819005
+    },
+    "queries": 4,
+    "stratum": "identifier"
+   },
+   {
+    "metrics": {
+     "mrr": 0.2,
+     "ndcg@10": 0.13120507751234178,
+     "recall@1": 0.0,
+     "recall@10": 0.2,
+     "recall@10_ceiling": 1.0,
+     "recall@5": 0.2
+    },
+    "queries": 1,
+    "stratum": "conclusion"
+   },
+   {
+    "metrics": {
+     "mrr": 0.5,
+     "ndcg@10": 0.2012779174907845,
+     "recall@1": 0.1,
+     "recall@10": 0.2,
+     "recall@10_ceiling": 0.8125,
+     "recall@5": 0.2
+    },
+    "queries": 2,
+    "stratum": "temporal"
+   },
+   {
+    "metrics": {
+     "mrr": 0.6666666666666666,
+     "ndcg@10": 0.3721514716657519,
+     "recall@1": 0.05555555555555555,
+     "recall@10": 0.34444444444444444,
+     "recall@10_ceiling": 0.8333333333333333,
+     "recall@5": 0.19999999999999998
+    },
+    "queries": 2,
+    "stratum": "graph"
+   }
+  ],
+  "config": {
+   "budget": "mid",
+   "k": 10,
+   "limit": 20,
+   "max_tokens": 8192,
+   "now_ms": 1785715200000,
+   "rerank_top_k": null,
+   "semantic_alpha": 0.0
+  },
+  "corpus": {
+   "nodes": 2718,
+   "sha256": "baee3f40a4f9556601f9ee77816e4a57964f83b18e73f82a68910bcea4bda868"
+  },
+  "commit": "bbf0f8c22877aa0dd15ea5e395239d422ca87fbd",
+  "scored_queries": 14
+ },
+ {
+  "arm": "shipped",
+  "types": "world,observation,experience",
+  "overall": {
+   "mrr": 0.516156462585034,
+   "ndcg@10": 0.3063040761697248,
+   "recall@1": 0.03485958485958486,
+   "recall@10": 0.3704415682356859,
+   "recall@10_ceiling": 0.8587764359823182,
+   "recall@5": 0.20902390093566564
+  },
+  "per_stratum": [
+   {
+    "metrics": {
+     "mrr": 0.36666666666666664,
+     "ndcg@10": 0.18858820817039734,
+     "recall@1": 0.0,
+     "recall@10": 0.3114646464646465,
+     "recall@10_ceiling": 0.8747474747474747,
+     "recall@5": 0.1528787878787879
+    },
+    "queries": 5,
+    "stratum": "memcompare"
+   },
+   {
+    "metrics": {
+     "mrr": 0.6875,
+     "ndcg@10": 0.4162860114833296,
+     "recall@1": 0.04423076923076923,
+     "recall@10": 0.4183257918552036,
+     "recall@10_ceiling": 0.8393665158371041,
+     "recall@5": 0.24604072398190047
+    },
+    "queries": 4,
+    "stratum": "identifier"
+   },
+   {
+    "metrics": {
+     "mrr": 0.14285714285714285,
+     "ndcg@10": 0.11305340175787204,
+     "recall@1": 0.0,
+     "recall@10": 0.2,
+     "recall@10_ceiling": 1.0,
+     "recall@5": 0.0
+    },
+    "queries": 1,
+    "stratum": "conclusion"
+   },
+   {
+    "metrics": {
+     "mrr": 0.5,
+     "ndcg@10": 0.3188955974149432,
+     "recall@1": 0.1,
+     "recall@10": 0.5,
+     "recall@10_ceiling": 0.8125,
+     "recall@5": 0.3
+    },
+    "queries": 2,
+    "stratum": "temporal"
+   },
+   {
+    "metrics": {
+     "mrr": 0.75,
+     "ndcg@10": 0.4646636915015423,
+     "recall@1": 0.05555555555555555,
+     "recall@10": 0.37777777777777777,
+     "recall@10_ceiling": 0.8333333333333333,
+     "recall@5": 0.28888888888888886
+    },
+    "queries": 2,
+    "stratum": "graph"
+   }
+  ],
+  "config": {
+   "budget": "mid",
+   "k": 10,
+   "limit": 20,
+   "max_tokens": 8192,
+   "now_ms": 1785715200000,
+   "rerank_top_k": null,
+   "semantic_alpha": 0.0
+  },
+  "corpus": {
+   "nodes": 2718,
+   "sha256": "baee3f40a4f9556601f9ee77816e4a57964f83b18e73f82a68910bcea4bda868"
+  },
+  "commit": "bbf0f8c22877aa0dd15ea5e395239d422ca87fbd",
+  "scored_queries": 14
+ },
+ {
+  "arm": "observations-only",
+  "types": "observation",
+  "overall": {
+   "mrr": 0.5,
+   "ndcg@10": 0.19567342725021006,
+   "recall@1": 0.025569202039790274,
+   "recall@10": 0.177187640790582,
+   "recall@10_ceiling": 0.8587764359823182,
+   "recall@5": 0.13119788708024002
+  },
+  "per_stratum": [
+   {
+    "metrics": {
+     "mrr": 0.35,
+     "ndcg@10": 0.06785127770303566,
+     "recall@1": 0.01111111111111111,
+     "recall@10": 0.08565656565656565,
+     "recall@10_ceiling": 0.8747474747474747,
+     "recall@5": 0.06747474747474748
+    },
+    "queries": 5,
+    "stratum": "memcompare"
+   },
+   {
+    "metrics": {
+     "mrr": 0.875,
+     "ndcg@10": 0.3560807651907987,
+     "recall@1": 0.058936651583710406,
+     "recall@10": 0.31968325791855207,
+     "recall@10_ceiling": 0.8393665158371041,
+     "recall@5": 0.24151583710407243
+    },
+    "queries": 4,
+    "stratum": "identifier"
+   },
+   {
+    "metrics": {
+     "mrr": 0.0,
+     "ndcg@10": 0.0,
+     "recall@1": 0.0,
+     "recall@10": 0.0,
+     "recall@10_ceiling": 1.0,
+     "recall@5": 0.0
+    },
+    "queries": 1,
+    "stratum": "conclusion"
+   },
+   {
+    "metrics": {
+     "mrr": 0.3125,
+     "ndcg@10": 0.2078168924950351,
+     "recall@1": 0.0,
+     "recall@10": 0.23125,
+     "recall@10_ceiling": 0.8125,
+     "recall@5": 0.2
+    },
+    "queries": 2,
+    "stratum": "temporal"
+   },
+   {
+    "metrics": {
+     "mrr": 0.5625,
+     "ndcg@10": 0.280107373617249,
+     "recall@1": 0.03333333333333333,
+     "recall@10": 0.15555555555555556,
+     "recall@10_ceiling": 0.8333333333333333,
+     "recall@5": 0.06666666666666667
+    },
+    "queries": 2,
+    "stratum": "graph"
+   }
+  ],
+  "config": {
+   "budget": "mid",
+   "k": 10,
+   "limit": 20,
+   "max_tokens": 8192,
+   "now_ms": 1785715200000,
+   "rerank_top_k": null,
+   "semantic_alpha": 0.0
+  },
+  "corpus": {
+   "nodes": 2718,
+   "sha256": "baee3f40a4f9556601f9ee77816e4a57964f83b18e73f82a68910bcea4bda868"
+  },
+  "commit": "bbf0f8c22877aa0dd15ea5e395239d422ca87fbd",
+  "scored_queries": 14
+ }
+]
