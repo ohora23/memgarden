@@ -324,3 +324,13 @@ agent_name = "claude-code"
 # entry costs a canonicalize() syscall on the per-prompt path.
 # [hooks.directory_bank_map]
 # "/home/me/projects/thing" = "claude-code::thing"
+
+# CE-10 mental models — the periodic distillation tier.
+[mental]
+# Seconds between refresh ticks. `0` disables the background task; the manual
+# route `POST /v1/banks/{id}/mental-models/{id}/refresh` works either way.
+#
+# This bounds how *late* a refresh can be, not how much GPU it spends: the tick
+# only asks which models are due by their own cron `trigger`, and a refresh with
+# no new supporting facts preserves its content without an LLM call.
+refresh_interval_secs = 600
