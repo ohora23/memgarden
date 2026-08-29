@@ -334,3 +334,9 @@ agent_name = "claude-code"
 # only asks which models are due by their own cron `trigger`, and a refresh with
 # no new supporting facts preserves its content without an LLM call.
 refresh_interval_secs = 600
+
+# A model's own `trigger` decides when it is due. Two forms:
+#   "0 4 * * *"            5-field cron, UTC — the clock asks whether anything
+#                          happened since the last refresh
+#   "@after-consolidation" woken when a consolidation round actually produces
+#                          something, which is the moment its material appears

@@ -117,6 +117,18 @@ rather than trusting it.
   `{"refresh_after_consolidation": false}` in `trigger` and keeps the cron in a
   separate routine; the plan's DDL says cron expression, and one column that
   means one thing beats two that disagree.
+
+  **Amended 2026-08-29.** That was right about the *column* and wrong about the
+  *semantics*. A mental model is synthesised out of observations, and
+  observations appear at exactly one moment — the end of a consolidation round.
+  A clock can only ask whether that has happened; it cannot know. So the column
+  stays one string and gains one reserved word, `@after-consolidation`
+  (`cron::AFTER_CONSOLIDATION`), which `Cron::parse` rejects and `is_due`
+  therefore never reports due. `consolidate::round` wakes those models when a
+  round returns a `run_id`, and the models still short-circuit on their own
+  watermark, so a round they draw nothing from costs no LLM call. Observed
+  live: `consolidation round finished … created: 13` at 23:50:45, `mental model
+  refreshed after consolidation` at 23:50:52.
 * **`since` is filtered in Rust, not SQL** — but on the **same axis** legacy
   uses. `_get_supporting_facts` passes `since` into its query; `recall` here is
   the whole hybrid pipeline and has no `since` axis, and `search::hydrate` does

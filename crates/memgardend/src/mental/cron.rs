@@ -184,13 +184,42 @@ fn num(s: &str, min: i8, max: i8) -> Result<i8, String> {
     Ok(v)
 }
 
+/// The one `trigger` value that is not a cron expression.
+///
+/// Legacy carries `{"refresh_after_consolidation": true}` in a JSONB `trigger`
+/// and keeps the cron in a separate routine; CE-10's design note chose "one
+/// column that means one thing beats two that disagree" and shipped cron only.
+/// That was the right call about the *column* and the wrong one about the
+/// *semantics*: a mental model is synthesised out of observations, and
+/// observations appear at exactly one moment — the end of a consolidation
+/// round. A clock says "check whether anything happened"; this says "something
+/// happened."
+///
+/// So the column stays a single string and gains one reserved word. It cannot
+/// collide with a cron expression: `Cron::parse` rejects it, which is also the
+/// belt-and-suspenders that stops a typo from being read as a schedule.
+pub const AFTER_CONSOLIDATION: &str = "@after-consolidation";
+
+/// `list` is paged; this bounds one pass's work rather than the bank's size. A
+/// bank with more models than this catches up over the following passes, in
+/// `list`'s own order, which is stable.
+const MAX_PER_TICK: usize = 32;
+
 /// `maintenance.py:417-425` exactly: never refreshed → due; otherwise due iff
 /// the schedule has fired since the last refresh.
+///
+/// [`AFTER_CONSOLIDATION`] is **never due here.** It is not time-driven, so the
+/// clock cannot answer for it; `consolidate::round` wakes those models when a
+/// round actually produces something. Reporting it as due would make the
+/// ticker fire it every tick forever.
 ///
 /// An **unparseable** expression is not due. Legacy logs and `continue`s past
 /// it for the same reason: a typo must not become an hourly LLM call, and the
 /// write path already rejected it (this is the belt to that suspenders).
 pub fn is_due(expr: &str, last_refreshed_at: Option<i64>, now_ms: i64) -> bool {
+    if expr == AFTER_CONSOLIDATION {
+        return false;
+    }
     let Ok(cron) = Cron::parse(expr) else {
         tracing::warn!(cron = %expr, "unparseable mental-model trigger; treating as not due");
         return false;
@@ -245,6 +274,50 @@ pub async fn run_task(state: AppState) {
     }
 }
 
+/// Refreshes one bank's [`AFTER_CONSOLIDATION`] models, called by
+/// `consolidate::round` when a round actually produced something.
+///
+/// **Called on `summary.run_id.is_some()`, not on every tick.** A consolidation
+/// tick that finds nothing to do returns without a run id, and waking models
+/// then would be the clock behaviour this exists to replace.
+///
+/// The models still short-circuit on their own watermark inside `refresh`, so a
+/// round that produced observations none of them draw on costs no LLM call.
+/// This is the *permission* to refresh, not a guarantee that one happens.
+pub async fn refresh_after_consolidation(state: &AppState, bank_id: &str) {
+    let (db, bank) = (state.db.clone(), bank_id.to_string());
+    let models = match tokio::task::spawn_blocking(move || {
+        memgarden_store::mental_models::list(&db, &bank, MAX_PER_TICK, 0)
+    })
+    .await
+    {
+        Ok(Ok(m)) => m,
+        Ok(Err(e)) => {
+            tracing::warn!(bank = %bank_id, error = %e, "after-consolidation refresh: list failed");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(bank = %bank_id, error = %e, "after-consolidation refresh: list panicked");
+            return;
+        }
+    };
+    for model in models {
+        if model.trigger.as_deref() != Some(AFTER_CONSOLIDATION) {
+            continue;
+        }
+        match super::refresh(state, bank_id, &model.id).await {
+            Ok(_) => tracing::info!(
+                bank = %bank_id, mental_model = %model.id,
+                "mental model refreshed after consolidation"
+            ),
+            Err(e) => tracing::warn!(
+                bank = %bank_id, mental_model = %model.id, error = ?e,
+                "after-consolidation mental-model refresh failed"
+            ),
+        }
+    }
+}
+
 /// One pass over every bank's mental models, refreshing the due ones.
 ///
 /// Failures are logged and skipped, never retried inside the tick: a model
@@ -271,10 +344,6 @@ async fn tick_once(state: &AppState) {
 
     for bank in banks {
         let (db, bank_id) = (state.db.clone(), bank.bank_id.clone());
-        // `list` is paged; MAX_PER_TICK bounds one tick's work rather than the
-        // bank's size. A bank with more due models than this catches up over
-        // the following ticks, in `list`'s own order, which is stable.
-        const MAX_PER_TICK: usize = 32;
         let models = match tokio::task::spawn_blocking(move || {
             memgarden_store::mental_models::list(&db, &bank_id, MAX_PER_TICK, 0)
         })
@@ -314,6 +383,31 @@ async fn tick_once(state: &AppState) {
 
 #[cfg(test)]
 mod tests {
+    /// The sentinel must never be read as a schedule. If `Cron::parse` ever
+    /// accepted it, `is_due` would fall through to the cron branch and the
+    /// ticker would fire an LLM call on a trigger that is not time-driven.
+    #[test]
+    fn the_after_consolidation_sentinel_is_not_a_cron_expression() {
+        assert!(
+            Cron::parse(AFTER_CONSOLIDATION).is_err(),
+            "{AFTER_CONSOLIDATION} parsed as a cron expression; is_due would treat it as a schedule"
+        );
+    }
+
+    /// And the clock must never claim it is due — whatever the timestamps say.
+    /// `consolidate::round` owns waking these; a `true` here would make the
+    /// ticker refresh them every tick forever.
+    #[test]
+    fn the_clock_never_finds_an_after_consolidation_model_due() {
+        let now = 1_788_000_000_000;
+        for last in [None, Some(1), Some(now - 1), Some(now)] {
+            assert!(
+                !is_due(AFTER_CONSOLIDATION, last, now),
+                "sentinel reported due with last_refreshed_at = {last:?}"
+            );
+        }
+    }
+
     /// `0` disables the ticker, which is the shipped default's escape hatch and
     /// the only branch of `run_task` reachable without a live daemon. The loop
     /// itself is covered end to end by `mental_api.rs`.

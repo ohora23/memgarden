@@ -1245,6 +1245,15 @@ async fn tick_once(state: &AppState, interval_secs: u64) {
         match tokio::time::timeout(deadline, run_round(state, &bank.bank_id)).await {
             Ok(Ok(summary)) if summary.run_id.is_some() => {
                 tracing::info!(bank = %bank.bank_id, ?summary, "consolidation round finished");
+                // The observations this round produced are exactly the material
+                // a mental model is synthesised from, and this is the one
+                // moment they appear. Models whose trigger is
+                // `@after-consolidation` are woken here rather than by a clock
+                // that would only ever be asking whether this had happened.
+                //
+                // Guarded on `run_id.is_some()`: a tick that found nothing to
+                // consolidate produced nothing to refresh from.
+                crate::mental::cron::refresh_after_consolidation(state, &bank.bank_id).await;
             }
             Ok(Ok(_)) => {}
             // A manual POST holds the slot; the next tick picks the bank up.
