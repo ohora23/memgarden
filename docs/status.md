@@ -84,12 +84,25 @@ why ASAN found nothing — there was no userspace heap bug to find.
 Every panic and every reproduction is on kernel `-29`. The machine now runs
 `-30`, and at 22 h 43 m of uptime **20 consecutive workspace runs passed with
 zero SIGSEGV and zero kernel warnings** (867 passed / 0 failed). AC-7 was signed
-on that evidence. Two confounds stay on the record: `cpu3`/`cpu11` are offline,
-so a quiet machine cannot separate "the `-29` kernel was the fault" from "the
-suspect core is not running", and 22 h is short of the longest observed interval
-between panics (31 h). The CPU-3 question is therefore split out as its own
-resumable experiment rather than closed by assumption.
-[The audit and the dumps](evidence/ac-7.md).
+on that evidence, with the CPU-3 cause split out as its own experiment rather
+than closed by assumption.
+
+**That experiment has since run, and CPU 3 is not the cause.** Both arms on
+`-30`, one variable:
+
+| arm | cores | duration | new panics |
+|---|---|---|---|
+| treatment | `cpu3`/`cpu11` offline, 14 threads | 43 h 55 m | 0 |
+| **control** | **all 16 threads** | **25 h 27 m** | **0** |
+
+The suspect core ran 25 hours under normal load and nothing happened. **CPU 3 is
+where the fault landed, not what caused it** — a kernel bug corrupting scheduler
+or FPU state faults on whichever CPU holds the wreckage. The cores are back
+online for good. `-29` is now the best-supported explanation (every panic on it,
+none on `-30` across 69 h), though the arms are not equal exposure: the control
+stopped at 25 h, short of the 31 h longest-observed interval, on the user's
+judgement that the evidence sufficed.
+[The audit, the dumps and both arms](evidence/ac-7.md).
 
 **The cutover ran on 2026-08-21.** The legacy hooks are gone, `hindsight-api` and its dashboard are
 stopped, and MemGarden runs under a systemd user unit as the only memory system wired to Claude Code
