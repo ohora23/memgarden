@@ -1837,8 +1837,9 @@ fn fresh_database_has_the_0008_retain_cursor_range() {
     }
 }
 
-/// v9 adds `partial` to the retain-job status CHECK, and the pin lives here
-/// now because this is the newest migration.
+/// v9 adds `partial` to the retain-job status CHECK. The `LATEST_VERSION` pin
+/// moved to `fresh_database_has_the_0010_mental_model_usage` when 0010 landed;
+/// what stays here is the rebuild guard, which is the part specific to 0009.
 ///
 /// The rebuild is the risk this guards: SQLite cannot alter a CHECK in place,
 /// so `0009` recreates `retain_jobs` and copies the rows. A column dropped or
@@ -1847,12 +1848,6 @@ fn fresh_database_has_the_0008_retain_cursor_range() {
 fn fresh_database_has_the_0009_partial_status() {
     let db = Db::open_memory().unwrap();
     let conn = db.read().unwrap();
-
-    assert_eq!(memgarden_store::LATEST_VERSION, 9);
-    let version: i64 = conn
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(version, 9);
 
     let sql: String = conn
         .query_row(
@@ -1907,4 +1902,51 @@ fn fresh_database_has_the_0009_partial_status() {
         [],
     );
     assert!(bad.is_err(), "an unknown status must still be refused");
+}
+
+/// v10 adds the CE-10 usage signal, and the `LATEST_VERSION` pin lives here now
+/// because this is the newest migration.
+///
+/// Two plain `ALTER TABLE ... ADD COLUMN`s, so there is no rebuild to guard —
+/// what this pins is that the columns exist with the defaults a promotion rule
+/// depends on. `cited_count` must be `NOT NULL DEFAULT 0` and not nullable: a
+/// rule that reads "never cited" has to see `0`, not `NULL`, on every row that
+/// predates the migration.
+#[test]
+fn fresh_database_has_the_0010_mental_model_usage() {
+    let db = Db::open_memory().unwrap();
+    let conn = db.read().unwrap();
+
+    assert_eq!(memgarden_store::LATEST_VERSION, 10);
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 10);
+
+    let mut stmt = conn.prepare("PRAGMA table_info(mental_models)").unwrap();
+    let cols: Vec<(String, i64, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(1)?, r.get(3)?, r.get(4)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    let cited = cols
+        .iter()
+        .find(|(n, _, _)| n == "cited_count")
+        .expect("cited_count column");
+    assert_eq!(cited.1, 1, "cited_count must be NOT NULL");
+    assert_eq!(
+        cited.2.as_deref(),
+        Some("0"),
+        "cited_count must default to 0 so a pre-migration row reads as never cited"
+    );
+
+    let last = cols
+        .iter()
+        .find(|(n, _, _)| n == "last_cited_at")
+        .expect("last_cited_at column");
+    assert_eq!(
+        last.1, 0,
+        "last_cited_at is nullable — never cited has no time"
+    );
 }

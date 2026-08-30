@@ -726,6 +726,8 @@ mod tests {
             trigger: None,
             last_refreshed_at: None,
             refresh_watermark: None,
+            cited_count: 0,
+            last_cited_at: None,
             created_at: 0,
         }
     }

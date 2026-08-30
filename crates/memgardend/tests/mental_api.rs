@@ -269,6 +269,56 @@ async fn crud_round_trip_is_scoped_to_the_owning_bank() {
     assert_eq!(h.llm_calls(), 0, "CRUD must never call the LLM");
 }
 
+/// A citation the model invented must not inflate anything, and the request
+/// still succeeds — the answer was fine, only its bookkeeping was not.
+///
+/// This is the API-level half. The recording itself is covered in
+/// `memgarden-store` (`records_citations_only_for_ids_that_exist`), because the
+/// route cannot reach it here: this harness has no embedder, so
+/// `nearest_models` is always empty and `keep_known` therefore drops every
+/// mental-model id before it gets near the recorder — the property
+/// `reflect_filters_hallucinated_citation_ids` already pins.
+#[tokio::test]
+async fn an_invented_citation_counts_for_nothing() {
+    let h = harness().await;
+    let (_, created) = h
+        .send(
+            "POST",
+            "/v1/banks/b1/mental-models",
+            Some(json!({"name": "real", "content": "real content"})),
+        )
+        .await;
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["cited_count"], 0, "fresh model: {created}");
+    assert!(created["last_cited_at"].is_null());
+
+    h.set_reply(json!({
+        "answer": "made up.",
+        "memory_ids": [],
+        "mental_model_ids": ["mm-0000000000000000000000000000dead"],
+    }));
+    let (status, _) = h
+        .send(
+            "POST",
+            "/v1/banks/b1/reflect",
+            Some(json!({"query": "ollama latency measured"})),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an invented id must not fail reflect"
+    );
+
+    let (_, after) = h
+        .send("GET", &format!("/v1/banks/b1/mental-models/{id}"), None)
+        .await;
+    assert_eq!(
+        after["cited_count"], 0,
+        "invented id inflated a count: {after}"
+    );
+}
+
 #[tokio::test]
 async fn write_routes_reject_bad_input() {
     let h = harness().await;

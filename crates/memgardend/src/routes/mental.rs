@@ -60,6 +60,11 @@ pub struct MentalModelResponse {
     /// Parsed back from the JSON column; `null` if it was never written.
     pub reflect_response: Option<Value>,
     pub last_refreshed_at: Option<i64>,
+    /// How many times `/reflect` has cited this model. Monotonic; `0` means it
+    /// has never been read, which is what a demotion rule keys on.
+    pub cited_count: i64,
+    /// When it was last cited, or `null` if never.
+    pub last_cited_at: Option<i64>,
     /// The highest `memory_nodes.created_at` a refresh has folded in. Distinct
     /// from `last_refreshed_at` on purpose — see 0006's comment.
     pub refresh_watermark: Option<i64>,
@@ -123,6 +128,8 @@ impl MentalModelResponse {
                 .reflect_response
                 .and_then(|raw| serde_json::from_str(&raw).ok()),
             last_refreshed_at: m.last_refreshed_at,
+            cited_count: m.cited_count,
+            last_cited_at: m.last_cited_at,
             refresh_watermark: m.refresh_watermark,
             created_at: m.created_at,
         }
@@ -385,7 +392,38 @@ pub async fn reflect_bank(
         .limit
         .unwrap_or(state.cfg.recall.limit)
         .clamp(1, MAX_LIST_LIMIT);
-    Ok(Json(reflect(&state, &bank_id, body.query, limit).await?))
+    let outcome = reflect(&state, &bank_id, body.query, limit).await?;
+
+    // The usage signal. A model that answers is worth refreshing; one that
+    // never gets cited is spending GPU for nobody, and until now the two looked
+    // identical from outside — `mental_model_ids` went to the caller and
+    // nowhere else.
+    //
+    // **Never fails the request.** The answer is already correct; a counter
+    // that did not increment must not turn it into a 500. Logged and dropped.
+    if !outcome.citations.mental_model_ids.is_empty() {
+        let (db, bank, ids) = (
+            state.db.clone(),
+            bank_id.clone(),
+            outcome.citations.mental_model_ids.clone(),
+        );
+        let now = memgarden_core::now_ms();
+        match tokio::task::spawn_blocking(move || {
+            memgarden_store::mental_models::record_citations(&db, &bank, &ids, now)
+        })
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(bank = %bank_id, error = %e, "recording mental-model citations failed")
+            }
+            Err(e) => {
+                tracing::warn!(bank = %bank_id, error = %e, "citation recording panicked")
+            }
+        }
+    }
+
+    Ok(Json(outcome))
 }
 
 /// One validator for both write routes: whatever is present must be sane.
