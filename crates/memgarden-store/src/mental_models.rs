@@ -13,7 +13,8 @@ use memgarden_core::error::Result;
 use crate::{Db, store_err, vecblob};
 
 const SELECT_COLUMNS: &str = "id, bank_id, name, source_query, content, reflect_response, \
-     max_tokens, trigger, last_refreshed_at, refresh_watermark, created_at";
+     max_tokens, trigger, last_refreshed_at, refresh_watermark, cited_count, \
+     last_cited_at, created_at";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MentalModel {
@@ -32,6 +33,14 @@ pub struct MentalModel {
     /// Data clock: the highest `memory_nodes.created_at` already summarised.
     /// See 0006's comment for why this is not `last_refreshed_at`.
     pub refresh_watermark: Option<i64>,
+    /// How many times `/reflect` has **cited** this model in an answer.
+    ///
+    /// Monotonic and never reset. The question a promotion or demotion rule
+    /// asks is "has this ever earned its keep"; dividing by age is something a
+    /// reader does with `created_at`, which is right here.
+    pub cited_count: i64,
+    /// When it was last cited, or `None` if it never has been.
+    pub last_cited_at: Option<i64>,
     pub created_at: i64,
 }
 
@@ -47,7 +56,38 @@ fn from_row(r: &Row) -> rusqlite::Result<MentalModel> {
         trigger: r.get(7)?,
         last_refreshed_at: r.get(8)?,
         refresh_watermark: r.get(9)?,
-        created_at: r.get(10)?,
+        cited_count: r.get(10)?,
+        last_cited_at: r.get(11)?,
+        created_at: r.get(12)?,
+    })
+}
+
+/// Records that `/reflect` cited these models in an answer.
+///
+/// One statement for the whole batch, and **no error is propagated**: this is a
+/// usage signal, and a reflect that answered correctly must not turn into a 500
+/// because a counter did not increment. The caller logs and moves on.
+///
+/// Ids come from `reflect`'s `keep_known`, which has already dropped anything
+/// the model invented, so a bogus id cannot inflate a count here.
+pub fn record_citations(db: &Db, bank_id: &str, ids: &[String], now_ms: i64) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    db.write(|tx| {
+        let mut n = 0usize;
+        let mut stmt = tx
+            .prepare(
+                "UPDATE mental_models SET cited_count = cited_count + 1, last_cited_at = ?3 \
+                 WHERE bank_id = ?1 AND id = ?2",
+            )
+            .map_err(store_err)?;
+        for id in ids {
+            n += stmt
+                .execute(params![bank_id, id, now_ms])
+                .map_err(store_err)?;
+        }
+        Ok(n)
     })
 }
 
@@ -334,6 +374,55 @@ pub fn knn(
 
 #[cfg(test)]
 mod tests {
+    /// The usage signal has to land on the row and only on rows that exist: a
+    /// promotion or demotion rule reads `cited_count` and nothing else, so an
+    /// id that matches nothing must count for nothing rather than erroring.
+    #[test]
+    fn records_citations_only_for_ids_that_exist() {
+        let db = Db::open_memory().expect("db");
+        crate::banks::create(&db, "b1", None, None).expect("bank");
+        let m = insert(
+            &db,
+            &NewMentalModel {
+                id: "mm-real",
+                bank_id: "b1",
+                name: "n",
+                source_query: None,
+                content: "c",
+                max_tokens: None,
+                trigger: None,
+            },
+            None,
+        )
+        .expect("insert");
+        assert_eq!(m.cited_count, 0);
+        assert_eq!(m.last_cited_at, None);
+
+        let hit = record_citations(
+            &db,
+            "b1",
+            &["mm-real".to_string(), "mm-nope".to_string()],
+            42_000,
+        )
+        .expect("record");
+        assert_eq!(hit, 1, "only the row that exists is updated");
+
+        let after = get(&db, "b1", "mm-real").expect("get").expect("row");
+        assert_eq!(after.cited_count, 1);
+        assert_eq!(after.last_cited_at, Some(42_000));
+
+        // Monotonic, and the timestamp moves.
+        record_citations(&db, "b1", &["mm-real".to_string()], 99_000).expect("record");
+        let again = get(&db, "b1", "mm-real").expect("get").expect("row");
+        assert_eq!(again.cited_count, 2);
+        assert_eq!(again.last_cited_at, Some(99_000));
+
+        // A different bank's id is not this bank's row.
+        crate::banks::create(&db, "b2", None, None).expect("bank2");
+        let none = record_citations(&db, "b2", &["mm-real".to_string()], 1).expect("record");
+        assert_eq!(none, 0, "bank scoping");
+    }
+
     use super::*;
     use memgarden_core::EMBEDDING_DIM;
 
