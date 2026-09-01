@@ -60,6 +60,28 @@ async fn stub_chat(
     if state.fail_on.contains(&n) {
         return (StatusCode::INTERNAL_SERVER_ERROR, "stub failure").into_response();
     }
+    // The ledger call reuses this stub and wants a different shape. It is
+    // told apart by its system prompt rather than by call order, because
+    // order is exactly what the counting tests are asserting.
+    //
+    // `body["system"]`, not `body["messages"]`: `chat_json_inner` posts to
+    // `/api/generate`, whose body is `{system, prompt, format, options}`.
+    // (The `marker` below reads `messages` and has therefore always been
+    // empty — pre-existing, and left alone.)
+    let system = body["system"].as_str().unwrap_or("");
+    if system.contains("CURRENT WORKING STATE") {
+        return axum::Json(json!({
+            "response": json!({
+                "goal": "stub goal",
+                "done": "stub done",
+                "open": "stub open",
+                "next_action": "stub next",
+            })
+            .to_string()
+        }))
+        .into_response();
+    }
+
     // Two facts per chunk, one of each fact_type, so the test can check the
     // `assistant` -> `experience` rename and the ordering offsets.
     let user = body["messages"][1]["content"].as_str().unwrap_or("");
@@ -101,6 +123,12 @@ fn build(
     cfg.ollama.request_timeout_secs = 5;
     cfg.ollama.max_retries = 0;
     cfg.retain.include_tool_calls = true;
+    // Off by default in tests, ON in production. Nearly every test in this
+    // file asserts `calls == chunks_total`, and the ledger's one extra call
+    // per job would make that invariant read as "one per chunk, plus one",
+    // which is a worse thing for those tests to be pinning. The wiring gets
+    // its own test below, which turns it back on.
+    cfg.retain.write_task_ledger = false;
     tweak(&mut cfg);
 
     let ollama = Arc::new(memgardend::ollama::OllamaClient::new(cfg.ollama.clone()).unwrap());
@@ -1596,4 +1624,123 @@ async fn a_real_world_bank_id_survives_the_url_path() {
         assert_eq!(listed.status(), StatusCode::OK);
         assert_eq!(body_json(listed).await["bank_id"], bank);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Task ledger (migration 0012)
+// ---------------------------------------------------------------------------
+
+/// The write path exists and is reached from a finished retain job.
+///
+/// This is the only test in the file that turns `write_task_ledger` on, and it
+/// asserts the two things the wiring can get wrong in a way nothing else would
+/// notice: that the ledger row is written at all, and that its `anchors` carry
+/// the daemon's own values rather than anything the model produced.
+#[tokio::test]
+async fn the_task_ledger_is_written_when_a_job_finishes() {
+    let (url, calls) = spawn_stub_ollama(vec![]).await;
+    let harness = with_worker(&url, |cfg| {
+        cfg.retain.chunk_size = 4000;
+        cfg.retain.write_task_ledger = true;
+    })
+    .await;
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({
+                "messages": [
+                    { "role": "user", "content": "fix the cursor defect" },
+                    { "role": "assistant", "content": [{ "type": "tool_use", "name": "Edit",
+                        "input": { "file_path": "/repo/src/retain.rs" } }] },
+                ],
+                "session_id": "sess-ledger",
+                "cwd": "/repo",
+                "is_initial": true,
+                "context": "claude-code",
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(response).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let job = await_job(&harness.db, &job_id).await;
+    assert_eq!(job.status, "done");
+    // One per chunk, plus exactly one for the ledger. The cost of this
+    // feature is a number, and this is where it is written down.
+    assert_eq!(
+        calls.load(Ordering::SeqCst) as i64,
+        job.chunks_total + 1,
+        "the ledger must add exactly one Ollama call per job"
+    );
+
+    let led = memgarden_store::task_ledger::get(&harness.db, "b1")
+        .unwrap()
+        .expect("ledger row");
+    assert_eq!(led.goal, "stub goal");
+    assert_eq!(led.next_action, "stub next");
+    assert_eq!(led.session_id.as_deref(), Some("sess-ledger"));
+    assert_eq!(led.job_id.as_deref(), Some(job_id.as_str()));
+
+    // `anchors` is assembled by the daemon, never asked of the model: a
+    // fabricated anchor turns the staleness check into false confidence.
+    let anchors: Value = serde_json::from_str(&led.anchors).expect("anchors is JSON");
+    assert_eq!(anchors["cwd"], "/repo");
+    // Relative to `cwd`, which is why both are in the anchor: the pair
+    // resolves, either alone does not.
+    assert_eq!(anchors["paths"], json!(["src/retain.rs"]));
+}
+
+/// The knob is real: off, the job runs and no row appears.
+///
+/// Note the neighbours: `no_ledger_row_when_nothing_was_capped` in this same
+/// file is about the **benefit** ledger (`metrics_store`), which is a
+/// different table with a different purpose. These two tests say "task
+/// ledger" in full for that reason.
+#[tokio::test]
+async fn no_task_ledger_is_written_when_the_knob_is_off() {
+    let (url, calls) = spawn_stub_ollama(vec![]).await;
+    let harness = with_worker(&url, |cfg| {
+        cfg.retain.chunk_size = 4000;
+        cfg.retain.write_task_ledger = false;
+    })
+    .await;
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({
+                "messages": [{ "role": "user", "content": "fix the cursor defect" }],
+                "session_id": "sess-off",
+                "is_initial": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    let job_id = body_json(response).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let job = await_job(&harness.db, &job_id).await;
+
+    assert_eq!(job.status, "done");
+    assert_eq!(
+        calls.load(Ordering::SeqCst) as i64,
+        job.chunks_total,
+        "no extra call when the knob is off"
+    );
+    assert_eq!(
+        memgarden_store::task_ledger::get(&harness.db, "b1").unwrap(),
+        None
+    );
 }

@@ -1944,8 +1944,9 @@ fn fresh_database_has_the_0010_mental_model_usage() {
     );
 }
 
-/// v11 adds CE-12's two lifecycle columns, and the `LATEST_VERSION` pin lives
-/// here now because this is the newest migration.
+/// v11 adds CE-12's two lifecycle columns. The `LATEST_VERSION` pin moved on
+/// to `fresh_database_has_the_0012_task_ledger` when that landed — the
+/// convention is that the absolute pin follows the newest migration.
 ///
 /// What this pins is the pair of defaults every recall depends on: both
 /// columns must be **nullable**, and every pre-migration row must read NULL.
@@ -1957,11 +1958,10 @@ fn fresh_database_has_the_0011_supersession_columns() {
     let db = Db::open_memory().unwrap();
     let conn = db.read().unwrap();
 
-    assert_eq!(memgarden_store::LATEST_VERSION, 11);
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, memgarden_store::LATEST_VERSION);
 
     let mut stmt = conn.prepare("PRAGMA table_info(memory_nodes)").unwrap();
     let cols: Vec<(String, i64, Option<String>)> = stmt
@@ -1999,4 +1999,77 @@ fn fresh_database_has_the_0011_supersession_columns() {
         .expect("superseded_by foreign key");
     assert_eq!(self_fk.0, "memory_nodes");
     assert_eq!(self_fk.2, "SET NULL");
+}
+
+/// v12 adds the task ledger. This test carries the single **absolute**
+/// `LATEST_VERSION` pin; every other schema test compares against the constant
+/// so that adding a migration touches exactly one number.
+///
+/// What it pins beyond the version is the pair of properties the write path
+/// depends on and a reader would not think to check:
+///
+/// * every content column is `NOT NULL` with a `''` default, because the
+///   extractor is a local 14B model and this codebase has been bitten three
+///   times by asking it for optional structure (CE-12's `superseded_by` came
+///   back unfilled on every call). "Nothing to say" has to be a value the
+///   model is obliged to produce, not a key it may omit.
+/// * `anchors` carries a `json_valid` CHECK, because the store maps exactly
+///   that violation to a named error and a silently-dropped constraint would
+///   turn malformed JSON into a row nobody can parse later.
+#[test]
+fn fresh_database_has_the_0012_task_ledger() {
+    let db = Db::open_memory().unwrap();
+    let conn = db.read().unwrap();
+
+    assert_eq!(memgarden_store::LATEST_VERSION, 12);
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 12);
+
+    let mut stmt = conn.prepare("PRAGMA table_info(task_ledger)").unwrap();
+    let cols: Vec<(String, i64, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(1)?, r.get(3)?, r.get(4)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    for name in ["goal", "done", "open", "next_action"] {
+        let col = cols
+            .iter()
+            .find(|(n, _, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} column"));
+        assert_eq!(col.1, 1, "{name} must be NOT NULL");
+        assert_eq!(
+            col.2.as_deref(),
+            Some("''"),
+            "{name} must default to the empty string, not NULL"
+        );
+    }
+
+    // One row per bank, keyed by it — not one per session. The live
+    // `sessions` table says a session lasts days and spans many tasks, so a
+    // session-keyed ledger would hold a dozen unrelated goals in one row.
+    let pk: Vec<String> = cols
+        .iter()
+        .filter(|(n, _, _)| n == "bank_id")
+        .map(|(n, _, _)| n.clone())
+        .collect();
+    assert_eq!(pk, vec!["bank_id".to_string()]);
+
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'task_ledger'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        sql.contains("json_valid(anchors)"),
+        "anchors must keep its json_valid CHECK: {sql}"
+    );
+    assert!(
+        sql.contains("ON DELETE CASCADE"),
+        "a deleted bank must take its ledger with it: {sql}"
+    );
 }

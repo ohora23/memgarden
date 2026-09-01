@@ -400,6 +400,19 @@ pub struct RetainConfig {
     /// the chunk prompt without displacing the guidelines; a KNN over a
     /// 3,000-character chunk gets vague past roughly that many anyway.
     pub supersession_candidates: usize,
+    /// Whether a finished retain job also writes the bank's `task_ledger`
+    /// row: the current goal, what is done, what is open, the next action.
+    ///
+    /// **On**, because the row exists to be looked at. Nothing reads the
+    /// table yet — the read path is deliberately unbuilt until the stored
+    /// content has been judged, and it cannot be judged unless it is written.
+    ///
+    /// It costs **one extra Ollama call per retain job**, over the tail of
+    /// the transcript rather than the whole of it. That is the reason this is
+    /// a knob and not a constant: it is a new GPU consumer on a path that
+    /// already competes with extraction for the same single inference slot,
+    /// and turning it off has to be one line rather than a rebuild.
+    pub write_task_ledger: bool,
 }
 
 /// `[profile]` — named presets that fill in grouped defaults for a usage
@@ -510,6 +523,7 @@ impl Config {
                 include_tool_calls: false,
                 detect_supersession: false,
                 supersession_candidates: 12,
+                write_task_ledger: true,
             },
             recall: RecallConfig {
                 types: vec![FactType::World, FactType::Observation, FactType::Experience],
@@ -736,6 +750,9 @@ pub fn from_parts(
             }
             if let Some(v) = retain.supersession_candidates {
                 cfg.retain.supersession_candidates = v;
+            }
+            if let Some(v) = retain.write_task_ledger {
+                cfg.retain.write_task_ledger = v;
             }
         }
         if let Some(recall) = parsed.recall {
@@ -1306,6 +1323,7 @@ struct TomlRetain {
     include_tool_calls: Option<bool>,
     detect_supersession: Option<bool>,
     supersession_candidates: Option<usize>,
+    write_task_ledger: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1408,6 +1426,7 @@ mod tests {
                 include_tool_calls: false,
                 detect_supersession: false,
                 supersession_candidates: 12,
+                write_task_ledger: true,
             },
             recall: RecallConfig {
                 types: vec![FactType::World, FactType::Observation, FactType::Experience],
