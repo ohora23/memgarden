@@ -309,7 +309,9 @@ pub async fn get_mental_model(
 }
 
 /// Sets the fields present in the body. A field cannot be *cleared* through
-/// this route (see `mental_models::Patch`); nothing in CE-10 needs to.
+/// this route — `Option` where `None` means "leave alone" has no spelling for
+/// "unset" — so the one field an operator actually needs to clear has its own
+/// verb: `DELETE .../mental-models/{id}/trigger`.
 pub async fn patch_mental_model(
     State(state): State<AppState>,
     Path((bank_id, mm_id)): Path<(String, String)>,
@@ -336,6 +338,30 @@ pub async fn patch_mental_model(
         },
     )
     .await?;
+    Ok(Json(respond_one(updated, memgarden_core::now_ms()).await?))
+}
+
+/// `DELETE /v1/banks/{bank_id}/mental-models/{mm_id}/trigger` — turn one
+/// model's schedule off without deleting the model.
+///
+/// This is the operation an operator reaches for first when a model starts
+/// producing something wrong, and until now it required SQL: `PATCH` takes
+/// `Option<String>` per field where `None` means "leave this alone", so a JSON
+/// `null` is indistinguishable from an omitted key. Creating a model with no
+/// trigger worked; **un-triggering one did not.**
+/// `docs/evidence/mental-model-supersession.md` records the day that mattered
+/// — a model citing 17 nodes to assert three superseded facts, switched off by
+/// hand in the database.
+///
+/// 404 when the model does not exist *or* already has no trigger: both mean
+/// "there is no schedule here to turn off", and the caller's next action is
+/// the same either way.
+pub async fn clear_mental_model_trigger(
+    State(state): State<AppState>,
+    Path((bank_id, mm_id)): Path<(String, String)>,
+) -> Result<Json<MentalModelResponse>, ApiError> {
+    require_bank(&state, &bank_id).await?;
+    let updated = mental::clear_trigger(&state, &bank_id, &mm_id).await?;
     Ok(Json(respond_one(updated, memgarden_core::now_ms()).await?))
 }
 

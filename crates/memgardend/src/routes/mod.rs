@@ -16,7 +16,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::middleware::from_fn;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde_json::json;
 use tower_http::trace::TraceLayer;
@@ -114,6 +114,10 @@ pub fn router(state: AppState) -> Router {
         )
         // Synchronous, like /consolidate: one LLM call, so callers need a
         // matching client timeout.
+        .route(
+            "/v1/banks/{bank_id}/mental-models/{mm_id}/trigger",
+            delete(mental::clear_mental_model_trigger),
+        )
         .route(
             "/v1/banks/{bank_id}/mental-models/{mm_id}/refresh",
             post(mental::refresh_mental_model),

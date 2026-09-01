@@ -264,6 +264,46 @@ pub async fn patch(
     load(state, bank_id, id).await
 }
 
+/// Turns one mental model's schedule off, and reports whether it had one.
+///
+/// A separate call and, at the edge, a separate verb — never a nullable field
+/// on `patch`. `Fields::trigger` is `Option<&str>` where `None` means "leave
+/// this alone", so a JSON `null` and an omitted key are the same request, and
+/// the one time an operator needed this — a model synthesising retracted facts
+/// — it had to be done in SQL. That is written down in
+/// `docs/evidence/mental-model-supersession.md`, and writing it down is not
+/// the same as fixing it.
+pub async fn clear_trigger(
+    state: &AppState,
+    bank_id: &str,
+    id: &str,
+) -> Result<MentalModel, ApiError> {
+    let current = load(state, bank_id, id).await?;
+    if current.trigger.is_none() {
+        return Err(ApiError::not_found(format!(
+            "mental model {id} has no trigger to clear"
+        )));
+    }
+
+    let (db, bank, id_owned) = (state.db.clone(), bank_id.to_string(), id.to_string());
+    tokio::task::spawn_blocking(move || {
+        store::update(
+            &db,
+            &bank,
+            &id_owned,
+            &Patch {
+                clear_trigger: true,
+                ..Default::default()
+            },
+            None,
+        )
+    })
+    .await
+    .map_err(join_err)??;
+
+    load(state, bank_id, id).await
+}
+
 /// One mental model, or a 404.
 pub async fn load(state: &AppState, bank_id: &str, id: &str) -> Result<MentalModel, ApiError> {
     let (db, bank, id_owned) = (state.db.clone(), bank_id.to_string(), id.to_string());

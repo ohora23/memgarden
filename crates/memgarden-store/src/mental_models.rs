@@ -131,6 +131,13 @@ pub struct Patch<'a> {
     /// review round 1, HIGH 2). Set by a caller that changed the embedded text
     /// but could not produce a new vector — see [`update`].
     pub clear_embedding: bool,
+    /// Turn the schedule off. Separate from `trigger: None`, which means
+    /// "leave it alone" — `COALESCE` cannot express both with one field, and
+    /// that is exactly why turning a mental model off used to require SQL
+    /// (`docs/evidence/mental-model-supersession.md`). The daemon spells this
+    /// as `DELETE .../mental-models/{id}/trigger`, so no request body ever has
+    /// to distinguish a JSON `null` from an omitted key.
+    pub clear_trigger: bool,
 }
 
 /// Inserts one mental model, optionally with its vector.
@@ -205,7 +212,8 @@ pub fn update(
                    source_query      = COALESCE(?4, source_query),
                    content           = COALESCE(?5, content),
                    max_tokens        = COALESCE(?6, max_tokens),
-                   trigger           = COALESCE(?7, trigger),
+                   -- ?14 = clear_trigger: same shape as ?13 below.
+                   trigger           = CASE WHEN ?14 THEN NULL ELSE COALESCE(?7, trigger) END,
                    reflect_response  = COALESCE(?8, reflect_response),
                    last_refreshed_at = COALESCE(?9, last_refreshed_at),
                    refresh_watermark = COALESCE(?10, refresh_watermark),
@@ -228,6 +236,7 @@ pub fn update(
                     blob,
                     blob.as_ref().map(|_| EMBEDDING_MODEL_ID),
                     clear,
+                    patch.clear_trigger,
                 ],
             )
             .map_err(store_err)?;
@@ -483,6 +492,99 @@ mod tests {
         assert_eq!(delete(&db, "b1", "mm-shared").unwrap(), 1);
         assert!(get(&db, "b1", "mm-shared").unwrap().is_none());
         assert!(get(&db, "b2", "mm-shared").unwrap().is_some());
+    }
+
+    /// The gap `docs/evidence/mental-model-supersession.md` recorded and did
+    /// not close: `COALESCE(?, trigger)` cannot express "unset", so `None`
+    /// means "leave alone" and nothing means "clear". A separate flag can.
+    #[test]
+    fn clear_trigger_unsets_a_schedule_that_patch_could_only_replace() {
+        let db = Db::open_memory().unwrap();
+        crate::banks::create(&db, "b1", None, None).unwrap();
+        let model = insert(
+            &db,
+            &NewMentalModel {
+                bank_id: "b1",
+                id: "mm1",
+                name: "gates",
+                source_query: Some("AC-1 AC-7"),
+                content: "pending",
+                max_tokens: Some(512),
+                trigger: Some("@after-consolidation"),
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(model.trigger.as_deref(), Some("@after-consolidation"));
+
+        // A patch that names no trigger leaves it exactly where it was —
+        // which is the whole problem.
+        update(
+            &db,
+            "b1",
+            "mm1",
+            &Patch {
+                name: Some("gates v2"),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            get(&db, "b1", "mm1").unwrap().unwrap().trigger.as_deref(),
+            Some("@after-consolidation"),
+        );
+
+        update(
+            &db,
+            "b1",
+            "mm1",
+            &Patch {
+                clear_trigger: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(get(&db, "b1", "mm1").unwrap().unwrap().trigger, None);
+    }
+
+    /// `clear_trigger` must not become a second way to wipe unrelated fields.
+    #[test]
+    fn clearing_the_trigger_touches_nothing_else() {
+        let db = Db::open_memory().unwrap();
+        crate::banks::create(&db, "b1", None, None).unwrap();
+        insert(
+            &db,
+            &NewMentalModel {
+                bank_id: "b1",
+                id: "mm1",
+                name: "gates",
+                source_query: Some("AC-1"),
+                content: "body",
+                max_tokens: Some(512),
+                trigger: Some("0 3 * * *"),
+            },
+            None,
+        )
+        .unwrap();
+        update(
+            &db,
+            "b1",
+            "mm1",
+            &Patch {
+                clear_trigger: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let after = get(&db, "b1", "mm1").unwrap().unwrap();
+        assert_eq!(after.trigger, None);
+        assert_eq!(after.name, "gates");
+        assert_eq!(after.source_query.as_deref(), Some("AC-1"));
+        assert_eq!(after.content, "body");
+        assert_eq!(after.max_tokens, Some(512));
     }
 
     #[test]
