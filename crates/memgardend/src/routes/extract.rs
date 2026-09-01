@@ -25,6 +25,11 @@ pub struct DryRunExtractRequest {
 #[derive(Debug, Serialize)]
 pub struct DryRunExtractResponse {
     pub facts: Vec<ParsedFact>,
+    /// CE-12: the candidate list, in the order the model was shown it, so a
+    /// caller can read `supersedes` at all — the positions are indices into
+    /// this. Without it the field is a list of integers with no referent, and
+    /// the one route that could score the detector could not be scored.
+    pub candidates: Vec<String>,
 }
 
 /// Security review M1: one oversized `text` would hold the single Ollama
@@ -71,12 +76,20 @@ pub async fn dry_run_extract(
         return Err(ApiError::not_found(format!("bank not found: {bank_id}")));
     }
 
+    // CE-12: the same candidate lookup the retain worker does, so this route
+    // is a true dry run of what would be written — including which stored
+    // facts extraction would call retracted. Nothing is marked here; the
+    // positions come back in the response for a caller to judge, which is
+    // what `docs/evidence/supersession-detection.md` scores.
+    let known = crate::retain::candidate_facts(&state, &bank_id, &body.text).await;
+
     let facts = extract::extract(
         &state.ollama,
         &body.text,
         body.event_date,
         body.mission.as_deref(),
         false,
+        &known,
     )
     .await
     .map_err(|e| {
@@ -100,5 +113,8 @@ pub async fn dry_run_extract(
         }
     })?;
 
-    Ok(Json(DryRunExtractResponse { facts }))
+    Ok(Json(DryRunExtractResponse {
+        facts,
+        candidates: known.into_iter().map(|k| k.text).collect(),
+    }))
 }

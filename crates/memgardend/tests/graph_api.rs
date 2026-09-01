@@ -1408,3 +1408,97 @@ async fn publishing_no_ids_sends_nothing() {
     let got = rx.try_recv().expect("the non-empty one");
     assert_eq!(got.ids, vec![1], "the empty publish must not occupy a slot");
 }
+
+// ---------------------------------------------------------------------------
+// CE-12 — the supersede write surface
+// ---------------------------------------------------------------------------
+
+async fn delete_(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(uri)
+        .header("host", "127.0.0.1:9100")
+        .body(Body::empty())
+        .unwrap();
+    send(app, req).await
+}
+
+/// The round trip that makes CE-12's column usable at all: retract a fact,
+/// watch it disappear from recall, un-retract it, watch it come back.
+///
+/// Two verbs and no nullable field — `PATCH` with `Option` is what made a
+/// mental model's `trigger` unclearable through the API
+/// (`docs/evidence/mental-model-supersession.md`), and this is the same shape
+/// of column.
+#[tokio::test]
+async fn a_fact_can_be_retracted_and_un_retracted_over_http() {
+    let (app, db) = read_only_app();
+    let ids = seed_graph(&db);
+    let (old, new) = (ids[0], ids[1]);
+
+    let (status, body) = post(
+        &app,
+        &format!("/v1/banks/b1/nodes/{old}/supersede"),
+        json!({ "by": new }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["superseded_by"], json!(new));
+    assert!(
+        memgarden_store::search::hydrate(&db, "b1", &[old])
+            .unwrap()
+            .is_empty(),
+        "a retracted fact must leave recall"
+    );
+
+    let (status, body) = delete_(&app, &format!("/v1/banks/b1/nodes/{old}/supersede")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["superseded_by"], Value::Null);
+    assert_eq!(
+        memgarden_store::search::hydrate(&db, "b1", &[old])
+            .unwrap()
+            .len(),
+        1,
+        "clearing it must bring the fact back"
+    );
+}
+
+/// Every refusal the store's guards produce has to reach the caller as a
+/// refusal, not as a 200 that wrote nothing — the failure mode this project
+/// spent a week on when retain reported `done` having lost chunks.
+#[tokio::test]
+async fn a_supersede_that_the_guards_refuse_answers_409() {
+    let (app, db) = read_only_app();
+    let ids = seed_graph(&db);
+    let (older, newer) = (ids[0], ids[2]);
+
+    // Backwards: the replacement is older than what it would replace.
+    let (status, _) = post(
+        &app,
+        &format!("/v1/banks/b1/nodes/{newer}/supersede"),
+        json!({ "by": older }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Self.
+    let (status, _) = post(
+        &app,
+        &format!("/v1/banks/b1/nodes/{older}/supersede"),
+        json!({ "by": older }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // A node that is not retracted cannot be un-retracted.
+    let (status, _) = delete_(&app, &format!("/v1/banks/b1/nodes/{older}/supersede")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = post(
+        &app,
+        &format!("/v1/banks/nope/nodes/{older}/supersede"),
+        json!({ "by": newer }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

@@ -105,6 +105,9 @@ async fn main() {
                     Some(memgarden_core::now_ms()),
                     Some(base.profile.retain_mission.as_str()),
                     false,
+                    // This A/B measures the tool-call caps, so it holds the
+                    // pre-CE-12 prompt: no candidates, no schema change.
+                    &[],
                 )
                 .await
                 {

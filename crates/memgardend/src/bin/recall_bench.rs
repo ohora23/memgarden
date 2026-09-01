@@ -212,6 +212,9 @@ async fn import(corpus_path: &Path, db_path: &Path) -> anyhow::Result<()> {
                 occurred_end: d.occurred_end,
                 mentioned_at: d.mentioned_at,
                 metadata: None,
+                // The gold corpus is frozen; nothing in it expires, and an
+                // expiry here would make the harness's own clock a variable.
+                expires_at: None,
             },
             tags: &f.tags,
         })

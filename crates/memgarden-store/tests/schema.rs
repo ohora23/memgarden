@@ -1904,8 +1904,7 @@ fn fresh_database_has_the_0009_partial_status() {
     assert!(bad.is_err(), "an unknown status must still be refused");
 }
 
-/// v10 adds the CE-10 usage signal, and the `LATEST_VERSION` pin lives here now
-/// because this is the newest migration.
+/// v10 adds the CE-10 usage signal.
 ///
 /// Two plain `ALTER TABLE ... ADD COLUMN`s, so there is no rebuild to guard —
 /// what this pins is that the columns exist with the defaults a promotion rule
@@ -1916,12 +1915,6 @@ fn fresh_database_has_the_0009_partial_status() {
 fn fresh_database_has_the_0010_mental_model_usage() {
     let db = Db::open_memory().unwrap();
     let conn = db.read().unwrap();
-
-    assert_eq!(memgarden_store::LATEST_VERSION, 10);
-    let version: i64 = conn
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(version, 10);
 
     let mut stmt = conn.prepare("PRAGMA table_info(mental_models)").unwrap();
     let cols: Vec<(String, i64, Option<String>)> = stmt
@@ -1949,4 +1942,61 @@ fn fresh_database_has_the_0010_mental_model_usage() {
         last.1, 0,
         "last_cited_at is nullable — never cited has no time"
     );
+}
+
+/// v11 adds CE-12's two lifecycle columns, and the `LATEST_VERSION` pin lives
+/// here now because this is the newest migration.
+///
+/// What this pins is the pair of defaults every recall depends on: both
+/// columns must be **nullable**, and every pre-migration row must read NULL.
+/// `hydrate` spells "this fact is live" as `superseded_by IS NULL`, so a
+/// migration that defaulted either column to anything else would retire all
+/// 7,761 existing facts in one statement.
+#[test]
+fn fresh_database_has_the_0011_supersession_columns() {
+    let db = Db::open_memory().unwrap();
+    let conn = db.read().unwrap();
+
+    assert_eq!(memgarden_store::LATEST_VERSION, 11);
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 11);
+
+    let mut stmt = conn.prepare("PRAGMA table_info(memory_nodes)").unwrap();
+    let cols: Vec<(String, i64, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(1)?, r.get(3)?, r.get(4)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    for name in ["superseded_by", "expires_at"] {
+        let col = cols
+            .iter()
+            .find(|(n, _, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} column"));
+        assert_eq!(col.1, 0, "{name} must be nullable");
+        assert_eq!(
+            col.2, None,
+            "{name} must have no default — an existing fact is live and unexpiring"
+        );
+    }
+
+    // The FK is what makes deleting a replacement un-retract the original
+    // rather than leave a row pointing at nothing.
+    let fks: Vec<(String, String, String)> = conn
+        .prepare("PRAGMA foreign_key_list(memory_nodes)")
+        .unwrap()
+        // foreign_key_list columns: id, seq, table, from, to, on_update,
+        // on_delete, match — so 6, not 5.
+        .query_map([], |r| Ok((r.get(2)?, r.get(3)?, r.get(6)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let self_fk = fks
+        .iter()
+        .find(|(_, from, _)| from == "superseded_by")
+        .expect("superseded_by foreign key");
+    assert_eq!(self_fk.0, "memory_nodes");
+    assert_eq!(self_fk.2, "SET NULL");
 }

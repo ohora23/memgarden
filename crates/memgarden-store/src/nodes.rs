@@ -11,7 +11,8 @@ use crate::models::{MemoryNode, NewNode};
 use crate::{Db, store_err, vecblob};
 
 const SELECT_COLUMNS: &str = "id, uuid, bank_id, document_id, fact_type, text, context, embedding, \
-     event_date, occurred_start, occurred_end, mentioned_at, metadata, created_at, updated_at";
+     event_date, occurred_start, occurred_end, mentioned_at, metadata, created_at, updated_at, \
+     superseded_by, expires_at";
 
 pub fn insert(db: &Db, new: NewNode) -> Result<i64> {
     let now = now_ms();
@@ -20,8 +21,9 @@ pub fn insert(db: &Db, new: NewNode) -> Result<i64> {
         tx.execute(
             "INSERT INTO memory_nodes
              (uuid, bank_id, document_id, fact_type, text, context, event_date,
-              occurred_start, occurred_end, mentioned_at, metadata, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+              occurred_start, occurred_end, mentioned_at, metadata, created_at, updated_at,
+              expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)",
             params![
                 uuid,
                 new.bank_id,
@@ -35,6 +37,7 @@ pub fn insert(db: &Db, new: NewNode) -> Result<i64> {
                 new.mentioned_at,
                 new.metadata,
                 now,
+                new.expires_at,
             ],
         )
         .map_err(store_err)?;
@@ -65,8 +68,9 @@ pub fn insert_batch(db: &Db, items: &[NewNodeWithTags]) -> Result<Vec<i64>> {
             tx.execute(
                 "INSERT INTO memory_nodes
                  (uuid, bank_id, document_id, fact_type, text, context, event_date,
-                  occurred_start, occurred_end, mentioned_at, metadata, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                  occurred_start, occurred_end, mentioned_at, metadata, created_at, updated_at,
+                  expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)",
                 params![
                     uuid,
                     new.bank_id,
@@ -80,6 +84,7 @@ pub fn insert_batch(db: &Db, items: &[NewNodeWithTags]) -> Result<Vec<i64>> {
                     new.mentioned_at,
                     new.metadata,
                     now,
+                    new.expires_at,
                 ],
             )
             .map_err(store_err)?;
@@ -378,6 +383,87 @@ pub fn tags_of(db: &Db, node_id: i64) -> Result<Vec<String>> {
         .map_err(store_err)
 }
 
+/// CE-12: records that each `(retracted, replacement)` pair's first node has
+/// been replaced by its second. Returns how many rows actually changed.
+///
+/// Every guard lives in the `WHERE` clause rather than in a read-then-write,
+/// because the caller is the retain worker and the decision it is acting on
+/// came out of a 14B model:
+///
+/// * **same bank, both ends** — a cross-bank retraction is not a thing that
+///   can be meant, and the id came from a list the model was shown, so a
+///   hallucinated index must land nowhere rather than somewhere.
+/// * **`superseded_by IS NULL`** — first retraction wins. A fact already
+///   retracted is not re-pointed at a newer replacement, so the chain stays
+///   the one an operator can read.
+/// * **`(retracted.created_at, retracted.id) < (replacement...)`** — the
+///   replacement must be strictly later than what it replaces. Without this a
+///   chunk retained out of order can retract the correction with the thing it
+///   corrected, which is worse than not detecting the retraction at all.
+///
+///   The rowid tiebreaker is not decoration: `insert_batch` stamps ONE
+///   `created_at` across a whole chunk, so a bare `<=` on the timestamp let a
+///   same-millisecond pair retract in either direction — caught by this
+///   module's own guard test, which passed once and failed on the next run.
+/// * **`retracted <> replacement`** — a fact cannot retract itself.
+///
+/// A pair failing any guard is silently skipped: this runs after the facts
+/// are already committed, and losing an edge is recoverable where failing the
+/// chunk is not.
+pub fn mark_superseded(db: &Db, bank_id: &str, pairs: &[(i64, i64)]) -> Result<usize> {
+    if pairs.is_empty() {
+        return Ok(0);
+    }
+    let now = now_ms();
+    db.write(|tx| {
+        let mut stmt = tx
+            .prepare(
+                "UPDATE memory_nodes AS old
+                    SET superseded_by = ?1, updated_at = ?2
+                  WHERE old.id = ?3
+                    AND old.bank_id = ?4
+                    AND old.superseded_by IS NULL
+                    AND old.id <> ?1
+                    AND (old.created_at, old.id) < (SELECT new.created_at, new.id
+                                                       FROM memory_nodes AS new
+                                                      WHERE new.id = ?1
+                                                        AND new.bank_id = ?4)",
+            )
+            .map_err(store_err)?;
+        let mut changed = 0usize;
+        for &(retracted, replacement) in pairs {
+            changed += stmt
+                .execute(params![replacement, now, retracted, bank_id])
+                .map_err(store_err)?;
+        }
+        Ok(changed)
+    })
+}
+
+/// The inverse of `mark_superseded` for one node: makes a retracted fact live
+/// again. Returns whether a row changed.
+///
+/// A separate function and, at the HTTP edge, a separate verb — never a
+/// nullable field on the setter. `PATCH .../mental-models/{id}` takes
+/// `Option<String>` per field where `None` means "leave alone", so a JSON
+/// `null` cannot say "clear this" and turning a bad mental model off had to be
+/// done in SQL (`docs/evidence/mental-model-supersession.md`). Repeating that
+/// shape on the column this migration adds would be repeating a defect the
+/// project has already written down.
+pub fn clear_superseded(db: &Db, bank_id: &str, id: i64) -> Result<bool> {
+    let now = now_ms();
+    db.write(|tx| {
+        let n = tx
+            .execute(
+                "UPDATE memory_nodes SET superseded_by = NULL, updated_at = ?1
+                  WHERE id = ?2 AND bank_id = ?3 AND superseded_by IS NOT NULL",
+                params![now, id, bank_id],
+            )
+            .map_err(store_err)?;
+        Ok(n > 0)
+    })
+}
+
 /// Raw row shape before `fact_type` is parsed into `FactType` — row-mapping
 /// closures must return `rusqlite::Result`, so parsing happens after.
 struct NodeRow {
@@ -396,6 +482,8 @@ struct NodeRow {
     metadata: Option<String>,
     created_at: i64,
     updated_at: i64,
+    superseded_by: Option<i64>,
+    expires_at: Option<i64>,
 }
 
 impl NodeRow {
@@ -416,6 +504,8 @@ impl NodeRow {
             metadata: self.metadata,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            superseded_by: self.superseded_by,
+            expires_at: self.expires_at,
         })
     }
 }
@@ -437,5 +527,7 @@ fn row_to_node_row(row: &Row) -> rusqlite::Result<NodeRow> {
         metadata: row.get(12)?,
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
+        superseded_by: row.get(15)?,
+        expires_at: row.get(16)?,
     })
 }

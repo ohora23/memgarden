@@ -110,6 +110,29 @@ wall_timeout_secs = 7200
 # file counts as explicitly set and a profile preset will not override it.
 # include_tool_calls = false
 
+# CE-12 write-time supersession: show extraction the bank's twelve nearest
+# stored facts and let it declare that a new fact retracts one of them.
+#
+# OFF BY DEFAULT, AND MEASURED THAT WAY. On seven chunks built from this
+# project's own recorded retractions, the first form found 2 of 3 reachable
+# targets and named 22 facts that retract nothing — including, for one chunk,
+# all twelve candidates it was shown. Requiring the model to quote the span it
+# claims is false drove false positives to zero and detections to zero as well.
+# Full numbers, all three arms, and the grammar truncation that killed a fourth:
+# docs/evidence/supersession-detection.md
+#
+# OFF is byte-identical to the pre-CE-12 prompt and schema — asserted by the
+# system-prompt length snapshot, not assumed. The columns it would fill are set
+# by hand meanwhile:
+#     POST   /v1/banks/{bank}/nodes/{id}/supersede  {"by": <node id>}
+#     DELETE /v1/banks/{bank}/nodes/{id}/supersede
+#
+# Turning it on costs one embedding + one KNN per chunk (single-digit ms) and
+# ~12 lines of prompt. It adds no LLM call.
+# detect_supersession = false
+# How many stored facts to offer as retraction candidates.
+# supersession_candidates = 12
+
 [reranker]
 # Embedded cross-encoder reranking (CE-11). When on, the model's
 # sigmoid-normalised logit replaces the RRF-rank passthrough as the base

@@ -28,6 +28,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         10,
         include_str!("../migrations/0010_mental_model_usage.sql"),
     ),
+    (11, include_str!("../migrations/0011_supersession.sql")),
 ];
 
 /// The schema version this build expects, i.e. the highest entry in

@@ -14,6 +14,9 @@ use serde_json::Value;
 
 use memgarden_core::types::FactType;
 
+use super::MAX_SUPERSEDES_PER_FACT;
+use super::prompts::KnownFact;
+
 /// Accepts either the documented `{"facts": [...]}` wrapper or a bare
 /// top-level array — legacy: `_coerce_fact_response`, `fact_extraction.py:1297-1305`.
 #[derive(Debug, Clone, Deserialize)]
@@ -57,6 +60,20 @@ pub struct ParsedFact {
     pub where_field: Option<String>,
     pub entities: Vec<String>,
     pub causal_relations: Vec<CausalRelation>,
+    /// CE-12: **0-based** positions in the `KnownFact` list this fact
+    /// retracts, already range-checked and deduplicated. The model answers in
+    /// 1-based positions; the conversion happens here so no caller has to
+    /// remember which convention it is holding.
+    pub supersedes: Vec<usize>,
+    /// CE-12: raw ISO date from the model, resolved to ms by the writer —
+    /// same division of labour as `occurred_start`.
+    pub expires_at: Option<String>,
+    /// CE-12: the span of the retracted fact the model claimed is now false,
+    /// **as it answered** — kept even when it fails verification and
+    /// `supersedes` ends up empty. A retraction that is silently dropped with
+    /// no way to see why is the invisible-failure shape that left CE-10
+    /// broken for two months; this is the field that says why.
+    pub superseded_quote: Option<String>,
 }
 
 /// legacy: the loop body of `fact_extraction.py:1447-1636`. Returns only the
@@ -67,14 +84,21 @@ pub struct ParsedFact {
 /// `event_date_ms` is the reference instant for the relative-expression
 /// fallback (CE-8); `None` disables it, exactly as a `None` event_date does
 /// in legacy.
-pub fn parse_facts(raw_facts: Vec<Value>, event_date_ms: Option<i64>) -> Vec<ParsedFact> {
+/// `known` is CE-12's candidate list — the same slice the model was shown.
+/// An empty slice drops every claimed retraction, so a response that invents
+/// them against a list it was never given cannot write anything.
+pub fn parse_facts(
+    raw_facts: Vec<Value>,
+    event_date_ms: Option<i64>,
+    known: &[KnownFact],
+) -> Vec<ParsedFact> {
     let parsed: Vec<Option<ParsedFact>> = raw_facts
         .iter()
         .enumerate()
         .map(|(i, llm_fact)| {
             llm_fact
                 .as_object()
-                .and_then(|obj| parse_one(obj, i, event_date_ms))
+                .and_then(|obj| parse_one(obj, i, event_date_ms, known))
         })
         .collect();
 
@@ -113,6 +137,7 @@ fn parse_one(
     fact: &serde_json::Map<String, Value>,
     i: usize,
     event_date_ms: Option<i64>,
+    known: &[KnownFact],
 ) -> Option<ParsedFact> {
     // legacy: fact_extraction.py:1462-1476 — what -> factual_core -> text;
     // missing all three skips the fact entirely.
@@ -215,6 +240,50 @@ fn parse_one(
         })
         .unwrap_or_default();
 
+    // CE-12. The model answers with a 1-based position in the KNOWN FACTS
+    // list it was shown, plus the span of that fact it claims is now false.
+    //
+    // The quote is **checked, not trusted**: it has to actually occur in the
+    // candidate it points at. That is the whole difference between this and a
+    // prompt instruction — the first version asked the model not to retract
+    // facts merely on the same topic, and it retracted all twelve candidates
+    // it was shown anyway. A model that cannot quote the false span has not
+    // found a contradiction, and its answer is dropped here rather than
+    // written to the database.
+    //
+    // Positions outside `1..=known.len()` are dropped, never clamped: a clamp
+    // turns "position 40" into a retraction of a real fact the model never
+    // saw.
+    let quote = get_str(fact, "superseded_quote");
+    let superseded_quote = quote.clone();
+    let supersedes = get_value(fact, "supersedes")
+        .and_then(Value::as_array)
+        .map(|positions| {
+            let mut out: Vec<usize> = Vec::new();
+            for pos in positions {
+                let Some(pos) = pos.as_i64() else { continue };
+                if pos < 1 || pos as usize > known.len() {
+                    continue;
+                }
+                let idx = pos as usize - 1;
+                if !quote_is_in(quote.as_deref(), &known[idx].text) {
+                    continue;
+                }
+                if !out.contains(&idx) {
+                    out.push(idx);
+                }
+                if out.len() == MAX_SUPERSEDES_PER_FACT {
+                    break;
+                }
+            }
+            out
+        })
+        .unwrap_or_default();
+
+    // Kept as the model's string; `retain::NodeDraft` resolves it, the same
+    // way it resolves `occurred_start`.
+    let expires_at = get_str(fact, "expires_at");
+
     Some(ParsedFact {
         text,
         fact_type,
@@ -224,7 +293,31 @@ fn parse_one(
         where_field,
         entities,
         causal_relations,
+        supersedes,
+        expires_at,
+        superseded_quote,
     })
+}
+
+/// The shortest quote CE-12 will accept. Below this a "quote" is a shared
+/// identifier — "AC-1", "CPU 3" — which every fact on the topic contains, and
+/// checking it would wave through exactly the topical matches the check
+/// exists to stop.
+const MIN_QUOTE_CHARS: usize = 12;
+
+/// Whether the model's `superseded_quote` really occurs in the fact it points
+/// at. Whitespace is normalised on both sides — the model reflows the line it
+/// copies, and a line break is not a difference in what was said — but nothing
+/// else is: a paraphrase is not a quote, and a fact this cannot find a span in
+/// is a fact the model did not read.
+fn quote_is_in(quote: Option<&str>, candidate: &str) -> bool {
+    let Some(quote) = quote else { return false };
+    let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let quote = squash(quote);
+    if quote.chars().count() < MIN_QUOTE_CHARS {
+        return false;
+    }
+    squash(candidate).contains(&quote)
 }
 
 /// legacy: `get_value`, `fact_extraction.py:1455-1459`. Treats `""`, `[]`,
@@ -319,7 +412,7 @@ mod tests {
     #[test]
     fn accepts_wrapped_shape() {
         let raw = wrapped(json!([{"what": "hello world", "fact_type": "world"}]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].text, "hello world");
         assert_eq!(facts[0].fact_type, FactType::World);
@@ -329,7 +422,7 @@ mod tests {
     fn accepts_bare_top_level_array() {
         let raw: RawFactsResponse =
             serde_json::from_value(json!([{"what": "bare array works"}])).unwrap();
-        let facts = parse_facts(raw.into_facts(), None);
+        let facts = parse_facts(raw.into_facts(), None, &[]);
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].text, "bare array works");
     }
@@ -339,7 +432,7 @@ mod tests {
         let raw = wrapped(json!([
             {"what": "fact text", "when": "n/a", "who": "N/A", "why": ""}
         ]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(facts[0].text, "fact text");
     }
 
@@ -348,7 +441,7 @@ mod tests {
         let raw = wrapped(json!([
             {"what": "fact text", "entities": [], "causal_relations": {}}
         ]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert!(facts[0].entities.is_empty());
         assert!(facts[0].causal_relations.is_empty());
     }
@@ -360,7 +453,7 @@ mod tests {
             {"text": "from text field"},
             {"why": "no what/factual_core/text at all"},
         ]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(facts.len(), 2);
         assert_eq!(facts[0].text, "from factual_core");
         assert_eq!(facts[1].text, "from text field");
@@ -374,7 +467,7 @@ mod tests {
             {"what": "no fact_type, fact_kind assistant", "fact_kind": "assistant"},
             {"what": "no fact_type at all"},
         ]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(facts[0].fact_type, FactType::Experience);
         assert_eq!(facts[1].fact_type, FactType::World);
         assert_eq!(facts[2].fact_type, FactType::Experience);
@@ -390,7 +483,7 @@ mod tests {
             "who": "Alice",
             "why": "new job",
         }]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(
             facts[0].text,
             "Alice moved to Boston | When: last week | Involving: Alice | new job"
@@ -403,7 +496,7 @@ mod tests {
         for junk in ["...", "-", "***", "_, _, _", "   ", ".."] {
             let raw = wrapped(json!([{"what": junk}]));
             assert!(
-                parse_facts(raw, None).is_empty(),
+                parse_facts(raw, None, &[]).is_empty(),
                 "expected {junk:?} to be rejected as degenerate"
             );
         }
@@ -412,12 +505,12 @@ mod tests {
     #[test]
     fn short_non_alphanumeric_rejected_but_short_word_kept() {
         let raw = wrapped(json!([{"what": "-,"}]));
-        assert!(parse_facts(raw, None).is_empty());
+        assert!(parse_facts(raw, None, &[]).is_empty());
 
         // len<=2 but alphanumeric survives (e.g. an "OK" style fact,
         // however unlikely — the check is about punctuation, not length).
         let raw = wrapped(json!([{"what": "ok"}]));
-        assert_eq!(parse_facts(raw, None).len(), 1);
+        assert_eq!(parse_facts(raw, None, &[]).len(), 1);
     }
 
     #[test]
@@ -430,7 +523,7 @@ mod tests {
                 {"target_index": -1, "relation_type": "caused_by"}, // negative, invalid
             ]},
         ]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(facts[1].causal_relations.len(), 1);
         assert_eq!(facts[1].causal_relations[0].target_index, 0);
     }
@@ -448,7 +541,7 @@ mod tests {
                 {"target_index": 1, "relation_type": "caused_by"}, // → fact A: remapped to 0
             ]},
         ]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(facts.len(), 2);
         assert_eq!(facts[1].causal_relations.len(), 1);
         assert_eq!(facts[1].causal_relations[0].target_index, 0);
@@ -466,7 +559,7 @@ mod tests {
                 {"target_index": 2, "relation_type": "caused_by"},
             ]},
         ]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(facts[3].causal_relations.len(), 2);
     }
 
@@ -476,7 +569,7 @@ mod tests {
             "what": "fact",
             "entities": ["Alice", {"text": "Bob"}, {"nope": "dropped"}, 42],
         }]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(
             facts[0].entities,
             vec!["Alice".to_string(), "Bob".to_string()]
@@ -490,7 +583,7 @@ mod tests {
             "fact_kind": "event",
             "occurred_start": "2024-06-10",
         }]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(facts[0].occurred_start.as_deref(), Some("2024-06-10"));
         assert_eq!(facts[0].occurred_end.as_deref(), Some("2024-06-10"));
     }
@@ -507,7 +600,7 @@ mod tests {
             "when": "yesterday",
             "fact_kind": "event",
         }]));
-        let facts = parse_facts(raw, Some(EVENT));
+        let facts = parse_facts(raw, Some(EVENT), &[]);
         assert_eq!(
             facts[0].occurred_start.as_deref(),
             Some("2024-06-09T00:00:00Z")
@@ -524,13 +617,15 @@ mod tests {
             "occurred_start": "2024-01-02",
         }]));
         assert_eq!(
-            parse_facts(raw, Some(EVENT))[0].occurred_start.as_deref(),
+            parse_facts(raw, Some(EVENT), &[])[0]
+                .occurred_start
+                .as_deref(),
             Some("2024-01-02")
         );
 
         // No event_date, no inference (legacy's first line).
         let raw = wrapped(json!([{ "what": "it broke yesterday", "fact_kind": "event" }]));
-        assert!(parse_facts(raw, None)[0].occurred_start.is_none());
+        assert!(parse_facts(raw, None, &[])[0].occurred_start.is_none());
     }
 
     #[test]
@@ -540,7 +635,7 @@ mod tests {
             "fact_kind": "conversation",
             "occurred_start": "2024-06-10",
         }]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert!(facts[0].occurred_start.is_none());
         assert!(facts[0].occurred_end.is_none());
     }
@@ -548,7 +643,7 @@ mod tests {
     #[test]
     fn unknown_fact_kind_defaults_to_conversation() {
         let raw = wrapped(json!([{"what": "fact", "fact_kind": "bogus"}]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(facts[0].fact_kind, "conversation");
     }
 
@@ -558,7 +653,7 @@ mod tests {
             { "what": "x".repeat(2001) },
             { "what": "y".repeat(2000) },
         ]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(facts.len(), 1, "only the 2000-char fact survives");
         assert_eq!(facts[0].text.chars().count(), 2000);
     }
@@ -568,7 +663,7 @@ mod tests {
         let mut entities: Vec<Value> = (0..50).map(|i| json!(format!("e{i}"))).collect();
         entities.push(json!("z".repeat(257)));
         let raw = wrapped(json!([{ "what": "fact", "entities": entities }]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(facts[0].entities.len(), 32);
         assert!(facts[0].entities.iter().all(|e| e.chars().count() <= 256));
     }
@@ -576,8 +671,131 @@ mod tests {
     #[test]
     fn non_dict_entries_are_skipped() {
         let raw = wrapped(json!(["not a dict", {"what": "real fact"}, 42]));
-        let facts = parse_facts(raw, None);
+        let facts = parse_facts(raw, None, &[]);
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].text, "real fact");
+    }
+
+    /// A candidate list whose texts are long enough to quote from.
+    fn known(n: usize) -> Vec<KnownFact> {
+        (0..n)
+            .map(|i| KnownFact {
+                id: 900 + i as i64,
+                text: format!("stored claim number {i}, and the gate is awaiting signature"),
+            })
+            .collect()
+    }
+
+    /// CE-12. A position is 1-based, bounded by the list the model was shown,
+    /// and only counts when the model can quote the span it says is false.
+    #[test]
+    fn a_quoted_retraction_is_accepted_at_its_position() {
+        let raw = wrapped(json!([{
+            "what": "the gate was signed on 2026-08-20",
+            "supersedes": [2],
+            "superseded_quote": "the gate is awaiting signature",
+        }]));
+        assert_eq!(parse_facts(raw, None, &known(3))[0].supersedes, vec![1]);
+    }
+
+    /// The guard the first measurement forced. Asked not to retract facts
+    /// merely on the same topic, the model retracted all twelve candidates it
+    /// was shown; a quote it has to actually produce is checkable, and an
+    /// instruction is not.
+    #[test]
+    fn a_retraction_without_a_quote_is_dropped() {
+        let raw = wrapped(json!([{ "what": "x", "supersedes": [1] }]));
+        assert!(parse_facts(raw, None, &known(3))[0].supersedes.is_empty());
+    }
+
+    #[test]
+    fn a_paraphrased_quote_is_not_a_quote() {
+        let raw = wrapped(json!([{
+            "what": "x",
+            "supersedes": [1],
+            "superseded_quote": "the gate has not been signed yet",
+        }]));
+        assert!(parse_facts(raw, None, &known(3))[0].supersedes.is_empty());
+    }
+
+    /// A short "quote" is a shared identifier, not a claim — every fact about
+    /// the same gate contains it, so accepting one would wave through exactly
+    /// the topical matches the check exists to stop.
+    #[test]
+    fn a_quote_shorter_than_the_floor_is_refused() {
+        let raw = wrapped(json!([{
+            "what": "x",
+            "supersedes": [1],
+            "superseded_quote": "stored",
+        }]));
+        assert!(parse_facts(raw, None, &known(3))[0].supersedes.is_empty());
+    }
+
+    /// The model reflows the line it copies; a line break is not a difference
+    /// in what was said.
+    #[test]
+    fn whitespace_is_normalised_on_both_sides_of_the_quote() {
+        let raw = wrapped(json!([{
+            "what": "x",
+            "supersedes": [1],
+            "superseded_quote": "the gate   is\n awaiting signature",
+        }]));
+        assert_eq!(parse_facts(raw, None, &known(3))[0].supersedes, vec![0]);
+    }
+
+    #[test]
+    fn a_position_outside_the_candidate_list_is_dropped_not_clamped() {
+        let raw = wrapped(json!([{
+            "what": "x",
+            "supersedes": [99],
+            "superseded_quote": "the gate is awaiting signature",
+        }]));
+        assert!(parse_facts(raw, None, &known(3))[0].supersedes.is_empty());
+    }
+
+    #[test]
+    fn supersedes_is_empty_when_no_candidates_were_offered() {
+        // The control arm. A response that invents retractions against a list
+        // it was never shown must write nothing.
+        let raw = wrapped(json!([{
+            "what": "x",
+            "supersedes": [1],
+            "superseded_quote": "the gate is awaiting signature",
+        }]));
+        assert!(parse_facts(raw, None, &[])[0].supersedes.is_empty());
+    }
+
+    #[test]
+    fn supersedes_is_capped_at_the_grammar_bound() {
+        let raw = wrapped(json!([{
+            "what": "x",
+            "supersedes": [1, 2, 3],
+            "superseded_quote": "the gate is awaiting signature",
+        }]));
+        let facts = parse_facts(raw, None, &known(12));
+        assert_eq!(facts[0].supersedes.len(), MAX_SUPERSEDES_PER_FACT);
+    }
+
+    #[test]
+    fn a_non_numeric_supersedes_entry_is_skipped_not_fatal() {
+        let raw = wrapped(json!([{
+            "what": "x",
+            "supersedes": ["2", null, 2],
+            "superseded_quote": "the gate is awaiting signature",
+        }]));
+        assert_eq!(parse_facts(raw, None, &known(3))[0].supersedes, vec![1]);
+    }
+
+    #[test]
+    fn expires_at_is_carried_through_and_n_a_is_absence() {
+        let raw = wrapped(json!([{ "what": "exam tomorrow", "expires_at": "2026-03-03" }]));
+        assert_eq!(
+            parse_facts(raw, None, &[])[0].expires_at.as_deref(),
+            Some("2026-03-03")
+        );
+        // `get_str` reads legacy's truthiness, so the model's "N/A" habit is
+        // absence — not a date that fails to parse later.
+        let raw = wrapped(json!([{ "what": "durable", "expires_at": "N/A" }]));
+        assert!(parse_facts(raw, None, &[])[0].expires_at.is_none());
     }
 }
