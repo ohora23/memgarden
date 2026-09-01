@@ -20,6 +20,7 @@ Claude Code hooks (Rust subcommands, 0.85ms per turn — budget 10ms)
         ▼
 memgardend (axum, :9100) ──────── web UI (dashboard + graph viewer)
  ├─ retain:  caps → <private> stripped → chunk → Ollama extraction → facts + links
+ │           └─ task ledger: the bank's working state, written but not yet read
  ├─ recall:  FTS5 BM25 + sqlite-vec KNN + graph + temporal → RRF → token budget
  │           (retracted and expired facts filtered out in one place)
  ├─ embeddings in-binary (bge-small, 384-dim, CPU) · consolidate · reflect
@@ -65,6 +66,8 @@ On its own terms the record is mixed, and the losses are in the repository next 
 Those four agree on one thing: **the value measured so far is retrieval, not storage.** It surfaces the paragraph of yours that answers the question — including, once, a line in `book/src/roadmap.md` that reopened a month-old crash investigation because nobody was going to grep for it.
 
 The tier above raw facts has since been measured and repaired: distillation is worth **+27% recall@10**, and mental models — which had never once run, because every call failed on a grammar limit and nothing called them anyway — now run on four. The store also learned to **retire** a fact, so a superseded memory stops reaching the synthesiser at all. Noticing a retraction *automatically* is the part that does not work: the detector found 2 of 3 targets and 22 things that were not retractions, and [ships off](docs/evidence/supersession-detection.md).
+
+Every one of those stores what **was** true. What none of them holds is what is being worked on right now — the open goal, what is done, what is blocked, the next action — so a session resuming after a break gets similar facts and no answer to "where was I". Schema v12 adds that tier as a **task ledger**, one row per bank, and **nothing reads it yet**: the rows accumulate so their content can be judged before any of it is injected. Given that memory lost 11–7 on substitution, "the extractor writes something worth injecting" is a claim to check, not to assume.
 
 [The full analysis, with what is still unmeasured →](docs/benefits.md)
 

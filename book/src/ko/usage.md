@@ -100,6 +100,35 @@ curl -s -X POST localhost:9100/v1/banks/<bank>/recall \
 `under_35ms` / `under_60ms` 카운트는 **정확하다** — 그 경계가 곧 SLO 경계이기
 때문이다.
 
+### 작업 장부 읽기
+
+아직 아무것도 서빙하지 않으므로 엔드포인트가 없다. 파일에서 직접 읽는다.
+
+```bash
+sqlite3 ~/.local/share/memgarden/memgarden.db \
+  "SELECT bank_id, goal, next_action FROM task_ledger;"
+```
+
+`sqlite3` CLI는 별도 패키지이며 MemGarden이 의존하지 않는다. 설치되어 있지 않다면
+아무 SQLite 클라이언트나 쓰면 된다. 아래는 이미 깔려 있는 파이썬 외에 아무것도
+요구하지 않고, 읽기 전용으로 열어 데몬을 방해하지 않는다.
+
+```bash
+python3 -c "import sqlite3;print(*sqlite3.connect('file:$HOME/.local/share/memgarden/memgarden.db?mode=ro',uri=True).execute('select bank_id,goal,next_action from task_ledger'),sep=chr(10))"
+```
+
+뱅크당 한 줄이고, 목표를 찾아낸 retain 잡마다 통째로 교체된다. **어떤 프롬프트에도
+주입되지 않는다.** 주입하기 전에 내용을 사람이 판단할 수 있도록 쓰기만 하는 것이
+지금 단계의 목적이다. [동작 원리](design.md#두-개의-층--참이었던-것과-지금-하고-있는-것)를
+참고하라.
+
+retain 잡당 Ollama 호출이 하나 늘어난다. 그만한 값어치가 없다면 이렇게 끈다.
+
+```toml
+[retain]
+write_task_ledger = false
+```
+
 ---
 
 ## 이상해 보일 때
