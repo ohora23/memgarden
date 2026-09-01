@@ -581,6 +581,34 @@ ported, each row with the fact that would reopen it.
 
 ## After v1
 
+### Landed
+
+- **Fact lifecycle (CE-12, schema v11)** — a fact can be retracted and stops
+  reaching every reader from one filter point. Recognising a retraction
+  *automatically* does not work and ships off; all three arms are in
+  `docs/evidence/supersession-detection.md`.
+- **Task ledger (schema v12)** — working state as a tier separate from facts:
+  goal, done, open, next action, one row per bank. **Write path only.** Nothing
+  reads it, deliberately, until the rows have been judged. The design was set
+  by `scripts/boundary-replay.py`, which established two things before any code
+  was written: sessions last days and span many tasks (so the key is the bank,
+  not the session), and no free metadata signal beats an always-fire baseline
+  at finding a resume point — the signal is in the prompt text.
+
+### Open, and what would close it
+
+- **Reading the ledger.** Blocked on judgement, not on code: let rows
+  accumulate, read them, and decide whether the content is worth injecting.
+  MX-3 measured memory as an 11-7 loss at +5% tokens, so the answer is not
+  assumed. If it is worth injecting, the trigger is a literal phrase test on
+  the prompt (measured F1 0.615 against a 0.124 baseline), gated by re-checking
+  `anchors` against the filesystem so a finished task is not resumed.
+- **Git branch and HEAD in `anchors`.** The hook reads them — every transcript
+  record carries `gitBranch` — and does not send them. It is a wire-contract
+  change, deferred until the read path needs it.
+
+### Out of scope
+
 Out of scope for v1, with the reason recorded rather than the intention:
 
 - **Obsidian vault export** — memory nodes to markdown with backlinks, joining

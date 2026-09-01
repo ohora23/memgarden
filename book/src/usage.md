@@ -103,6 +103,36 @@ inside 20 fixed buckets**, so they must never be compared against the hook
 benchmark's exact order statistics. The `under_35ms` / `under_60ms` counts
 *are* exact, because those bounds are the SLO boundaries themselves.
 
+### Reading the task ledger
+
+There is no endpoint, because nothing serves it yet — read it from the file:
+
+```bash
+sqlite3 ~/.local/share/memgarden/memgarden.db \
+  "SELECT bank_id, goal, next_action FROM task_ledger;"
+```
+
+The `sqlite3` CLI is a separate package and MemGarden does not depend on it. If
+it is not installed, any SQLite client will do — this one needs nothing beyond
+the Python that is already there, and opening read-only keeps it out of the
+daemon's way:
+
+```bash
+python3 -c "import sqlite3;print(*sqlite3.connect('file:$HOME/.local/share/memgarden/memgarden.db?mode=ro',uri=True).execute('select bank_id,goal,next_action from task_ledger'),sep=chr(10))"
+```
+
+One row per bank, replaced on every retain job that finds a goal. **Nothing
+injects it into a prompt.** It is written so its content can be judged before
+any of it is, which is the whole point of the current stage — see
+[How it works](design.md#two-tiers-what-was-true-and-what-is-being-worked-on).
+
+It costs one extra Ollama call per retain job. If that is not worth it:
+
+```toml
+[retain]
+write_task_ledger = false
+```
+
 ---
 
 ## When something looks wrong

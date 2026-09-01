@@ -16,6 +16,7 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 | E — UI & metrics | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views, the bank survey | ✅ merged |
 | F — Cutover | quality-parity A/B + performance gates + lossless migration → legacy shutdown | ✅ **done 2026-08-21** |
 | post-v1 — Fact lifecycle | CE-12 supersession + expiry: schema v11 columns, the `hydrate` filter, `POST`/`DELETE .../supersede`. **Automatic detection measured and shipped off** — `docs/evidence/supersession-detection.md` | ✅ merged, detector off |
+| post-v1 — Task ledger | Schema v12 `task_ledger`: working state (goal / done / open / next action) as a tier separate from facts, one row per bank, written at the end of every retain job. **Write path only — nothing reads it**, by design, until the rows have been judged. Design set by `scripts/boundary-replay.py` (#45) | ✅ merged, read path unbuilt |
 
 **v1 is complete.** Every acceptance criterion in `PRD.md` is ticked. AC-7 — every
 PR on the template, `cargo test` passing — was the last, signed 2026-08-26 in two

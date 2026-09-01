@@ -15,6 +15,7 @@ Claude Code hooks (Rust subcommands, 0.85 ms per turn — budget 10 ms)
         ▼
 memgardend (axum, :9100) ──────────── web UI (dashboard + graph, Phase E)
  ├─ retain: caps → chunk → Ollama extraction → facts + entities + links
+ │          └─ task ledger: working state, written but not yet read
  ├─ recall: FTS5 BM25 + sqlite-vec KNN → RRF fusion → token budget
  ├─ consolidate / reflect / reranker (off by default)
  ├─ in-binary embeddings (fastembed, bge-small, 384-dim, CPU)
@@ -25,6 +26,84 @@ memgardend (axum, :9100) ──────────── web UI (dashboard 
 
 Four crates: `memgarden-core` (types, config, metrics), `memgarden-store` (all
 SQL), `memgardend` (the daemon), `memgarden-cli` (the hook binary).
+
+---
+
+## Two tiers: what was true, and what is being worked on
+
+Every table up to schema v11 stores things that **were** true — a fact, when it
+was said, what retracted it. None of them holds what is being worked on *now*:
+the open goal, what is done, what is blocked, the next action. So a session
+that resumes after a break gets semantically similar facts and no answer to
+"where was I".
+
+Schema v12 adds that as a separate tier, the **task ledger**. The separation is
+not an invention here — every system that solved cross-session continuity keeps
+two: LangGraph splits thread-scoped checkpointers from its cross-thread Store,
+CoALA splits working memory (which explicitly holds active goals) from
+long-term episodic memory, Letta splits in-context memory blocks from archival
+memory. A 2026 survey of 435 works names the missing piece "workflow and
+task-ledger state" and calls the split its main taxonomic correction, because
+live control state is invisible to a taxonomy of *remembered information*.
+
+### One row per bank, and that is a measurement
+
+The obvious key is the session. It is the wrong one, and the live data says so
+without ambiguity. All 15 rows of the `sessions` table, 2026-09-01 — sessions
+keep accruing, so read this as a measurement with a date on it, not a live
+count:
+
+```
+source     : startup 11 · resume 4     <- 'compact', 'clear', 'fork': never
+end_reason : prompt_input_exit 8 · NULL 6 · other 1
+lifetime   : 116.7h · 116.0h · 95.7h · 70.2h · 49.7h ...
+```
+
+A 116-hour session is not one task. You switch banks without ending it, and you
+switch tasks a dozen times inside it. A session-keyed ledger would hold a dozen
+unrelated goals in one row and fire about fifteen times a month. Keyed by bank,
+"what is going on in this project" has exactly one answer — which is the
+question a resuming agent actually asks.
+
+The boundaries that matter are therefore *inside* a session, and the harness
+that establishes this is `scripts/boundary-replay.py`. Its header carries the
+full census; run it yourself against your own transcripts.
+
+### Nothing reads it yet, on purpose
+
+The write path runs and the read path does not exist. That ordering is
+deliberate: the rows have to be judged before any of them reach a prompt, and
+this project's own substitution measurement (memory 11–7 *worse* at +5% tokens)
+is the reason to check rather than assume. Look at what accumulates first.
+
+```sql
+SELECT bank_id, goal, next_action, datetime(updated_at/1000,'unixepoch')
+FROM task_ledger;
+```
+
+Turn the write off with one line if the extra call is not worth it:
+
+```toml
+[retain]
+write_task_ledger = false
+```
+
+### Two design choices that will look odd
+
+**`anchors` is never asked of the model.** It holds the working directory and
+the touched paths, assembled from values the daemon already has. The field
+exists to be re-checked against the filesystem before the ledger is ever
+believed — so a model asked for a branch name it cannot see would produce a
+plausible one and convert a safety mechanism into false confidence.
+
+That check is also the answer to the failure mode this tier could otherwise
+*cause*: resuming a task that was finished or cancelled. Classifying the
+transcript for completion is the wall CE-12 hit (22 false positives, 0
+detections). Re-statting a path is cheaper and it is a question with an answer.
+
+**The write is not gated on a clean run.** A job that lost a chunk still knows
+what is being worked on, and the directions are asymmetric: a missing fact is
+recovered by re-POSTing the transcript, a missing ledger is simply gone.
 
 ---
 
