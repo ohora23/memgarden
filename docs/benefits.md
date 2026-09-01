@@ -11,11 +11,15 @@ the user tokens — it spends them.
 **Read the "index, not an archive" line below with its correction.** That
 phrasing came from a corpus census that could not see the thing this system was
 partly built for: **distillation**. Consolidation turns facts into observations
-with provenance and runs daily — 2,770 observations, 2,757 with source links —
-and **nobody has ever measured whether that is worth anything.** The tier above
-it, CE-10's mental models, has **never run at all** (0 rows). Two of the three
-purposes behind this project are therefore unmeasured or unbuilt, and this
-document read as if they were settled.
+with provenance and runs daily — 2,770 observations, 2,757 with source links.
+
+**Updated 2026-08-30.** Both halves of that gap have since been closed, and one
+of them came back positive: distillation was measured (**recall@10 0.291 →
+0.370, +27%**, [result](evidence/distillation-value-result.md)) and CE-10's
+mental models now run — four exist, three on `@after-consolidation`. The tier
+was not merely unbuilt when this was written; it was **100% failing code with
+no caller**, which is why nobody noticed for two months. What remains open is
+narrower and stated below.
 
 ## Measured against the system it replaced
 
@@ -70,25 +74,56 @@ measured; the value of distillation is not.**
 | | before | after | |
 |---|---|---|---|
 | command-log noise in what recall injects | **22%** of injected memories | **0.9%** | [cleanup](evidence/command-log-cleanup.md) |
-| command logs from current ingest | — | **0 of 676** nodes since cutover | [correction](command-log-pollution.md) |
+| command logs from current ingest | — | **0 of 676** nodes since cutover | [correction](evidence/command-log-pollution.md) |
 | duplicate fact+observation pairs injected | 7.5% | deduplicated at recall | PR #16 |
 
 The 22% → 0.9% change came from deleting 158 historical rows, and the
-investigation that led there [was wrong twice](command-log-pollution.md) before
+investigation that led there [was wrong twice](evidence/command-log-pollution.md) before
 it was right — both corrections are in the record.
+
+## Correctness of what stays stored
+
+| | measured | |
+|---|---|---|
+| retracted facts hidden from every reader | one filter point, `search::hydrate` | schema v11 |
+| retraction detected automatically at write time | **2 of 3** targets, **22** false positives — **ships off** | [detection](evidence/supersession-detection.md) |
+| gold recall with the filter live and nothing marked | **0.370 recall@10 / 0.516 MRR / 0.306 nDCG@10** — identical to baseline | parity, not a win |
+
+A fact can now be *retired* rather than only added, which is the first thing in
+this project that improves what recall says rather than how fast it says it —
+one of the first four mental models cited 17 nodes to assert a gate was
+"awaiting signature" ten days after it was signed, and every sentence in it had
+been true when written.
+
+The honest half: **the store learned to record a retraction; the extractor did
+not learn to notice one.** Detection was built, measured against this project's
+own recorded retractions, and turned off. Setting it is a manual `POST` today.
 
 ## What is not measured, and should be said out loud
 
-- **Whether distillation is worth anything.** Consolidation (CE-9) runs daily
-  and has produced 2,770 observations with provenance. Nothing has ever compared
-  an observation against the facts it was made from. This is the largest
-  unmeasured claim in the project, and it is one of the three reasons the
-  project exists.
-- **The tier above it has never run.** CE-10's mental models: **0 rows**. The
-  due-ness rule and the create path both exist; no ticker calls them, because
-  `parity-gaps.md` judged that a scheduler with no consumer was the wrong
-  default. Defensible, and also why the periodic-refinement half of the original
-  goal has never happened.
+- **~~Whether distillation is worth anything.~~ Measured 2026-08-29 — it is.**
+  Three gold arms, one variable: **recall@10 0.291 → 0.370 (+27%)**, nDCG@10
+  0.262 → 0.306. It won *against* the grain of a label set that is 71% `world`.
+  Two conditions came with it: observations alone **lose** (recall@10 0.177), so
+  distillation supplements facts rather than replacing them; and the one stratum
+  where it went backwards is **`conclusion`** — exactly where it should help
+  most. One graded query, so that is a warning, not a finding.
+  [result](evidence/distillation-value-result.md)
+- **Whether a synthesis is *right*, as opposed to well-retrieved.** The +27% is
+  a retrieval number. The one audit of content found one of four mental models
+  confidently asserting three superseded facts. CE-12 removes the input that
+  caused it; nothing yet scores the output.
+- **How often a stored fact actually goes stale.** CE-12 can hide a retracted
+  fact, but nothing counts how many of the 7,831 are already dead. The census
+  cannot answer it — it asks whether a fact is *on disk*, not whether it is
+  *still true* — and until something does, the value of the filter is a
+  mechanism rather than a number.
+- **~~The tier above it has never run.~~ It runs now — and whether it earns its
+  keep in daily use is still open.** CE-10 was repaired in #39–#42: four mental
+  models exist, three triggered by consolidation rather than a clock. All four
+  have `cited_count = 0`, because `/reflect` is on no hook path — so the usage
+  signal a promotion rule would need has no values yet, and writing the rule
+  before it does is the shape that left CE-10 broken for two months.
 - **Whether any of this makes the assistant better at the job.** Every number
   here is latency, token count, or retrieval quality. None is task outcome.
   MX-3 is the only attempt and its sample could not answer the question it was

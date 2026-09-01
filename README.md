@@ -12,15 +12,16 @@ MIT licensed · runs entirely on the machine it grows on · no network at runtim
 
 An AI coding assistant starts every session amnesiac. It re-reads the same files, re-derives the same conclusions, and asks you things you settled last week. MemGarden is the layer that stops that: conversations are captured automatically, distilled into facts by a local LLM, linked to each other, and served back — in about seven milliseconds — as the handful of memories that matter for the prompt you just typed.
 
-The name is the design. Memory here is not a bucket you throw things into; it is **tended**. Sessions rain down through hooks. Facts take root in per-project banks. Consolidation prunes duplicates and grafts observations into knowledge. A ledger keeps honest books on what the garden actually yields. Nothing leaves the machine it grows on.
+The name is the design. Memory here is not a bucket you throw things into; it is **tended**. Sessions rain down through hooks. Facts take root in per-project banks. Consolidation prunes duplicates and grafts observations into knowledge. What a later fact contradicts is pulled rather than left to compete. A ledger keeps honest books on what the garden actually yields. Nothing leaves the machine it grows on.
 
 ```
 Claude Code hooks (Rust subcommands, 0.85ms per turn — budget 10ms)
         │ raw transcript / query
         ▼
 memgardend (axum, :9100) ──────── web UI (dashboard + graph viewer)
- ├─ retain:  caps → chunk → Ollama extraction → facts + entities + links
+ ├─ retain:  caps → <private> stripped → chunk → Ollama extraction → facts + links
  ├─ recall:  FTS5 BM25 + sqlite-vec KNN + graph + temporal → RRF → token budget
+ │           (retracted and expired facts filtered out in one place)
  ├─ embeddings in-binary (bge-small, 384-dim, CPU) · consolidate · reflect
  └─ metrics: lock-free atomics (88ns/request) + benefit ledger
         ▼
@@ -56,13 +57,14 @@ Against the Python system it replaced: **13 better / 5 worse / 1 equivalent** on
 
 On its own terms the record is mixed, and the losses are in the repository next to the wins:
 
-- **Few raw facts are unique to it.** A census of 60 sampled memories found **0** stating anything not already on disk. That census could not judge the *consolidated* layer, though — an observation synthesised from forty sessions has its facts on disk and the synthesis nowhere, and **what that is worth has never been measured.**
+- **Few raw facts are unique to it.** A census of 60 sampled memories found **0** stating anything not already on disk. That census can only judge *raw facts* — it asks whether a fact's terms are on disk, which an observation synthesised from forty sessions passes trivially while its synthesis exists nowhere.
 - **Substitution did not show up.** On questions whose answers were already in the repo, the memory arm was **11–7 worse** on a blind panel and spent **+5% tokens** — while finishing **25% faster**.
 - **Injection is a cost**: 1,325 tokens and 18 memories per turn. The ingest caps save 57.4% of extraction input, but that is the local LLM's input, not yours.
+- **A synthesis can be confidently wrong.** One of the first four mental models cited 17 nodes to assert a gate was awaiting a signature it had received ten days earlier. Every sentence in it had been true when written.
 
-Those three agree on one thing: **the value measured so far is retrieval, not storage.** It surfaces the paragraph of yours that answers the question — including, once, a line in `book/src/roadmap.md` that reopened a month-old crash investigation because nobody was going to grep for it.
+Those four agree on one thing: **the value measured so far is retrieval, not storage.** It surfaces the paragraph of yours that answers the question — including, once, a line in `book/src/roadmap.md` that reopened a month-old crash investigation because nobody was going to grep for it.
 
-They also share a blind spot. All three are about *raw facts*. Consolidation runs daily and has built **2,770 observations with provenance**, and the tier above it — mental models — has **never run** (0 rows). **Two of the three reasons this project exists are unmeasured or unbuilt**, which the earlier wording of this section obscured.
+The tier above raw facts has since been measured and repaired: distillation is worth **+27% recall@10**, and mental models — which had never once run, because every call failed on a grammar limit and nothing called them anyway — now run on four. The store also learned to **retire** a fact, so a superseded memory stops reaching the synthesiser at all. Noticing a retraction *automatically* is the part that does not work: the detector found 2 of 3 targets and 22 things that were not retractions, and [ships off](docs/evidence/supersession-detection.md).
 
 [The full analysis, with what is still unmeasured →](docs/benefits.md)
 
@@ -93,6 +95,29 @@ The web UI is at `http://127.0.0.1:9100/ui/` — dashboard, benefit ledger, and 
 
 **Coming from the old Python system?** Only then: [migration runbook](docs/runbook-migration.md). A fresh install skips it and just lets the bank fill.
 
+## Day to day
+
+Nothing here is required — the bank fills on its own. These are the three things an operator actually reaches for.
+
+**Keep a turn out of it.** Wrap it in `<private>…</private>` and retain drops it before extraction reads it. The marker is exact and lower-case, it covers message text rather than tool payloads, and an **unclosed** `<private>` discards the rest of that message rather than storing it. It works at retain time only: it cannot unwrite what an earlier retain already stored.
+
+**Retire a fact that is no longer true.** A superseded memory is retired rather than edited, and every retrieval path — `/reflect` and the mental-model refresh included — then stops serving it. The row and its graph edges stay.
+
+```bash
+curl -X POST   .../v1/banks/{bank}/nodes/{id}/supersede -d '{"by": <newer node id>}'
+curl -X DELETE .../v1/banks/{bank}/nodes/{id}/supersede    # put it back
+```
+
+Noticing this automatically, during extraction, was built and measured: it found 2 of 3 targets and 22 things that were not retractions, so it [ships off](docs/evidence/supersession-detection.md).
+
+**Turn off a mental model that has gone wrong.** A synthesis refreshes on a schedule and reads as authoritative, so stop the schedule first and decide about the content after. The model, its content and its citations stay.
+
+```bash
+curl -X DELETE .../v1/banks/{bank}/mental-models/{mm_id}/trigger
+```
+
+[More, including what to check when something looks wrong →](docs/runbook-hooks.md)
+
 ## Development
 
 ```bash
@@ -118,7 +143,7 @@ The daemon creates its data dir `0700` and speaks plain HTTP on loopback with a 
 - **[Status](docs/status.md)** — phases, cutover gates, and what is still open
 - **[Migration runbook](docs/runbook-migration.md)** · **[hooks runbook](docs/runbook-hooks.md)**
 - `docs/design/` — one design note per merged PR, each standing alone without the diff
-- `docs/evidence/` — the measurements the acceptance criteria were signed on, including the ones that were retracted
+- `docs/evidence/` — the measurements the acceptance criteria were signed on, including the ones that were retracted, and [why write-time supersession detection ships off](docs/evidence/supersession-detection.md)
 - `docs/parity-gaps.md` — legacy behaviour deliberately not ported, each row with the fact that would reopen it
 - `docs/PRD.md` — the deep-interview spec this repo executes
 
