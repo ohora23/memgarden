@@ -38,6 +38,10 @@ pub struct NewNode<'a> {
     pub occurred_end: Option<i64>,
     pub mentioned_at: Option<i64>,
     pub metadata: Option<&'a str>,
+    /// CE-12: wall-clock ms after which this fact stops being true on its
+    /// own. `None` for almost every fact; set only when the extractor reads a
+    /// self-limiting claim ("the exam is tomorrow") out of the text.
+    pub expires_at: Option<i64>,
 }
 
 impl<'a> NewNode<'a> {
@@ -55,6 +59,7 @@ impl<'a> NewNode<'a> {
             occurred_end: None,
             mentioned_at: None,
             metadata: None,
+            expires_at: None,
         }
     }
 }
@@ -90,4 +95,10 @@ pub struct MemoryNode {
     pub metadata: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// CE-12. `Some(id)` = retracted by that node, and every recall path
+    /// hides it. Exposed on the read model on purpose: a fact that vanishes
+    /// from recall with no visible reason is the debugging trap CE-10 already
+    /// cost this project two months to find.
+    pub superseded_by: Option<i64>,
+    pub expires_at: Option<i64>,
 }

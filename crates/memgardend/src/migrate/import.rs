@@ -716,6 +716,9 @@ async fn import_bank(
                 occurred_end: draft.occurred_end,
                 mentioned_at: draft.mentioned_at,
                 metadata: Some(metadata.as_str()),
+                // Legacy has no expiry concept, so an imported fact never
+                // has one. CE-12 applies to what is retained from here on.
+                expires_at: None,
             },
             tags: &fact.tags,
         })

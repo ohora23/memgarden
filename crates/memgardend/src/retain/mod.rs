@@ -39,6 +39,7 @@ use memgarden_store::{documents, nodes, retain_jobs};
 
 use crate::extract;
 use crate::extract::parse::ParsedFact;
+use crate::extract::prompts::KnownFact;
 use crate::state::AppState;
 use crate::temporal::parse::parse_iso_ms;
 use crate::{entities, links};
@@ -50,6 +51,10 @@ use crate::{entities, links};
 /// index across the whole document**, not its index within its chunk
 /// (Critic Revision NIT 16).
 const FACT_OFFSET_MS: i64 = 10;
+
+/// One day in ms — CE-12 turns "true through March 3" into an expiry at the
+/// end of March 3 rather than its midnight.
+const DAY_MS: i64 = 86_400_000;
 
 /// cl100k_base, built once for the process. 21ms of one-time work and ~1.6MB
 /// of embedded BPE ranks; never per request (plan decision #5 — the
@@ -316,10 +321,17 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
             continue;
         }
 
-        match extract_chunk(state, &task, chunk).await {
+        // CE-12: fetched before extraction because the model has to see them
+        // to judge them. Empty when the feature is off, when the bank is
+        // still empty, or when anything about the lookup fails — and an empty
+        // list is exactly the pre-CE-12 prompt, so a degraded candidate
+        // lookup costs a retraction, never a chunk.
+        let known = candidate_facts(state, &task.bank_id, chunk).await;
+
+        match extract_chunk(state, &task, chunk, &known).await {
             Ok(facts) => {
                 let n = facts.len();
-                match write_facts(state, &task, facts, abs_fact_index).await {
+                match write_facts(state, &task, facts, abs_fact_index, &known).await {
                     Ok(written) => {
                         abs_fact_index += n;
                         progress.facts_written += written as i64;
@@ -456,6 +468,7 @@ async fn extract_chunk(
     state: &AppState,
     task: &RetainTask,
     chunk: &str,
+    known: &[KnownFact],
 ) -> Result<Vec<ParsedFact>, crate::ollama::OllamaError> {
     let first = extract::extract(
         &state.ollama,
@@ -463,6 +476,7 @@ async fn extract_chunk(
         Some(task.event_date_ms),
         task.mission.as_deref(),
         true,
+        known,
     )
     .await;
     match first {
@@ -474,10 +488,65 @@ async fn extract_chunk(
                 Some(task.event_date_ms),
                 task.mission.as_deref(),
                 true,
+                known,
             )
             .await
         }
         other => other,
+    }
+}
+
+/// CE-12: the existing facts this chunk might be retracting.
+///
+/// A vector KNN over the chunk's own text, not a second LLM call. The chunk
+/// is already the topic statement — whatever it is about, the bank's nearest
+/// facts are the only ones a retraction in it could plausibly reach — and one
+/// embed plus one brute-force KNN costs single-digit milliseconds against an
+/// extraction call that costs seconds. A second LLM pass per chunk would have
+/// roughly doubled retain wall-clock, on the path AC-1 already found to be
+/// throughput-bound.
+///
+/// Known ceiling: bge-small sees the first ~512 tokens, so on a 3,000-character
+/// chunk the candidates are drawn from its opening. That is the right end —
+/// chunks lead with the exchange that prompted them — but it is a limit, not a
+/// property.
+///
+/// Every failure returns an empty list. Candidates are an *enrichment* of a
+/// prompt that worked without them, so nothing here may fail a chunk.
+pub async fn candidate_facts(state: &AppState, bank_id: &str, chunk: &str) -> Vec<KnownFact> {
+    let k = state.cfg.retain.supersession_candidates;
+    if !state.cfg.retain.detect_supersession || k == 0 {
+        return Vec::new();
+    }
+    let Some(vector) = crate::mental::embed_one(state, chunk.to_string()).await else {
+        return Vec::new();
+    };
+    let db = state.db.clone();
+    let bank_id = bank_id.to_string();
+    let rows = tokio::task::spawn_blocking(move || {
+        let hits = memgarden_store::search::knn(&db, &bank_id, &vector, k)?;
+        let ids: Vec<i64> = hits.into_iter().map(|(id, _)| id).collect();
+        // `hydrate` applies CE-12's own filter, so an already-retracted fact
+        // is never offered as a retraction target and the chains stay flat.
+        memgarden_store::search::hydrate(&db, &bank_id, &ids)
+    })
+    .await;
+    match rows {
+        Ok(Ok(rows)) => rows
+            .into_iter()
+            .map(|row| KnownFact {
+                id: row.id,
+                text: row.text,
+            })
+            .collect(),
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "supersession candidate lookup failed");
+            Vec::new()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "supersession candidate task panicked");
+            Vec::new()
+        }
     }
 }
 
@@ -507,6 +576,7 @@ async fn write_facts(
     task: &RetainTask,
     facts: Vec<ParsedFact>,
     abs_index_base: usize,
+    known: &[KnownFact],
 ) -> memgarden_core::error::Result<usize> {
     if facts.is_empty() {
         return Ok(0);
@@ -540,6 +610,7 @@ async fn write_facts(
                     occurred_end: d.occurred_end,
                     mentioned_at: d.mentioned_at,
                     metadata: Some(&d.metadata),
+                    expires_at: d.expires_at,
                 },
                 tags: &tags,
             })
@@ -562,13 +633,101 @@ async fn write_facts(
         tracing::warn!(job_id = %task.job_id, error = %e, "retain graph write failed");
     }
 
+    // CE-12. After the facts are committed, never before: the retraction
+    // points at a node that has to exist, and a chunk that fails between the
+    // two leaves a fact unretracted rather than a dangling reference.
+    let retracted = apply_supersession(state, task, &facts, &ids, known).await;
+
     // E4: announce *after* the graph write, so a subscriber that immediately
     // asks for these ids finds their links already there. Semantic links are
     // not among them — those land on the backlog worker's next tick, which is
     // minutes away and is not what AC-4's five seconds is about.
-    crate::events::publish(&state.events, &task.bank_id, "nodes", ids.clone());
+    let mut announced = ids.clone();
+    // The retracted nodes changed too — a dashboard that is not told keeps
+    // showing them as live, which is the state this whole change exists to
+    // stop being invisible.
+    announced.extend(retracted);
+    crate::events::publish(&state.events, &task.bank_id, "nodes", announced);
 
     Ok(ids.len())
+}
+
+/// `(retracted node id, replacement node id)` for every position the model
+/// named — the whole of CE-12's index-to-rowid mapping, kept pure so it can be
+/// tested without a daemon.
+///
+/// `zip` is load-bearing twice over. `ids` comes back from `insert_batch` in
+/// input order, so fact *i* is node *i*; and `known.get` is a lookup rather
+/// than an index, so a position that survived parsing but outruns this
+/// particular list still lands nowhere.
+fn supersession_pairs(facts: &[ParsedFact], ids: &[i64], known: &[KnownFact]) -> Vec<(i64, i64)> {
+    facts
+        .iter()
+        .zip(ids)
+        .flat_map(|(fact, new_id)| {
+            fact.supersedes
+                .iter()
+                .filter_map(move |&idx| known.get(idx).map(|k| (k.id, *new_id)))
+        })
+        .collect()
+}
+
+/// CE-12: turns each new fact's `supersedes` positions into rows marked
+/// retracted, and returns the node ids that actually changed.
+///
+/// Best-effort by the same rule as the graph write above: the facts are
+/// committed, and a chunk that lost its retractions is worth more than a
+/// chunk that never landed. Every correctness guard — same bank, not already
+/// retracted, replacement not older than what it replaces — lives in
+/// `nodes::mark_superseded`'s `WHERE` clause, because this side of the call
+/// is holding a 14B model's answer.
+async fn apply_supersession(
+    state: &AppState,
+    task: &RetainTask,
+    facts: &[ParsedFact],
+    ids: &[i64],
+    known: &[KnownFact],
+) -> Vec<i64> {
+    let pairs = supersession_pairs(facts, ids, known);
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+
+    let db = state.db.clone();
+    let bank_id = task.bank_id.clone();
+    let claimed = pairs.clone();
+    let applied = tokio::task::spawn_blocking(move || {
+        memgarden_store::nodes::mark_superseded(&db, &bank_id, &claimed)
+    })
+    .await;
+
+    match applied {
+        Ok(Ok(changed)) => {
+            // Both numbers, always: `claimed > changed` is a guard doing its
+            // job, and the day the gap is the whole batch it needs to be
+            // readable in the log rather than inferred from a silence.
+            tracing::info!(
+                job_id = %task.job_id,
+                bank_id = %task.bank_id,
+                claimed = pairs.len(),
+                changed,
+                "supersession applied"
+            );
+            if changed == 0 {
+                Vec::new()
+            } else {
+                pairs.iter().map(|&(old, _)| old).collect()
+            }
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(job_id = %task.job_id, error = %e, "supersession write failed");
+            Vec::new()
+        }
+        Err(e) => {
+            tracing::warn!(job_id = %task.job_id, error = %e, "supersession task panicked");
+            Vec::new()
+        }
+    }
 }
 
 /// Entity resolution + upsert, then the temporal and causal links, for one
@@ -672,6 +831,7 @@ struct NodeDraft {
     occurred_end: Option<i64>,
     mentioned_at: Option<i64>,
     metadata: String,
+    expires_at: Option<i64>,
 }
 
 impl NodeDraft {
@@ -706,6 +866,17 @@ impl NodeDraft {
             meta.insert("entities".to_string(), json!(fact.entities));
         }
 
+        // CE-12. The model names the last day the fact is true, so the row
+        // expires at the END of that day: a bare date parses to its own
+        // midnight, which would kill "on leave until March 3" during March 2.
+        // No offset is applied — an expiry is a wall-clock deadline, not a
+        // position in the document's fact ordering.
+        let expires_at = fact
+            .expires_at
+            .as_deref()
+            .and_then(parse_iso_ms)
+            .map(|ms| ms + DAY_MS);
+
         NodeDraft {
             text: fact.text.clone(),
             fact_type: fact.fact_type,
@@ -714,6 +885,7 @@ impl NodeDraft {
             occurred_end,
             mentioned_at,
             metadata: Value::Object(meta).to_string(),
+            expires_at,
         }
     }
 }
@@ -902,6 +1074,9 @@ mod tests {
             where_field: None,
             entities: vec![],
             causal_relations: vec![],
+            supersedes: vec![],
+            expires_at: None,
+            superseded_quote: None,
         }
     }
 
@@ -947,5 +1122,70 @@ mod tests {
         assert_eq!(meta["session_id"], "sess");
         assert_eq!(meta["where"], "Seoul");
         assert_eq!(meta["entities"], json!(["Ollama"]));
+    }
+
+    /// CE-12's index-to-rowid mapping. The positions are already range-checked
+    /// by `parse`; what this pins is that they are matched to the *right* new
+    /// node, which only holds because `insert_batch` returns ids in input
+    /// order.
+    #[test]
+    fn supersession_pairs_map_positions_to_the_fact_that_named_them() {
+        let mut a = fact("the correction", None);
+        a.supersedes = vec![0, 2];
+        let b = fact("an unrelated new fact", None);
+        let mut c = fact("a second correction", None);
+        c.supersedes = vec![1];
+
+        let known: Vec<KnownFact> = [901, 902, 903]
+            .iter()
+            .map(|&id| KnownFact {
+                id,
+                text: format!("stored {id}"),
+            })
+            .collect();
+
+        let pairs = supersession_pairs(&[a, b, c], &[11, 12, 13], &known);
+        assert_eq!(pairs, vec![(901, 11), (903, 11), (902, 13)]);
+    }
+
+    /// A position that outlived the list it indexed writes nothing. `parse`
+    /// already bounds them, so this is the second gate on the same mistake —
+    /// and the one that holds if a future caller passes a different list to
+    /// `extract` than it passes to `write_facts`.
+    #[test]
+    fn a_position_past_the_candidate_list_is_dropped_not_wrapped() {
+        let mut a = fact("the correction", None);
+        a.supersedes = vec![0, 7];
+        let known = vec![KnownFact {
+            id: 901,
+            text: "stored".to_string(),
+        }];
+        assert_eq!(supersession_pairs(&[a], &[11], &known), vec![(901, 11)]);
+    }
+
+    /// The writer resolves the model's date the way it resolves
+    /// `occurred_start` — and pushes it to the END of the named day, so a
+    /// fact true "until March 3" is still live during March 3.
+    #[test]
+    fn an_expiry_date_lasts_through_the_day_it_names() {
+        let mut f = fact("on leave until March 3", None);
+        f.expires_at = Some("2026-03-03".to_string());
+        let draft = NodeDraft::build(&f, &task(), 0);
+
+        let march_3_midnight = parse_iso_ms("2026-03-03").unwrap();
+        assert_eq!(draft.expires_at, Some(march_3_midnight + DAY_MS));
+        assert!(draft.expires_at.unwrap() > parse_iso_ms("2026-03-03T23:59:59Z").unwrap());
+    }
+
+    #[test]
+    fn a_fact_with_no_expiry_gets_none_and_an_unparseable_one_too() {
+        assert!(
+            NodeDraft::build(&fact("durable", None), &task(), 0)
+                .expires_at
+                .is_none()
+        );
+        let mut f = fact("nonsense date", None);
+        f.expires_at = Some("someday".to_string());
+        assert!(NodeDraft::build(&f, &task(), 0).expires_at.is_none());
     }
 }

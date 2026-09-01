@@ -181,7 +181,7 @@ fn text_transcript(messages: &[Value], opts: &NormalizeOpts) -> Option<(String, 
             continue;
         };
         let raw = text_content(msg.get("content").unwrap_or(&Value::Null));
-        let content = strip_channel_envelope(&strip_memory_tags(&raw))
+        let content = strip_channel_envelope(&strip_memory_tags(&strip_private(&raw)))
             .trim()
             .to_string();
         if content.is_empty() {
@@ -219,7 +219,7 @@ fn text_content(content: &Value) -> String {
 /// legacy fork: `_extract_message_blocks`, `content.py:239-303`.
 fn message_blocks(content: &Value, role: &str, caps: &Caps) -> Vec<Value> {
     if let Value::String(s) = content {
-        let cleaned = strip_channel_envelope(&strip_memory_tags(s))
+        let cleaned = strip_channel_envelope(&strip_memory_tags(&strip_private(s)))
             .trim()
             .to_string();
         return if cleaned.is_empty() {
@@ -240,7 +240,7 @@ fn message_blocks(content: &Value, role: &str, caps: &Caps) -> Vec<Value> {
         match obj.get("type").and_then(Value::as_str).unwrap_or("") {
             "text" => {
                 let raw = obj.get("text").and_then(Value::as_str).unwrap_or("");
-                let text = strip_channel_envelope(&strip_memory_tags(raw))
+                let text = strip_channel_envelope(&strip_memory_tags(&strip_private(raw)))
                     .trim()
                     .to_string();
                 if !text.is_empty() {
@@ -443,6 +443,53 @@ pub fn extract_touched_files(messages: &[Value], cwd: &str) -> Vec<String> {
         }
     }
     files
+}
+
+/// The opt-out marker a user can put around anything they do not want
+/// remembered. Borrowed from `claude-mem`, which is the only idea in it this
+/// project did not already have.
+const PRIVATE_TAG_OPEN: &str = "<private>";
+const PRIVATE_TAG_CLOSE: &str = "</private>";
+
+/// Removes `<private>…</private>` from text before anything reads it.
+///
+/// **Not `remove_blocks`, and the difference is the whole point.** That helper
+/// leaves an unterminated block in place, which is the right conservative
+/// default for a memory-injection wrapper the daemon itself emitted: dropping
+/// the rest of a transcript over a malformed tag would lose real material.
+/// Here the conservative direction is the opposite one. An unclosed
+/// `<private>` is a user who started saying something they did not want kept —
+/// they may have been interrupted, or the transcript may have been cut at a
+/// delta boundary mid-message — so **everything from the marker to the end of
+/// that message is dropped**. Failing open would store the secret.
+///
+/// Known limits, because a redaction control that overstates itself is worse
+/// than none:
+///
+/// * Message text only. Text inside a `tool_use` input or a `tool_result` is
+///   not user-authored prose and is not scanned; the caps in `Caps` are what
+///   bound those.
+/// * Exact, lower-case `<private>`. No attributes, no `<PRIVATE>`, no
+///   whitespace inside the tag. A marker that half-works is worse than one
+///   with a stated shape.
+/// * Retain-time only. It keeps the text out of extraction and therefore out
+///   of the store; it cannot remove what a previous retain already wrote.
+pub fn strip_private(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find(PRIVATE_TAG_OPEN) {
+        out.push_str(&rest[..start]);
+        let after_open = start + PRIVATE_TAG_OPEN.len();
+        match rest[after_open..].find(PRIVATE_TAG_CLOSE) {
+            Some(rel_end) => {
+                rest = &rest[after_open + rel_end + PRIVATE_TAG_CLOSE.len()..];
+            }
+            // Unterminated: everything after the marker is discarded.
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Removes `<tag>…</tag>` blocks for all three memory-injection wrappers,
@@ -857,5 +904,69 @@ mod tests {
             capped.len()
         );
         assert!(capped.contains("src/big.rs"), "the priority key survives");
+    }
+
+    /// The opt-out marker. A redaction control gets its own tests because the
+    /// cost of it half-working is a stored secret.
+    #[test]
+    fn a_private_block_is_removed_and_its_surroundings_are_not() {
+        assert_eq!(
+            strip_private("keep this <private>drop this</private> and this"),
+            "keep this  and this"
+        );
+        assert_eq!(strip_private("nothing to do here"), "nothing to do here");
+        assert_eq!(strip_private(""), "");
+    }
+
+    #[test]
+    fn several_private_blocks_all_go() {
+        assert_eq!(
+            strip_private("a<private>x</private>b<private>y</private>c"),
+            "abc"
+        );
+    }
+
+    /// **Fails closed, unlike `remove_blocks`.** An unclosed `<private>` is a
+    /// user who started saying something they did not want kept and was cut
+    /// off — by an interruption, or by a delta retain slicing the transcript
+    /// mid-message. Leaving the tail in, the way the memory-wrapper stripper
+    /// does, would store exactly the thing the marker was asking to withhold.
+    #[test]
+    fn an_unterminated_private_block_drops_the_rest() {
+        assert_eq!(
+            strip_private("public part <private>my api key is sk-live-"),
+            "public part "
+        );
+        // The contrast, asserted: the wrapper stripper keeps it.
+        let unterminated = "public part <memgarden_memories>tail";
+        assert_eq!(strip_memory_tags(unterminated), unterminated);
+    }
+
+    /// The stated shape is exact and lower-case, so the tests say so rather
+    /// than leaving a reader to assume a tolerance that is not there.
+    #[test]
+    fn the_private_marker_is_exact() {
+        let uppercase = "a <PRIVATE>b</PRIVATE> c";
+        assert_eq!(strip_private(uppercase), uppercase);
+        let attributed = "a <private reason=\"key\">b</private> c";
+        // `<private ` never matches the open tag, so nothing is dropped.
+        assert_eq!(strip_private(attributed), attributed);
+    }
+
+    /// End to end: the marker has to reach `normalize`, because a helper that
+    /// is right and unwired is how CE-10 spent two months returning nothing.
+    #[test]
+    fn normalize_drops_private_text_from_a_real_message() {
+        let messages = vec![
+            json!({ "role": "user", "content": "deploy failed <private>token ghp_secret</private> on prod" }),
+            json!({ "role": "user", "content": [
+                { "type": "text", "text": "and <private>my home address</private> is irrelevant" },
+            ]}),
+        ];
+        let (text, _) = normalize(&messages, &opts(Caps::none(), false)).expect("normalized");
+        assert!(!text.contains("ghp_secret"), "{text}");
+        assert!(!text.contains("home address"), "{text}");
+        assert!(text.contains("deploy failed"));
+        assert!(text.contains("is irrelevant"));
     }
 }

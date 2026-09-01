@@ -201,10 +201,56 @@ memgarden hooks status --clear-poison <session-id>      # clears the stamp and t
 | a hook seems to do nothing | `[hooks] debug = true` puts one line per invocation on **stderr**. It can never change an exit code |
 | Claude Code feels slower | `hook recall` fails open at 400 ms and the breaker opens after 3 transport failures. `hooks status` will say if the daemon is down |
 | the settings file looks wrong | the backup is in `<data>/hooks/`, timestamped |
+| a mental model asserts something that is no longer true | turn its schedule off before investigating — see below |
+| a recalled memory is stale rather than wrong | retire it: `POST .../nodes/{id}/supersede` |
 
 Two things this binary will never do, by construction: exit 2 (on
 `UserPromptSubmit` that erases your prompt), and write anything to stdout on an
 event where stdout is not model context.
+
+### Turning one mental model off
+
+A mental model refreshes on a schedule and reads as authoritative, so a wrong
+one keeps asserting itself until someone notices. Stop the schedule first;
+decide about the content after.
+
+```bash
+curl -X DELETE http://127.0.0.1:9100/v1/banks/{bank}/mental-models/{mm_id}/trigger
+```
+
+The model, its content and its citations stay — only the schedule goes. `DELETE
+/v1/banks/{bank}/mental-models/{mm_id}` (no `/trigger`) removes it entirely.
+
+A `PATCH` cannot do this: its fields are `Option`, `None` means "leave alone",
+and a JSON `null` therefore says nothing. That gap is why this was once done in
+SQL — [the day it mattered](evidence/mental-model-supersession.md).
+
+### Retiring a fact that has been superseded
+
+```bash
+curl -X POST http://127.0.0.1:9100/v1/banks/{bank}/nodes/{id}/supersede \
+     -H 'content-type: application/json' -d '{"by": <newer node id>}'
+curl -X DELETE http://127.0.0.1:9100/v1/banks/{bank}/nodes/{id}/supersede
+```
+
+The fact stays in the database and in the graph; it stops being served by every
+recall path, `/reflect` included. A 409 means the pair failed a guard — wrong
+bank, already retired, or a replacement that is not strictly newer.
+
+**Why by hand:** detecting this during extraction was built and measured, and it
+named 22 things that were not retractions, so it
+[ships off](evidence/supersession-detection.md).
+
+### Keeping a turn out of the bank
+
+Wrap it: `<private>…</private>`. Retain drops it before extraction reads it.
+
+Three limits worth knowing, because a redaction control that overstates itself
+is worse than none: the marker is **exact and lower-case** (`<PRIVATE>` and
+`<private reason="...">` do not match); it covers **message text**, not tool
+inputs or tool results; and it works at **retain time only** — it cannot unwrite
+what an earlier retain already stored. An *unclosed* `<private>` drops the rest
+of that message rather than storing it.
 
 ### Editing MemGarden's lines by hand
 

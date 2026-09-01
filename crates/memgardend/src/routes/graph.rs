@@ -8,7 +8,7 @@ use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 
 use memgarden_core::types::FactType;
-use memgarden_store::{banks, graph};
+use memgarden_store::{banks, graph, nodes};
 
 use crate::error::{ApiError, join_err};
 use crate::state::AppState;
@@ -360,4 +360,100 @@ impl From<graph::Anatomy> for AnatomyResponse {
                 .collect(),
         }
     }
+}
+
+/// `POST /v1/banks/{bank_id}/nodes/{node_id}/supersede` — mark one fact
+/// retracted by another, and `DELETE` on the same path to make it live again.
+///
+/// This is the write surface for the column `0011_supersession.sql` adds, and
+/// with CE-12's detector shipping off (`docs/evidence/supersession-detection.md`)
+/// it is the *only* one. Without it the daemon would carry a lifecycle state
+/// that nothing but SQL could set — which is exactly the gap the mental-model
+/// `trigger` left, recorded in this repository, and not a gap worth having
+/// twice.
+///
+/// Two verbs rather than one nullable field, for the same reason: `PATCH`
+/// with `Option` cannot tell "clear it" from "leave it alone".
+#[derive(Debug, Deserialize)]
+pub struct SupersedeRequest {
+    /// The node that replaces this one. Both ends must be in `bank_id`, and
+    /// the replacement must be strictly newer — `nodes::mark_superseded`
+    /// enforces both, so a bad pair answers 409 rather than writing.
+    pub by: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SupersedeResponse {
+    pub id: i64,
+    pub superseded_by: Option<i64>,
+}
+
+async fn require_bank(state: &AppState, bank_id: &str) -> Result<(), ApiError> {
+    let db = state.db.clone();
+    let bank = bank_id.to_string();
+    let exists = tokio::task::spawn_blocking(move || banks::get(&db, &bank))
+        .await
+        .map_err(join_err)??;
+    if exists.is_none() {
+        return Err(ApiError::not_found("bank not found"));
+    }
+    Ok(())
+}
+
+pub async fn supersede_node(
+    State(state): State<AppState>,
+    Path((bank_id, node_id)): Path<(String, i64)>,
+    crate::json::ApiJson(body): crate::json::ApiJson<SupersedeRequest>,
+) -> Result<Json<SupersedeResponse>, ApiError> {
+    require_bank(&state, &bank_id).await?;
+
+    let db = state.db.clone();
+    let bank = bank_id.clone();
+    let changed = tokio::task::spawn_blocking(move || {
+        nodes::mark_superseded(&db, &bank, &[(node_id, body.by)])
+    })
+    .await
+    .map_err(join_err)??;
+
+    if changed == 0 {
+        // One status for every refusal, because the guards are one predicate:
+        // unknown node, wrong bank, already retracted, or a replacement that
+        // is not strictly newer. Which one it was is answerable from
+        // `GET .../nodes/{id}`, and enumerating them here would mean four
+        // extra queries on a path that writes.
+        return Err(memgarden_core::Error::Conflict(format!(
+            "node {node_id} cannot be superseded by {}: unknown, in another bank, \
+             already superseded, or not strictly newer",
+            body.by
+        ))
+        .into());
+    }
+    crate::events::publish(&state.events, &bank_id, "nodes", vec![node_id]);
+    Ok(Json(SupersedeResponse {
+        id: node_id,
+        superseded_by: Some(body.by),
+    }))
+}
+
+pub async fn unsupersede_node(
+    State(state): State<AppState>,
+    Path((bank_id, node_id)): Path<(String, i64)>,
+) -> Result<Json<SupersedeResponse>, ApiError> {
+    require_bank(&state, &bank_id).await?;
+
+    let db = state.db.clone();
+    let bank = bank_id.clone();
+    let cleared = tokio::task::spawn_blocking(move || nodes::clear_superseded(&db, &bank, node_id))
+        .await
+        .map_err(join_err)??;
+    if !cleared {
+        return Err(ApiError::not_found(format!(
+            "node {node_id} is not superseded in this bank"
+        )));
+    }
+    crate::events::publish(&state.events, &bank_id, "nodes", vec![node_id]);
+    Ok(Json(SupersedeResponse {
+        id: node_id,
+        superseded_by: None,
+    }))
 }

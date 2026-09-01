@@ -254,6 +254,9 @@ mod tests {
             occurred_end: None,
             where_field: None,
             entities: vec![],
+            supersedes: vec![],
+            expires_at: None,
+            superseded_quote: None,
             causal_relations: targets
                 .iter()
                 .map(|&target_index| crate::extract::parse::CausalRelation {

@@ -15,6 +15,7 @@ Work lands as PRD-tracked pull requests (template in `.github/`), each 3-way rev
 | D — Migration | read-only legacy snapshot MG-1a ✅ · archive → SQLite importer MG-1b ✅ · AC-3 verifier MG-2 ✅ | ✅ **code-complete** |
 | E — UI & metrics | dashboard, graph API, WebGL viewer (pan/zoom/drag, live SSE), ledger views, the bank survey | ✅ merged |
 | F — Cutover | quality-parity A/B + performance gates + lossless migration → legacy shutdown | ✅ **done 2026-08-21** |
+| post-v1 — Fact lifecycle | CE-12 supersession + expiry: schema v11 columns, the `hydrate` filter, `POST`/`DELETE .../supersede`. **Automatic detection measured and shipped off** — `docs/evidence/supersession-detection.md` | ✅ merged, detector off |
 
 **v1 is complete.** Every acceptance criterion in `PRD.md` is ticked. AC-7 — every
 PR on the template, `cargo test` passing — was the last, signed 2026-08-26 in two

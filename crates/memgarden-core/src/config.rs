@@ -379,6 +379,27 @@ pub struct RetainConfig {
     /// the `coding` profile flips it to `true` (that is the whole point of
     /// the two tool-input caps).
     pub include_tool_calls: bool,
+    /// CE-12. Whether extraction is shown the bank's nearest existing facts
+    /// and allowed to declare that a new one retracts them.
+    ///
+    /// **Off**, and measured that way rather than assumed. On a 7-chunk set
+    /// built from this project's own recorded retractions, the detector found
+    /// 2 of 3 reachable targets and named **14 facts that retract nothing**,
+    /// including all 12 candidates it was shown for one chunk. Requiring it to
+    /// quote the false span drove false positives to 0 and detections to 0 as
+    /// well. Full numbers and all three arms:
+    /// `docs/evidence/supersession-detection.md`.
+    ///
+    /// The knob stays because the mechanism it feeds — `superseded_by`, the
+    /// `hydrate` filter, `nodes::mark_superseded` — is sound and tested, and
+    /// because the next attempt at detection should not have to rebuild the
+    /// harness. Turning it on costs one embedding + one KNN per chunk and
+    /// ~12 lines of prompt; no extra LLM call.
+    pub detect_supersession: bool,
+    /// CE-12. How many existing facts to show. 12 is the largest that fits
+    /// the chunk prompt without displacing the guidelines; a KNN over a
+    /// 3,000-character chunk gets vague past roughly that many anyway.
+    pub supersession_candidates: usize,
 }
 
 /// `[profile]` — named presets that fill in grouped defaults for a usage
@@ -487,6 +508,8 @@ impl Config {
                 queue_capacity: 32,
                 wall_timeout_secs: 7200,
                 include_tool_calls: false,
+                detect_supersession: false,
+                supersession_candidates: 12,
             },
             recall: RecallConfig {
                 types: vec![FactType::World, FactType::Observation, FactType::Experience],
@@ -707,6 +730,12 @@ pub fn from_parts(
             if let Some(v) = retain.include_tool_calls {
                 cfg.retain.include_tool_calls = v;
                 explicit.push("include_tool_calls");
+            }
+            if let Some(v) = retain.detect_supersession {
+                cfg.retain.detect_supersession = v;
+            }
+            if let Some(v) = retain.supersession_candidates {
+                cfg.retain.supersession_candidates = v;
             }
         }
         if let Some(recall) = parsed.recall {
@@ -1275,6 +1304,8 @@ struct TomlRetain {
     queue_capacity: Option<usize>,
     wall_timeout_secs: Option<u64>,
     include_tool_calls: Option<bool>,
+    detect_supersession: Option<bool>,
+    supersession_candidates: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1375,6 +1406,8 @@ mod tests {
                 queue_capacity: 32,
                 wall_timeout_secs: 7200,
                 include_tool_calls: false,
+                detect_supersession: false,
+                supersession_candidates: 12,
             },
             recall: RecallConfig {
                 types: vec![FactType::World, FactType::Observation, FactType::Experience],

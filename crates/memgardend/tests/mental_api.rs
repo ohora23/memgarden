@@ -278,6 +278,90 @@ async fn crud_round_trip_is_scoped_to_the_owning_bank() {
 /// `nearest_models` is always empty and `keep_known` therefore drops every
 /// mental-model id before it gets near the recorder — the property
 /// `reflect_filters_hallucinated_citation_ids` already pins.
+/// The gap `docs/evidence/mental-model-supersession.md` recorded on 2026-08-30:
+/// a model that starts synthesising retracted facts has to be switched off, and
+/// `PATCH` could not do it — `Option<String>` where `None` means "leave alone"
+/// gives a JSON `null` no meaning of its own. It was done in SQL.
+///
+/// A verb, not a nullable field.
+#[tokio::test]
+async fn a_trigger_can_be_cleared_without_deleting_the_model() {
+    let h = harness().await;
+    let created = h
+        .create(
+            "b1",
+            json!({
+                "name": "수용 기준과 전환 게이트",
+                "sourceQuery": "AC-1 AC-7 게이트 서명",
+                "trigger": "@after-consolidation",
+            }),
+        )
+        .await;
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["trigger"], "@after-consolidation");
+
+    // A JSON null on PATCH still means nothing — the route never grew a way to
+    // say "clear", and this asserts it did not, so the two mechanisms cannot
+    // drift into disagreeing.
+    let (status, patched) = h
+        .send(
+            "PATCH",
+            &format!("/v1/banks/b1/mental-models/{id}"),
+            Some(json!({ "trigger": Value::Null })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        patched["trigger"], "@after-consolidation",
+        "a null in the body must not be readable as an instruction to clear"
+    );
+
+    let (status, cleared) = h
+        .send(
+            "DELETE",
+            &format!("/v1/banks/b1/mental-models/{id}/trigger"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cleared["trigger"], Value::Null);
+    assert_eq!(
+        cleared["due"], false,
+        "a model with no trigger is never due"
+    );
+    assert_eq!(
+        cleared["name"], "수용 기준과 전환 게이트",
+        "clearing the trigger must not touch the model"
+    );
+
+    // Idempotence is not silence: there was no schedule to turn off.
+    let (status, _) = h
+        .send(
+            "DELETE",
+            &format!("/v1/banks/b1/mental-models/{id}/trigger"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // And the model itself is still there, still readable, still off.
+    let (status, got) = h
+        .send("GET", &format!("/v1/banks/b1/mental-models/{id}"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["trigger"], Value::Null);
+
+    // Wrong bank, and an unknown model, are both 404 rather than a write.
+    let (status, _) = h
+        .send(
+            "DELETE",
+            &format!("/v1/banks/b2/mental-models/{id}/trigger"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn an_invented_citation_counts_for_nothing() {
     let h = harness().await;

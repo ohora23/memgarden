@@ -16,7 +16,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::middleware::from_fn;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde_json::json;
 use tower_http::trace::TraceLayer;
@@ -99,6 +99,10 @@ pub fn router(state: AppState) -> Router {
         // inherits the same Host check and origin.
         .route("/v1/banks/{bank_id}/events", get(events::bank_events))
         .route("/v1/banks/{bank_id}/nodes/{node_id}", get(graph::get_node))
+        .route(
+            "/v1/banks/{bank_id}/nodes/{node_id}/supersede",
+            post(graph::supersede_node).delete(graph::unsupersede_node),
+        )
         // E6. On demand — it reads every link in the bank, so it must not
         // join the dashboard's 10 s poll.
         .route("/v1/banks/{bank_id}/anatomy", get(graph::get_anatomy))
@@ -114,6 +118,10 @@ pub fn router(state: AppState) -> Router {
         )
         // Synchronous, like /consolidate: one LLM call, so callers need a
         // matching client timeout.
+        .route(
+            "/v1/banks/{bank_id}/mental-models/{mm_id}/trigger",
+            delete(mental::clear_mental_model_trigger),
+        )
         .route(
             "/v1/banks/{bank_id}/mental-models/{mm_id}/refresh",
             post(mental::refresh_mental_model),

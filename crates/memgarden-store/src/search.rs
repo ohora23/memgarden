@@ -223,10 +223,27 @@ pub fn hydrate(db: &Db, bank_id: &str, ids: &[i64]) -> Result<Vec<CandidateRow>>
     let conn = db.read()?;
     let mut stmt = conn
         .prepare(
+            // CE-12: the one place a retracted or expired fact is dropped.
+            // `hydrate` is the choke point every arm's candidates pass
+            // through — BM25, KNN, temporal and the graph arm all end here,
+            // and so do `/reflect` and the mental-model refresh, which reach
+            // recall rather than the store. Filtering here is why the fix
+            // needed no change in any of them; filtering in `recall` would
+            // have left the graph arm serving dead facts.
+            //
+            // `unixepoch('subsec')` rather than a threaded-through `now_ms`:
+            // the alternative is a parameter on a function twelve callers
+            // reach, to serve a predicate that is NULL for almost every row.
+            // `'subsec'` and not the bare form — the bare one truncates to the
+            // second, which leaves a fact live for up to 999ms past its
+            // expiry and made this module's own test pass for the wrong
+            // reason.
             "SELECT n.id, n.uuid, n.fact_type, n.text, n.context,
                     n.occurred_start, n.occurred_end, n.mentioned_at, n.proof_count
              FROM memory_nodes n
-             WHERE n.id IN (SELECT value FROM json_each(?1)) AND n.bank_id = ?2",
+             WHERE n.id IN (SELECT value FROM json_each(?1)) AND n.bank_id = ?2
+               AND n.superseded_by IS NULL
+               AND (n.expires_at IS NULL OR n.expires_at > unixepoch('subsec') * 1000)",
         )
         .map_err(store_err)?;
     let raw = stmt
@@ -557,5 +574,158 @@ mod tests {
             fts_candidates(&db, "b1", "", 10).unwrap(),
             Vec::<i64>::new()
         );
+    }
+
+    /// CE-12's whole enforcement point. Every recall arm — BM25, KNN,
+    /// temporal, graph — and every caller above them (`/recall`, `/reflect`,
+    /// the mental-model refresh) reaches the store through `hydrate`, so this
+    /// is the test that says a retracted fact cannot be injected anywhere.
+    #[test]
+    fn hydrate_hides_retracted_and_expired_facts() {
+        use crate::models::NewNode;
+        use memgarden_core::types::FactType;
+
+        let db = Db::open_memory().unwrap();
+        crate::banks::create(&db, "b1", None, None).unwrap();
+
+        let insert = |label: &str| {
+            crate::nodes::insert(&db, NewNode::new("b1", FactType::World, label)).unwrap()
+        };
+        let expiring = |label: &str, at: i64| {
+            let mut n = NewNode::new("b1", FactType::World, label);
+            n.expires_at = Some(at);
+            crate::nodes::insert(&db, n).unwrap()
+        };
+
+        let now = memgarden_core::now_ms();
+        let live = insert("still true");
+        let retracted = insert("was true in August");
+        let replacement = insert("no longer true as of today");
+        let expired = expiring("the exam is tomorrow", now - 1);
+        let not_yet = expiring("on leave until next year", now + 365 * 86_400_000);
+
+        crate::nodes::mark_superseded(&db, "b1", &[(retracted, replacement)]).unwrap();
+
+        let ids = [live, retracted, replacement, expired, not_yet];
+        let got: Vec<i64> = hydrate(&db, "b1", &ids)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+
+        assert!(got.contains(&live));
+        assert!(got.contains(&replacement));
+        assert!(got.contains(&not_yet), "a future expiry is still live");
+        assert!(
+            !got.contains(&retracted),
+            "a retracted fact must not surface"
+        );
+        assert!(!got.contains(&expired), "a lapsed fact must not surface");
+    }
+
+    /// The guards live in `mark_superseded`'s WHERE clause because the caller
+    /// is holding a 14B model's answer. Each one is a way the model can be
+    /// wrong, and none of them may write.
+    #[test]
+    fn mark_superseded_refuses_every_way_it_can_be_wrong() {
+        use crate::models::NewNode;
+        use memgarden_core::types::FactType;
+
+        let db = Db::open_memory().unwrap();
+        crate::banks::create(&db, "b1", None, None).unwrap();
+        crate::banks::create(&db, "b2", None, None).unwrap();
+
+        let insert = |bank: &str, label: &str| {
+            crate::nodes::insert(&db, NewNode::new(bank, FactType::World, label)).unwrap()
+        };
+
+        let old = insert("b1", "the old claim");
+        let new = insert("b1", "the correction");
+        let other_bank = insert("b2", "someone else's fact");
+
+        // Cross-bank: the id came out of a list scoped to one bank, so a
+        // reference to another one is a hallucination, not an instruction.
+        assert_eq!(
+            crate::nodes::mark_superseded(&db, "b1", &[(other_bank, new)]).unwrap(),
+            0
+        );
+        // Self-retraction.
+        assert_eq!(
+            crate::nodes::mark_superseded(&db, "b1", &[(new, new)]).unwrap(),
+            0
+        );
+        // Backwards: `new` was written after `old`, so `old` cannot replace it.
+        assert_eq!(
+            crate::nodes::mark_superseded(&db, "b1", &[(new, old)]).unwrap(),
+            0
+        );
+
+        // The one legitimate direction applies...
+        assert_eq!(
+            crate::nodes::mark_superseded(&db, "b1", &[(old, new)]).unwrap(),
+            1
+        );
+        // ...and only once: a later correction does not re-point an already
+        // retracted fact, so the chain an operator reads stays the first one.
+        let newer = insert("b1", "a correction of the correction");
+        assert_eq!(
+            crate::nodes::mark_superseded(&db, "b1", &[(old, newer)]).unwrap(),
+            0
+        );
+        assert_eq!(
+            crate::nodes::get(&db, old).unwrap().unwrap().superseded_by,
+            Some(new)
+        );
+    }
+
+    /// The regression this guard was fixed for. `insert_batch` stamps one
+    /// `created_at` across a whole chunk, so two facts can share a
+    /// millisecond exactly — and a `<=` on the timestamp alone let the pair
+    /// retract in whichever direction the model happened to name.
+    #[test]
+    fn a_same_millisecond_pair_still_only_retracts_forwards() {
+        use crate::models::NewNode;
+        use memgarden_core::types::FactType;
+
+        let db = Db::open_memory().unwrap();
+        crate::banks::create(&db, "b1", None, None).unwrap();
+        let a = crate::nodes::insert(&db, NewNode::new("b1", FactType::World, "a")).unwrap();
+        let b = crate::nodes::insert(&db, NewNode::new("b1", FactType::World, "b")).unwrap();
+        // Force the tie the batch writer produces naturally.
+        db.write(|tx| {
+            tx.execute("UPDATE memory_nodes SET created_at = 1700000000000", [])
+                .map_err(crate::store_err)?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            crate::nodes::mark_superseded(&db, "b1", &[(b, a)]).unwrap(),
+            0
+        );
+        assert_eq!(
+            crate::nodes::mark_superseded(&db, "b1", &[(a, b)]).unwrap(),
+            1
+        );
+    }
+
+    /// Deleting the replacement must bring the original back rather than
+    /// leave it pointing at a row that is gone — the FK's `ON DELETE SET
+    /// NULL`, exercised end to end because a schema assertion alone would not
+    /// prove `hydrate` serves the fact again.
+    #[test]
+    fn deleting_a_replacement_un_retracts_the_original() {
+        use crate::models::NewNode;
+        use memgarden_core::types::FactType;
+
+        let db = Db::open_memory().unwrap();
+        crate::banks::create(&db, "b1", None, None).unwrap();
+        let old = crate::nodes::insert(&db, NewNode::new("b1", FactType::World, "old")).unwrap();
+        let new = crate::nodes::insert(&db, NewNode::new("b1", FactType::World, "new")).unwrap();
+        crate::nodes::mark_superseded(&db, "b1", &[(old, new)]).unwrap();
+        assert!(hydrate(&db, "b1", &[old]).unwrap().is_empty());
+
+        crate::nodes::delete(&db, new).unwrap();
+        assert_eq!(hydrate(&db, "b1", &[old]).unwrap().len(), 1);
     }
 }
