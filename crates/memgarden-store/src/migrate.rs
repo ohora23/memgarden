@@ -29,6 +29,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0010_mental_model_usage.sql"),
     ),
     (11, include_str!("../migrations/0011_supersession.sql")),
+    (12, include_str!("../migrations/0012_task_ledger.sql")),
 ];
 
 /// The schema version this build expects, i.e. the highest entry in

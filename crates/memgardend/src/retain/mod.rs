@@ -18,6 +18,7 @@
 //! the retain write transaction short and reuses a path that already exists.
 
 pub mod chunk;
+pub mod ledger;
 pub mod transcript;
 
 use std::sync::OnceLock;
@@ -437,6 +438,23 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
         }
     }
 
+    // The task ledger (migration `0012`). AFTER the facts are settled and
+    // deliberately NOT gated on `clean`: a job that lost a chunk still knows
+    // what is being worked on, and withholding working state on a partial run
+    // is the one direction that cannot be recovered later — a missing fact is
+    // re-ingested by re-POSTing the transcript, a missing ledger is just gone.
+    //
+    // Errors are logged and dropped. The ledger is an addition to a retain
+    // job, never a reason for one to fail, and it must not touch `progress`:
+    // the status the client polls means "were the facts ingested", and a
+    // failed ledger call would turn a clean ingest into a reported failure.
+    if state.cfg.retain.write_task_ledger {
+        let cwd = session_cwd(state, &task).await;
+        if let Err(e) = ledger::write(state, &task, cwd.as_deref()).await {
+            tracing::warn!(job_id = %task.job_id, error = %e, "task ledger extraction failed");
+        }
+    }
+
     flush(state, &task.job_id, &progress).await;
     tracing::info!(
         job_id = %task.job_id,
@@ -450,6 +468,27 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
         elapsed_ms = started.elapsed().as_millis() as u64,
         "retain job finished"
     );
+}
+
+/// The session's working directory, for the ledger's `anchors`.
+///
+/// `None` for every reason: no session on the task (the caller is not the
+/// hook), no mirrored row yet, or a lookup that failed. All three mean the
+/// same thing to the anchor — this ledger cannot say which tree it describes
+/// — and none of them is worth failing a write over.
+async fn session_cwd(state: &AppState, task: &RetainTask) -> Option<String> {
+    let session_id = task.session_id.clone()?;
+    let db = state.db.clone();
+    let bank_id = task.bank_id.clone();
+    tokio::task::spawn_blocking(move || {
+        memgarden_store::sessions::get(&db, &bank_id, &session_id)
+            .ok()
+            .flatten()
+    })
+    .await
+    .ok()
+    .flatten()
+    .and_then(|s| s.cwd)
 }
 
 /// Non-blocking check on the pinned shutdown future.

@@ -11,6 +11,7 @@ pub mod nodes;
 pub mod retain_jobs;
 pub mod search;
 pub mod sessions;
+pub mod task_ledger;
 pub mod vecblob;
 
 pub use conn::register_vec_extension;
