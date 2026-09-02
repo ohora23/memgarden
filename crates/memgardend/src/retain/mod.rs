@@ -438,23 +438,6 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
         }
     }
 
-    // The task ledger (migration `0012`). AFTER the facts are settled and
-    // deliberately NOT gated on `clean`: a job that lost a chunk still knows
-    // what is being worked on, and withholding working state on a partial run
-    // is the one direction that cannot be recovered later — a missing fact is
-    // re-ingested by re-POSTing the transcript, a missing ledger is just gone.
-    //
-    // Errors are logged and dropped. The ledger is an addition to a retain
-    // job, never a reason for one to fail, and it must not touch `progress`:
-    // the status the client polls means "were the facts ingested", and a
-    // failed ledger call would turn a clean ingest into a reported failure.
-    if state.cfg.retain.write_task_ledger {
-        let cwd = session_cwd(state, &task).await;
-        if let Err(e) = ledger::write(state, &task, cwd.as_deref()).await {
-            tracing::warn!(job_id = %task.job_id, error = %e, "task ledger extraction failed");
-        }
-    }
-
     flush(state, &task.job_id, &progress).await;
     tracing::info!(
         job_id = %task.job_id,
@@ -468,6 +451,33 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
         elapsed_ms = started.elapsed().as_millis() as u64,
         "retain job finished"
     );
+
+    // The task ledger (migration `0012`), **after** the terminal flush.
+    //
+    // It sat before the flush for one commit and that was wrong. This is one
+    // more Ollama call — measured at over a minute on a single-chunk job — and
+    // in front of the flush it delays the job's terminal status by exactly
+    // that long. For that whole window a polling client reads `running` on a
+    // job whose facts are already settled, and a daemon that dies inside the
+    // window (systemd SIGKILLed one on 2026-09-02 after a stop timeout) leaves
+    // the status never written at all. Nothing reads the ledger, so nothing
+    // needs it before the status: the ordering was pure cost.
+    //
+    // Deliberately NOT gated on `clean`. A job that lost a chunk still knows
+    // what is being worked on, and the directions are asymmetric — a missing
+    // fact is re-ingested by re-POSTing the transcript, a missing ledger is
+    // gone. Losing one to a crash is cheap for the same reason: the row is
+    // replace-on-write, so the next job for this bank restores it.
+    //
+    // Errors are logged and dropped, and `progress` is already flushed and
+    // must not be touched: the status a client polls means "were the facts
+    // ingested", which a failed ledger call has no bearing on.
+    if state.cfg.retain.write_task_ledger {
+        let cwd = session_cwd(state, &task).await;
+        if let Err(e) = ledger::write(state, &task, cwd.as_deref()).await {
+            tracing::warn!(job_id = %task.job_id, error = %e, "task ledger extraction failed");
+        }
+    }
 }
 
 /// The session's working directory, for the ledger's `anchors`.
