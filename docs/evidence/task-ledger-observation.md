@@ -75,13 +75,128 @@ branch and HEAD are the Stage 4 gap.
 - [ ] Q10 Did any job fail *because* of the ledger? (expected: no — errors are
       logged and dropped)
 
-## 4. Findings
+### 3.5 How stale is a ledger the moment it is written?
 
-*(empty — to be filled as rows accumulate)*
+**Added 2026-09-03 after the first live row, which arrived 107 minutes stale.**
+This was not anticipated and is structural rather than a sampling artifact, so
+it gets its own group.
+
+The transcript is captured when the hook POSTs the job; the ledger is written
+when the job *finishes*. The gap between those is the job's duration, and the
+ledger is born exactly that far behind. On an 18-chunk job that was 107 minutes,
+during which the work it describes had been finished, reviewed, merged and moved
+past.
+
+- [ ] Q11 Distribution of `task_ledger.updated_at − retain_jobs.created_at`.
+      Is the lag routine or only on large transcripts?
+- [ ] Q12 How often is the `goal` already finished by the time the row lands?
+      This is the survey's "stale commitment" arriving through the pipeline
+      rather than through a missed update.
+- [ ] Q13 Does the staleness check in the (unbuilt) read path catch it? `anchors`
+      compares `cwd` and file existence, and **neither moves when a task merely
+      finishes** — so the answer is probably no, and that matters more than the
+      lag itself.
+
+### 3.6 Does the newest job deserve the row?
+
+**Added 2026-09-03, three minutes after 3.5, when a 1-chunk job overwrote an
+18-chunk one and turned a whole session into a stray `/config` exchange.**
+
+`upsert` replaces every content field, by design: a superseded goal that stays
+behind is the survey's stale commitment. The cost of that choice only became
+visible with two jobs in flight — the row goes to whichever finishes last,
+regardless of how much of the work it saw.
+
+- [ ] Q14 How often does a row get replaced by a job covering fewer chunks?
+      Compare `retain_jobs.chunks_total` across successive writers for a bank.
+- [ ] Q15 When that happens, is the surviving row worse? "Fewer chunks" is a
+      proxy; a short job on the right material could be better.
+- [ ] Q16 Is `updated_at != created_at` common — i.e. how often is any bank's
+      row rewritten at all, versus written once and left?
+
+## 4. Findings
 
 | date | rows | collapsed | hollow | note |
 |---|---|---|---|---|
-| | | | | |
+| 2026-09-03 | 1 | 0 | 0 | first live row — no collapse, one fabricated path, 107 min stale |
+
+### 2026-09-03 — the first live row
+
+```
+goal         MemGarden 도입 효과 정리 … 코드 검색 낭비 분석
+done         "데이터가 다 모였습니다. 노트를 작성하겠습니다."
+open         "작성 중입니다."
+next_action  Final destination path: `Project/MemGarden/01-Effectiveness_Analysis.md` …
+anchors      cwd=…/upgrade_contextswitching · paths=7
+```
+
+**Q4 — the collapse did not repeat.** `open` and `next_action` differ here, so
+the byte-identical pair seen on the 3-message smoke test looks like an artifact
+of that toy input. One row, so this stays open.
+
+**Q3 — one thing is wrong, and it is the expensive kind.**
+`Project/MemGarden/01-Effectiveness_Analysis.md` **does not exist**; the note
+was saved as `작업장부-스키마v12와-이점정리-그리고-Orca그래프.md`. The model
+appears to have built a plausible filename out of a skill preamble's format
+rather than from anything that happened. A session injected with this would go
+looking for a file that was never written — the same shape as MX-3's t02, where
+a retrieved, plausible, wrong memory beat having none.
+
+**Q7 — the anchors are good.** All 7 paths are files the work actually touched
+(`0012_task_ledger.sql`, `migrate.rs`, `task_ledger.rs`, `retain/ledger.rs`,
+`retain/mod.rs`, `boundary-replay.py`, the memory note). This half is working.
+
+**Q11/Q12 — the row was born 107 minutes stale.** Job created 00:17, ledger
+written 02:04, 18 chunks, ended `partial`. In that window the work it describes
+was finished, a plan was approved, PR #48 was opened and merged. So `goal`
+names a completed task, and `done`/`open` quote the operator's own sentences
+verbatim rather than summarising — all three are symptoms of the same cause.
+
+**What this does NOT yet say.** n=1. The fabricated path could be one bad
+generation; the lag could be specific to an 18-chunk transcript. Both need the
+distribution before they mean anything. What is already structural, regardless
+of sample size, is Q13: `anchors` compares `cwd` and file existence, and a task
+*finishing* moves neither — so the staleness defence as designed would not have
+caught this row.
+
+### 2026-09-03, three minutes later — a worse row replaced it
+
+Re-reading to check the new lag column found a **different** row. The 18-chunk
+job (79 facts) had been overtaken by a **1-chunk job** queued 8 minutes later,
+and replace-on-write did what it is supposed to do:
+
+```
+goal         Determine which configuration setting the user needs and proceed accordingly.
+done         User requested configuration settings but did not specify which one.
+open         User needs to specify the configuration type to proceed.
+next_action  Ask the user to clarify which configuration they need: …
+anchors      cwd=…/upgrade_contextswitching · paths=0
+```
+
+That is the whole session — a schema migration, four merged PRs, a deployment,
+an approved plan — reduced to a stray `/config` exchange, because the last job
+to finish happened to carry one chunk covering it.
+
+**This is a design defect, not a sampling accident, and it is mine.** The write
+path takes whatever the newest finishing job saw. It has no notion of which job
+carried more of the work, and 1 chunk overwrites 18 exactly as readily as the
+reverse. The 8-minute-later job also *finished first*, so ordering by
+`created_at` would not have saved it either.
+
+Candidate directions, **none chosen** (see §5, and note this is a third lever
+distinct from content and timing):
+
+- Do not replace a row from a substantially smaller job — compare `chunks_total`
+  or covered byte range and keep the richer one.
+- Merge rather than replace, which needs a second model call and reintroduces
+  the contradiction-resolution problem `ledger.rs` explicitly avoided.
+- Key the ledger by something narrower than the bank so a `/config` aside and a
+  migration are not competing for one row — but the bank key is itself a
+  measured decision (`boundary-replay.py`), so this one fights earlier evidence.
+
+The honest reading is that "one row per bank, replace on write" was chosen to
+avoid stale commitments and, in doing so, made the ledger **lossy against the
+most recent small event**. Q14 is now the question that matters most.
 
 ## 5. The decision this feeds
 
@@ -90,8 +205,17 @@ One of three, and the third is a real option rather than a polite one:
 1. **Ship the read path** — content is worth injecting. Trigger is the phrase
    test (measured F1 0.615 against a 0.124 baseline), gated by re-checking
    `anchors` against the filesystem.
-2. **Fix the writer first** — content is the right shape but thin or collapsed.
-   The prompt in `crates/memgardend/src/retain/ledger.rs` is the lever.
+2. **Fix the writer first** — content is the right shape but thin, collapsed, or
+   stale. Two different levers, and the first row implicates both:
+   - *content* — the prompt in `crates/memgardend/src/retain/ledger.rs`. The
+     fabricated path and the verbatim quoting are prompt problems.
+   - *timing* — the 107-minute lag is not a prompt problem. Candidates, **none
+     chosen and none costed yet**: write the ledger at job *start* rather than
+     at the end (the transcript tail is already in hand the moment the job is
+     queued, and the extraction it currently waits behind contributes nothing to
+     it); or re-read the tail at write time; or spawn the call detached at start
+     so it neither delays the flush nor waits for the chunks. Picking one before
+     Q11 says how common the lag is would be fitting a fix to a single row.
 3. **Turn it off** — `retain.write_task_ledger = false`. If the rows say nothing
    a resuming session could not get faster elsewhere, the honest move is to stop
    paying one Ollama call per retain job for them. The tier being architecturally
