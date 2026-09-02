@@ -70,6 +70,12 @@ async fn stub_chat(
     // empty — pre-existing, and left alone.)
     let system = body["system"].as_str().unwrap_or("");
     if system.contains("CURRENT WORKING STATE") {
+        // Deliberately slow, and the delay is the point. `await_job` polls
+        // every 20 ms, so a stub that answered instantly would let the flush
+        // and the ledger land inside one poll and make their ORDER
+        // unobservable — the ordering test would then pass either way. On the
+        // real daemon this call took over a minute.
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         return axum::Json(json!({
             "response": json!({
                 "goal": "stub goal",
@@ -1630,6 +1636,21 @@ async fn a_real_world_bank_id_survives_the_url_path() {
 // Task ledger (migration 0012)
 // ---------------------------------------------------------------------------
 
+/// Waits for the bank's ledger row, which lands *after* the job goes terminal.
+async fn await_ledger(db: &Db, bank_id: &str) -> memgarden_store::task_ledger::TaskLedger {
+    let deadline = std::time::Instant::now() + Duration::from_secs(12);
+    loop {
+        if let Some(led) = memgarden_store::task_ledger::get(db, bank_id).unwrap() {
+            return led;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no task ledger row within the budget"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// The write path exists and is reached from a finished retain job.
 ///
 /// This is the only test in the file that turns `write_task_ledger` on, and it
@@ -1681,9 +1702,20 @@ async fn the_task_ledger_is_written_when_a_job_finishes() {
         "the ledger must add exactly one Ollama call per job"
     );
 
-    let led = memgarden_store::task_ledger::get(&harness.db, "b1")
-        .unwrap()
-        .expect("ledger row");
+    // The ordering property, asserted because it is invisible otherwise: the
+    // job's terminal status must be settled BEFORE the ledger call, not after.
+    // `await_job` returns as soon as the status is terminal, so a ledger
+    // written by then would mean the flush waited on an Ollama round trip —
+    // which is what this code did for one commit, delaying every job's status
+    // by over a minute and losing it entirely when the daemon was killed
+    // inside the window.
+    assert_eq!(
+        memgarden_store::task_ledger::get(&harness.db, "b1").unwrap(),
+        None,
+        "the ledger must not have been written yet when the status went terminal"
+    );
+
+    let led = await_ledger(&harness.db, "b1").await;
     assert_eq!(led.goal, "stub goal");
     assert_eq!(led.next_action, "stub next");
     assert_eq!(led.session_id.as_deref(), Some("sess-ledger"));
