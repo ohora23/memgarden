@@ -451,54 +451,6 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
         elapsed_ms = started.elapsed().as_millis() as u64,
         "retain job finished"
     );
-
-    // The task ledger (migration `0012`), **after** the terminal flush.
-    //
-    // It sat before the flush for one commit and that was wrong. This is one
-    // more Ollama call — measured at over a minute on a single-chunk job — and
-    // in front of the flush it delays the job's terminal status by exactly
-    // that long. For that whole window a polling client reads `running` on a
-    // job whose facts are already settled, and a daemon that dies inside the
-    // window (systemd SIGKILLed one on 2026-09-02 after a stop timeout) leaves
-    // the status never written at all. Nothing reads the ledger, so nothing
-    // needs it before the status: the ordering was pure cost.
-    //
-    // Deliberately NOT gated on `clean`. A job that lost a chunk still knows
-    // what is being worked on, and the directions are asymmetric — a missing
-    // fact is re-ingested by re-POSTing the transcript, a missing ledger is
-    // gone. Losing one to a crash is cheap for the same reason: the row is
-    // replace-on-write, so the next job for this bank restores it.
-    //
-    // Errors are logged and dropped, and `progress` is already flushed and
-    // must not be touched: the status a client polls means "were the facts
-    // ingested", which a failed ledger call has no bearing on.
-    if state.cfg.retain.write_task_ledger {
-        let cwd = session_cwd(state, &task).await;
-        if let Err(e) = ledger::write(state, &task, cwd.as_deref()).await {
-            tracing::warn!(job_id = %task.job_id, error = %e, "task ledger extraction failed");
-        }
-    }
-}
-
-/// The session's working directory, for the ledger's `anchors`.
-///
-/// `None` for every reason: no session on the task (the caller is not the
-/// hook), no mirrored row yet, or a lookup that failed. All three mean the
-/// same thing to the anchor — this ledger cannot say which tree it describes
-/// — and none of them is worth failing a write over.
-async fn session_cwd(state: &AppState, task: &RetainTask) -> Option<String> {
-    let session_id = task.session_id.clone()?;
-    let db = state.db.clone();
-    let bank_id = task.bank_id.clone();
-    tokio::task::spawn_blocking(move || {
-        memgarden_store::sessions::get(&db, &bank_id, &session_id)
-            .ok()
-            .flatten()
-    })
-    .await
-    .ok()
-    .flatten()
-    .and_then(|s| s.cwd)
 }
 
 /// Non-blocking check on the pinned shutdown future.

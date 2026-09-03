@@ -2,10 +2,14 @@
 //! bank.
 //!
 //! Everything else in this crate stores what WAS true. This stores what is
-//! being worked on: the open commitment, what is done, what is not, and the
-//! next action. See `0012_task_ledger.sql` for why that is a separate tier
-//! rather than more facts, and why the key is the bank rather than the
-//! session.
+//! being worked on: the open commitment, what is not done, and the next
+//! action. See `0012_task_ledger.sql` for why that is a separate tier rather
+//! than more facts, and why the key is the bank rather than the session.
+//!
+//! There is no "what is done" field. There was one until migration `0013`,
+//! and on all five live rows read before anything consumed them it was a
+//! shorter copy of a `memory_nodes` row from the same job. Completed steps
+//! are facts, and the fact tier already holds them.
 //!
 //! **Nothing reads this yet.** [`get`] exists so the write path can be
 //! verified and the rows inspected; no recall or hook path calls it. The read
@@ -50,7 +54,6 @@ pub const MAX_ANCHORS_CHARS: usize = 4000;
 pub struct TaskLedger {
     pub bank_id: String,
     pub goal: String,
-    pub done: String,
     pub open: String,
     pub next_action: String,
     /// JSON object: `{"branch": …, "head": …, "paths": [...]}`.
@@ -65,7 +68,6 @@ pub struct TaskLedger {
 #[derive(Debug, Clone, Default)]
 pub struct LedgerUpdate<'a> {
     pub goal: &'a str,
-    pub done: &'a str,
     pub open: &'a str,
     pub next_action: &'a str,
     pub anchors: &'a str,
@@ -110,12 +112,11 @@ pub fn upsert(db: &Db, bank_id: &str, u: &LedgerUpdate<'_>) -> Result<TaskLedger
     db.write(|tx| {
         tx.execute(
             "INSERT INTO task_ledger
-             (bank_id, goal, done, open, next_action, anchors,
+             (bank_id, goal, open, next_action, anchors,
               session_id, job_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
          ON CONFLICT(bank_id) DO UPDATE SET
              goal        = excluded.goal,
-             done        = excluded.done,
              open        = excluded.open,
              next_action = excluded.next_action,
              anchors     = excluded.anchors,
@@ -125,7 +126,6 @@ pub fn upsert(db: &Db, bank_id: &str, u: &LedgerUpdate<'_>) -> Result<TaskLedger
             rusqlite::params![
                 bank_id,
                 cap(u.goal, MAX_FIELD_CHARS),
-                cap(u.done, MAX_FIELD_CHARS),
                 cap(u.open, MAX_FIELD_CHARS),
                 cap(u.next_action, MAX_FIELD_CHARS),
                 anchors,
@@ -156,7 +156,7 @@ fn map_ledger_err(e: rusqlite::Error) -> Error {
 pub fn get(db: &Db, bank_id: &str) -> Result<Option<TaskLedger>> {
     let conn = db.read()?;
     conn.query_row(
-        "SELECT bank_id, goal, done, open, next_action, anchors,
+        "SELECT bank_id, goal, open, next_action, anchors,
                 session_id, job_id, created_at, updated_at
            FROM task_ledger WHERE bank_id = ?1",
         [bank_id],
@@ -164,14 +164,13 @@ pub fn get(db: &Db, bank_id: &str) -> Result<Option<TaskLedger>> {
             Ok(TaskLedger {
                 bank_id: r.get(0)?,
                 goal: r.get(1)?,
-                done: r.get(2)?,
-                open: r.get(3)?,
-                next_action: r.get(4)?,
-                anchors: r.get(5)?,
-                session_id: r.get(6)?,
-                job_id: r.get(7)?,
-                created_at: r.get(8)?,
-                updated_at: r.get(9)?,
+                open: r.get(2)?,
+                next_action: r.get(3)?,
+                anchors: r.get(4)?,
+                session_id: r.get(5)?,
+                job_id: r.get(6)?,
+                created_at: r.get(7)?,
+                updated_at: r.get(8)?,
             })
         },
     )
@@ -279,13 +278,13 @@ mod tests {
             "b",
             &LedgerUpdate {
                 goal: "g",
-                done: &long,
+                open: &long,
                 ..Default::default()
             },
         )
         .expect("upsert");
-        assert!(led.done.len() <= MAX_FIELD_CHARS);
-        assert!(!led.done.is_empty());
+        assert!(led.open.len() <= MAX_FIELD_CHARS);
+        assert!(!led.open.is_empty());
     }
 
     #[test]

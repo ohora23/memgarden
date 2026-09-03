@@ -70,16 +70,9 @@ async fn stub_chat(
     // empty — pre-existing, and left alone.)
     let system = body["system"].as_str().unwrap_or("");
     if system.contains("CURRENT WORKING STATE") {
-        // Deliberately slow, and the delay is the point. `await_job` polls
-        // every 20 ms, so a stub that answered instantly would let the flush
-        // and the ledger land inside one poll and make their ORDER
-        // unobservable — the ordering test would then pass either way. On the
-        // real daemon this call took over a minute.
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         return axum::Json(json!({
             "response": json!({
                 "goal": "stub goal",
-                "done": "stub done",
                 "open": "stub open",
                 "next_action": "stub next",
             })
@@ -1636,7 +1629,8 @@ async fn a_real_world_bank_id_survives_the_url_path() {
 // Task ledger (migration 0012)
 // ---------------------------------------------------------------------------
 
-/// Waits for the bank's ledger row, which lands *after* the job goes terminal.
+/// Waits for the bank's ledger row, which lands on its own schedule: the
+/// call is spawned at POST and shares nothing with the job's status.
 async fn await_ledger(db: &Db, bank_id: &str) -> memgarden_store::task_ledger::TaskLedger {
     let deadline = std::time::Instant::now() + Duration::from_secs(12);
     loop {
@@ -1651,20 +1645,26 @@ async fn await_ledger(db: &Db, bank_id: &str) -> memgarden_store::task_ledger::T
     }
 }
 
-/// The write path exists and is reached from a finished retain job.
+/// The write path exists and is reached from the POST, not from the job.
+///
+/// No worker is started, so the queued task is never consumed: a ledger row
+/// that appears anyway can only have come from the handler. That is the
+/// property the first five live rows were missing — written at the end of a
+/// serial worker's queue, they arrived 107 · 102 · 116 · 63 · 19 minutes
+/// after the transcript they described, and four of the five named a goal
+/// that was already finished.
 ///
 /// This is the only test in the file that turns `write_task_ledger` on, and it
-/// asserts the two things the wiring can get wrong in a way nothing else would
-/// notice: that the ledger row is written at all, and that its `anchors` carry
+/// also asserts the two things the wiring can get wrong in a way nothing else
+/// would notice: that the row is written at all, and that its `anchors` carry
 /// the daemon's own values rather than anything the model produced.
 #[tokio::test]
-async fn the_task_ledger_is_written_when_a_job_finishes() {
+async fn the_task_ledger_is_written_when_a_job_is_queued_not_when_it_finishes() {
     let (url, calls) = spawn_stub_ollama(vec![]).await;
-    let harness = with_worker(&url, |cfg| {
+    let (harness, _rx, _state) = build(&url, |cfg| {
         cfg.retain.chunk_size = 4000;
         cfg.retain.write_task_ledger = true;
-    })
-    .await;
+    });
     memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
 
     let response = harness
@@ -1692,31 +1692,23 @@ async fn the_task_ledger_is_written_when_a_job_finishes() {
         .unwrap()
         .to_string();
 
-    let job = await_job(&harness.db, &job_id).await;
-    assert_eq!(job.status, "done");
-    // One per chunk, plus exactly one for the ledger. The cost of this
-    // feature is a number, and this is where it is written down.
-    assert_eq!(
-        calls.load(Ordering::SeqCst) as i64,
-        job.chunks_total + 1,
-        "the ledger must add exactly one Ollama call per job"
-    );
-
-    // The ordering property, asserted because it is invisible otherwise: the
-    // job's terminal status must be settled BEFORE the ledger call, not after.
-    // `await_job` returns as soon as the status is terminal, so a ledger
-    // written by then would mean the flush waited on an Ollama round trip —
-    // which is what this code did for one commit, delaying every job's status
-    // by over a minute and losing it entirely when the daemon was killed
-    // inside the window.
-    assert_eq!(
-        memgarden_store::task_ledger::get(&harness.db, "b1").unwrap(),
-        None,
-        "the ledger must not have been written yet when the status went terminal"
-    );
-
     let led = await_ledger(&harness.db, "b1").await;
+
+    // Nothing consumed the queue, so the job is exactly where the POST left
+    // it, and the one Ollama call that happened is the ledger's. The cost of
+    // this feature is a number, and this is where it is written down.
+    let job = memgarden_store::retain_jobs::get(&harness.db, &job_id)
+        .unwrap()
+        .expect("job row");
+    assert_eq!(job.status, "pending", "no worker is running in this test");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "exactly one Ollama call per job for the ledger, and it must not wait for extraction"
+    );
+
     assert_eq!(led.goal, "stub goal");
+    assert_eq!(led.open, "stub open");
     assert_eq!(led.next_action, "stub next");
     assert_eq!(led.session_id.as_deref(), Some("sess-ledger"));
     assert_eq!(led.job_id.as_deref(), Some(job_id.as_str()));
