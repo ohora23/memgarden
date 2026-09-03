@@ -121,6 +121,7 @@ regardless of how much of the work it saw.
 | 2026-09-03 | 1 | 0 | 0 | first live row — no collapse, one fabricated path, 107 min stale |
 | 2026-09-03 | 1 | 0 | 0 | third writer — 18 chunks retook the row from the 1-chunk job; 116 min stale; `next_action` orders a merge that happened 26 s *before* the job was queued |
 | 2026-09-03 | 1 | 0 | 0 | fourth writer — 7 chunks replaced 18; the first resumable row, 63 min stale, `open` holds two transient API errors; a following 0-fact job did **not** overwrite it |
+| 2026-09-03 | 1 | 0 | 0 | fifth writer — 3 chunks replaced 7; `next_action` orders a merge done 13 s *before* the POST (second time); 19 min stale; 0 anchor paths |
 
 ### 2026-09-03 — the first live row
 
@@ -314,6 +315,47 @@ drops a reply with an empty `goal` (or an empty tail), so this is the first
 evidence that guard does what it is for — it is the exact shape of the
 `/config` overwrite in the second row, and this time nothing was lost. Whether
 it skipped on the tail or on the goal is not in the INFO log.
+
+### 2026-09-03, 15:09 UTC — the fifth row, and the third row's shape repeats
+
+A 3-chunk job (18 facts, `done`, 16 min) queued at 14:50:22 replaced the
+7-chunk row at 15:09:
+
+```
+goal         PR #51 머지
+done         PR #50 머지
+open         CI가 아직 진행 중입니다.
+next_action  CI가 끝나면 PR #51을 머지합니다.
+anchors      cwd=…/upgrade_contextswitching · paths=0
+```
+
+**Q3/Q12 — the third row's defect is a pattern, not a one-off.** PR #51 was
+merged at 14:50:09, **13 seconds before the job was POSTed**. Row 3 had the
+same shape at 26 seconds. Both times the transcript tail ended with the
+operator announcing an action and the action completing, and both times the
+writer kept the announcement. That is 2 of 5 rows with an identical, specific
+failure — a stale commitment manufactured at write time from a tail that
+already contained the outcome — and 4 of 5 rows landing with the goal done.
+This is a **prompt** problem (the content lever in §5), independent of lag: the
+lag here was only 19 minutes (job 16 min + ledger call 163 s).
+
+**Q5 — `done` ⊂ `memory_nodes`, 5 of 5.** `PR #50 머지` is the node *"PR #50 was
+merged with a squash merge, and the master branch became `ee566db`"*, shorter.
+
+**Q7 — 0 anchor paths, the second time.** Coverage across the five rows is
+7 · 0 · 5 · 1 · 0. The transcript this job saw includes edits to
+`docs/evidence/task-ledger-observation.md` and to the Obsidian note, and the
+nodes from the same job name the document; `anchors` names nothing. When
+`paths` is empty the staleness check has only `cwd`, which never moves.
+
+**Q14/Q15 — 18 → 1 → 18 → 7 → 3 chunks.** Four replacements, three by a
+smaller job. This time the smaller job's row *is* worse than the one it
+replaced (row 4 was actionable; this one orders a finished merge), so Q15's
+answer is now "sometimes, and chunk count does not predict which" — the
+refutation of the `chunks_total` candidate stands, and no other cheap proxy
+has appeared. What separates the good row from the two bad ones is not size or
+recency but **whether the tail ended on an announcement**; that is a property
+of the transcript, not of the job.
 
 ## 5. The decision this feeds
 
