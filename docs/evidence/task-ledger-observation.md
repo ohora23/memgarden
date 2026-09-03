@@ -119,6 +119,7 @@ regardless of how much of the work it saw.
 | date | rows | collapsed | hollow | note |
 |---|---|---|---|---|
 | 2026-09-03 | 1 | 0 | 0 | first live row — no collapse, one fabricated path, 107 min stale |
+| 2026-09-03 | 1 | 0 | 0 | third writer — 18 chunks retook the row from the 1-chunk job; 116 min stale; `next_action` orders a merge that happened 26 s *before* the job was queued |
 
 ### 2026-09-03 — the first live row
 
@@ -198,6 +199,61 @@ The honest reading is that "one row per bank, replace on write" was chosen to
 avoid stale commitments and, in doing so, made the ledger **lossy against the
 most recent small event**. Q14 is now the question that matters most.
 
+### 2026-09-03, two hours later — the 18-chunk job took the row back
+
+The `/config` row lasted 128 minutes. A third job for the bank (18 chunks, 97
+facts, the session that wrote PR #49) finished at 19:13 UTC and replaced it:
+
+```
+goal         PR #49를 머지하고 며칠 관측을 기다리자
+done         CI 완료
+open         덮어쓰기가 얼마나 흔한가(Q14)를 확인해야 함
+next_action  PR #49를 머지합니다.
+anchors      cwd=…/upgrade_contextswitching · paths=5
+```
+
+**Q1/Q3 — not resumable, and wrong in the expensive way again.** PR #49 was
+merged at 17:19:08 UTC. The job was queued at 17:19:34 — **26 seconds after
+the merge**, so the transcript almost certainly carried the outcome — and the
+row was written at 19:15. A session acting on `next_action` would try to merge
+a merged PR. This is the second stale-commitment row out of three, and the
+first where the staleness is not the pipeline's: the *goal was already done
+when the transcript was captured*, and the writer reported the announced
+intent rather than the result that followed it.
+
+**Q2/Q7 — the nouns and the anchors are right.** `PR #49`, `CI`, `Q14` are the
+transcript's own words. All 5 paths exist, including the Obsidian note whose
+filename the first row fabricated — this time it is the real one.
+
+**Q5 — `done` carried nothing new.** `done` says `CI 완료`. The same job wrote
+99 `memory_nodes`, one of which reads *"User decided to merge PR #49 after CI
+passed … CI completed successfully"*. Three rows in, `done` has never held
+anything the nodes did not, and has been shorter every time.
+
+**Q14/Q16 — the bank's row has now had three writers.** In order of finishing:
+18 chunks (79 facts) → 1 chunk (1 fact) → 18 chunks (97 facts). Two
+replacements, one of them by a smaller job. The row currently holds the
+richest version, but only because nothing was queued behind the third job;
+"the newest large job wins" is not a policy that produced this, it is the
+absence of a competitor.
+
+**Q11 — 116 minutes, and the lag is queue wait as much as job duration.** The
+three rows' lags are 107, 102 and 116 minutes. The middle one is the 1-chunk
+job, whose own extraction took **3 minutes**; it spent the other 99 waiting
+behind the 18-chunk job in the serial worker. So the "write at job start"
+candidate in §5 only helps if *start* means the POST, not the moment the
+worker picks the task up — the queue is the lag on small jobs.
+
+**Q9 — the ledger call itself.** From the daemon log, `task ledger written`
+follows `retain job finished` by 167 s, 34 s and 148 s. `elapsed_ms` does not
+include it (it runs after the terminal flush, PR #47), but the worker is
+serial, so each call is that long added to the wait of whatever is queued
+next — the 1-chunk job above started only after the first row's 167 s.
+
+**Q12 — 2 of 3 rows named a goal that was already finished** when the row
+landed (the note in row 1, the merge here). Q13 stands: `cwd` and the 5 paths
+would all check out, and the staleness defence would pass this row through.
+
 ## 5. The decision this feeds
 
 One of three, and the third is a real option rather than a polite one:
@@ -216,6 +272,9 @@ One of three, and the third is a real option rather than a polite one:
      it); or re-read the tail at write time; or spawn the call detached at start
      so it neither delays the flush nor waits for the chunks. Picking one before
      Q11 says how common the lag is would be fitting a fix to a single row.
+     **After the third row:** "start" has to mean the POST. The worker is
+     serial and a 1-chunk job spent 99 of its 102 minutes queued, so a ledger
+     written when the worker picks the task up is late by nearly as much.
 3. **Turn it off** — `retain.write_task_ledger = false`. If the rows say nothing
    a resuming session could not get faster elsewhere, the honest move is to stop
    paying one Ollama call per retain job for them. The tier being architecturally
