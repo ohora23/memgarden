@@ -400,8 +400,10 @@ pub struct RetainConfig {
     /// the chunk prompt without displacing the guidelines; a KNN over a
     /// 3,000-character chunk gets vague past roughly that many anyway.
     pub supersession_candidates: usize,
-    /// Whether a finished retain job also writes the bank's `task_ledger`
-    /// row: the current goal, what is done, what is open, the next action.
+    /// Whether queuing a retain job also writes the bank's `task_ledger`
+    /// row: the current goal, what is open, the next action. The call runs
+    /// detached from the job, off the transcript tail, the moment the job is
+    /// accepted.
     ///
     /// **On**, because the row exists to be looked at. Nothing reads the
     /// table yet — the read path is deliberately unbuilt until the stored

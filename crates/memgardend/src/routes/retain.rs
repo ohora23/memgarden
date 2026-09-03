@@ -216,6 +216,8 @@ async fn retain_inner(
         .or_else(|| body.session_id.clone())
         .unwrap_or_else(|| job_id.clone());
 
+    let ledger_cwd = body.cwd.clone();
+
     // Normalization + double tokenization + four SQLite round trips: one
     // spawn_blocking, not five.
     let prepared = {
@@ -278,6 +280,15 @@ async fn retain_inner(
                 return Err(ApiError::too_many_requests(
                     "retain queue byte budget exhausted; retry shortly",
                 ));
+            }
+            // The task ledger, from the tail already in hand. Spawned here
+            // rather than written by the worker when the job ends: the
+            // worker is serial, so a row written at the end is born one
+            // queue wait plus one job behind the transcript — 107 · 102 ·
+            // 116 · 63 · 19 minutes on the first five live rows. Detached,
+            // so it delays neither the 202 nor the job (`retain/ledger.rs`).
+            if state.cfg.retain.write_task_ledger {
+                crate::retain::ledger::spawn(state.clone(), &task, ledger_cwd.as_deref());
             }
             // The permit was reserved before any DB work, so this cannot
             // fail and cannot block.

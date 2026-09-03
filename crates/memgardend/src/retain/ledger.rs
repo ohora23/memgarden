@@ -1,9 +1,24 @@
-//! The task-ledger write path (migration `0012`).
+//! The task-ledger write path (migrations `0012`, `0013`).
 //!
-//! One extra Ollama call at the end of a retain job, over the **tail** of the
-//! transcript, producing the bank's current working state: goal, done, open,
-//! next action. Written to `task_ledger`, one row per bank, replacing whatever
-//! was there.
+//! One extra Ollama call per retain job, over the **tail** of the transcript,
+//! producing the bank's current working state: goal, open, next action.
+//! Written to `task_ledger`, one row per bank, replacing whatever was there.
+//!
+//! # When: at POST, detached — not at the end of the job
+//!
+//! The tail is in hand the moment the job is queued, and the ledger needs
+//! nothing the extraction produces. It used to run after the job's terminal
+//! flush anyway, and the first five live rows were born 107 · 102 · 116 · 63
+//! · 19 minutes behind the transcript they described — one queue wait plus
+//! one job each, on a serial worker. The 102 was a 1-chunk job whose own
+//! work took three minutes; the other 99 were spent queued behind an
+//! 18-chunk job. By the time four of the five rows existed, the goal they
+//! named was finished (`docs/evidence/task-ledger-observation.md` §4).
+//!
+//! So [`spawn`] runs the call as its own task from the retain handler. It
+//! still takes the single Ollama permit, so it interleaves with whatever
+//! chunk is extracting rather than waiting for the whole queue, and it never
+//! sits in front of a job's status.
 //!
 //! **Nothing reads it.** That is the point of this stage: the rows accumulate
 //! so their content can be judged before any of it reaches a prompt. The local
@@ -83,6 +98,9 @@ const _: () = assert!(FIELD_MAX_CHARS <= 2000, "GBNF repetition limit");
 /// The model's reply. Every field is **required** in the schema and
 /// non-optional here.
 ///
+/// No `done`: on all five live rows it duplicated a `memory_nodes` row from
+/// the same job (migration `0013`).
+///
 /// This codebase has been bitten three times by asking this model for
 /// optional structure, most recently CE-12's `superseded_by`, which came back
 /// unfilled on every call. A field the model may omit is a field it will
@@ -91,7 +109,6 @@ const _: () = assert!(FIELD_MAX_CHARS <= 2000, "GBNF repetition limit");
 #[derive(Debug, Deserialize)]
 struct LedgerReply {
     goal: String,
-    done: String,
     open: String,
     next_action: String,
 }
@@ -102,11 +119,10 @@ fn schema() -> Value {
         "type": "object",
         "properties": {
             "goal": field,
-            "done": field,
             "open": field,
             "next_action": field,
         },
-        "required": ["goal", "done", "open", "next_action"],
+        "required": ["goal", "open", "next_action"],
     })
 }
 
@@ -115,13 +131,20 @@ You record the CURRENT WORKING STATE of a software project from the tail of a \
 work transcript. You are not summarising the conversation and you are not \
 extracting facts.
 
-Report only what is true at the END of the transcript. Work that was finished \
-and moved past belongs in `done`, not in `goal`.
+Report only what is true at the END of the transcript.
 
-goal        The one thing being worked toward right now. One sentence.
-done        Steps completed, newest first, one per line.
-open        Unfinished steps, blockers, unresolved decisions, one per line.
-next_action The single next thing to do. One sentence.
+goal        The one thing still being worked toward at the end. One sentence.
+open        Unfinished work items, blockers, unresolved decisions, one per \
+line. Work items only: a tool error, an API error, a retry or a timeout is \
+NOT an open item unless the transcript says the work stopped because of it.
+next_action The single next thing to do, which nobody has started yet. One \
+sentence.
+
+An action the transcript shows being announced AND then carried out — a \
+command run, a PR merged, a file written, a test passed — is finished. It is \
+not the goal and it is not the next action, even when the announcement is \
+the last thing said. Look past the announcement to the result that follows \
+it. Do not report completed steps at all; they are stored elsewhere.
 
 Use the transcript's own nouns — file paths, identifiers, PR numbers, branch \
 names. A reader who has forgotten everything must be able to act on this.
@@ -130,7 +153,7 @@ If the transcript does not say, write an empty string for that field. Never \
 guess, and never carry over a goal the transcript shows as finished.
 
 Reply with ONLY this JSON object:
-{\"goal\": \"...\", \"done\": \"...\", \"open\": \"...\", \"next_action\": \"...\"}
+{\"goal\": \"...\", \"open\": \"...\", \"next_action\": \"...\"}
 
 Do NOT use markdown fences or any text outside the JSON object.";
 
@@ -145,46 +168,83 @@ fn anchors(task: &RetainTask, cwd: Option<&str>) -> String {
     json!({"cwd": cwd, "paths": paths}).to_string()
 }
 
-/// Writes the bank's ledger from this job's transcript.
+/// What the ledger call needs, copied out of the task before the task is
+/// handed to the worker. The tail is at most [`TAIL_CHARS`]; nothing here
+/// grows with the transcript.
+pub struct LedgerInput {
+    job_id: String,
+    bank_id: String,
+    session_id: Option<String>,
+    tail: String,
+    anchors: String,
+}
+
+impl LedgerInput {
+    pub fn of(task: &RetainTask, cwd: Option<&str>) -> Self {
+        LedgerInput {
+            job_id: task.job_id.clone(),
+            bank_id: task.bank_id.clone(),
+            session_id: task.session_id.clone(),
+            tail: tail_of(&task.transcript, TAIL_CHARS).to_string(),
+            anchors: anchors(task, cwd),
+        }
+    }
+}
+
+/// Starts the ledger write for a job that is about to be queued, and returns
+/// at once.
 ///
-/// Every failure is swallowed by the caller: the ledger is an addition to a
-/// retain job, never a reason for one to fail. A job that ingested its facts
-/// and could not write a ledger has done the thing it exists to do.
-pub async fn write(
-    state: &AppState,
-    task: &RetainTask,
-    cwd: Option<&str>,
-) -> Result<(), OllamaError> {
-    let tail = tail_of(&task.transcript, TAIL_CHARS);
-    if tail.trim().is_empty() {
+/// Every failure is logged and dropped: the ledger is an addition to a
+/// retain job, never a reason for one to fail or a thing for a client to
+/// wait on. A job that ingests its facts and has no ledger has done the thing
+/// it exists to do.
+pub fn spawn(state: AppState, task: &RetainTask, cwd: Option<&str>) {
+    let input = LedgerInput::of(task, cwd);
+    tokio::spawn(async move {
+        let job_id = input.job_id.clone();
+        if let Err(e) = write(&state, input).await {
+            tracing::warn!(job_id = %job_id, error = %e, "task ledger extraction failed");
+        }
+    });
+}
+
+/// One Ollama call over the tail, then the upsert. Skips silently when the
+/// tail is empty or the model reports no goal.
+pub async fn write(state: &AppState, input: LedgerInput) -> Result<(), OllamaError> {
+    if input.tail.trim().is_empty() {
         return Ok(());
     }
 
     let reply: LedgerReply = state
         .ollama
-        .chat_json_background_bounded(SYSTEM, tail, &schema(), REPLY_MAX_TOKENS, None)
+        .chat_json_background_bounded(SYSTEM, &input.tail, &schema(), REPLY_MAX_TOKENS, None)
         .await?;
 
     // An empty goal is the model's honest "the transcript does not say", and
     // the store refuses it. Returning early keeps that out of the logs as an
-    // error, because it is not one.
+    // error, because it is not one. INFO rather than DEBUG: the first live
+    // skip could not be told apart from a call still running.
     if reply.goal.trim().is_empty() {
-        tracing::debug!(job_id = %task.job_id, "task ledger: no goal in transcript tail, not written");
+        tracing::info!(job_id = %input.job_id, "task ledger: no goal in transcript tail, not written");
         return Ok(());
     }
 
-    let anchors = anchors(task, cwd);
+    let LedgerInput {
+        job_id,
+        bank_id,
+        session_id,
+        anchors,
+        ..
+    } = input;
     let db = state.db.clone();
-    let bank_id = task.bank_id.clone();
-    let session_id = task.session_id.clone();
-    let job_id = task.job_id.clone();
+    let log_job = job_id.clone();
+    let log_bank = bank_id.clone();
     let stored = tokio::task::spawn_blocking(move || {
         task_ledger::upsert(
             &db,
             &bank_id,
             &LedgerUpdate {
                 goal: &reply.goal,
-                done: &reply.done,
                 open: &reply.open,
                 next_action: &reply.next_action,
                 anchors: &anchors,
@@ -197,11 +257,11 @@ pub async fn write(
 
     match stored {
         Ok(Ok(_)) => {
-            tracing::info!(job_id = %task.job_id, bank_id = %task.bank_id, "task ledger written")
+            tracing::info!(job_id = %log_job, bank_id = %log_bank, "task ledger written")
         }
-        Ok(Err(e)) => tracing::warn!(job_id = %task.job_id, error = %e, "task ledger store failed"),
+        Ok(Err(e)) => tracing::warn!(job_id = %log_job, error = %e, "task ledger store failed"),
         Err(e) => {
-            tracing::warn!(job_id = %task.job_id, error = %e, "task ledger write task panicked")
+            tracing::warn!(job_id = %log_job, error = %e, "task ledger write task panicked")
         }
     }
     Ok(())

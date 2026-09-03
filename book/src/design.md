@@ -33,7 +33,7 @@ SQL), `memgardend` (the daemon), `memgarden-cli` (the hook binary).
 
 Every table up to schema v11 stores things that **were** true — a fact, when it
 was said, what retracted it. None of them holds what is being worked on *now*:
-the open goal, what is done, what is blocked, the next action. So a session
+the open goal, what is blocked, the next action. So a session
 that resumes after a break gets semantically similar facts and no answer to
 "where was I".
 

@@ -2021,11 +2021,11 @@ fn fresh_database_has_the_0012_task_ledger() {
     let db = Db::open_memory().unwrap();
     let conn = db.read().unwrap();
 
-    assert_eq!(memgarden_store::LATEST_VERSION, 12);
+    assert_eq!(memgarden_store::LATEST_VERSION, 13);
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 12);
+    assert_eq!(version, 13);
 
     let mut stmt = conn.prepare("PRAGMA table_info(task_ledger)").unwrap();
     let cols: Vec<(String, i64, Option<String>)> = stmt
@@ -2034,7 +2034,14 @@ fn fresh_database_has_the_0012_task_ledger() {
         .map(|r| r.unwrap())
         .collect();
 
-    for name in ["goal", "done", "open", "next_action"] {
+    // `done` was dropped by 0013: on all five live rows it duplicated a
+    // `memory_nodes` row from the same job. A column that comes back by
+    // accident would be filled by nothing and read by nothing.
+    assert!(
+        !cols.iter().any(|(n, _, _)| n == "done"),
+        "task_ledger.done must stay dropped"
+    );
+    for name in ["goal", "open", "next_action"] {
         let col = cols
             .iter()
             .find(|(n, _, _)| n == name)
@@ -2072,4 +2079,58 @@ fn fresh_database_has_the_0012_task_ledger() {
         sql.contains("ON DELETE CASCADE"),
         "a deleted bank must take its ledger with it: {sql}"
     );
+}
+
+/// 0013 is a `DROP COLUMN` on a table that already holds live rows, and a
+/// dropped column must take nothing else with it: the row, its goal and its
+/// anchors survive the upgrade.
+#[test]
+fn upgrading_from_v12_drops_done_and_keeps_the_ledger_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v12.db");
+    {
+        let db = Db::open(&path).unwrap();
+        // Rewind a fresh v13 database to the v12 shape: the column back, the
+        // version back, the audit row gone.
+        db.write(|tx| {
+            tx.execute_batch(
+                "ALTER TABLE task_ledger ADD COLUMN done TEXT NOT NULL DEFAULT '';
+                 DELETE FROM schema_migrations WHERE version = 13;
+                 PRAGMA user_version = 12;
+                 INSERT INTO banks (bank_id, created_at, updated_at) VALUES ('b', 0, 0);
+                 INSERT INTO task_ledger
+                   (bank_id, goal, done, open, next_action, anchors, created_at, updated_at)
+                 VALUES ('b', 'ship it', 'CI passed', 'docs', 'merge', '{\"cwd\":\"/w\"}', 1, 2);",
+            )
+            .map_err(store_err)?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    let db = Db::open(&path).unwrap();
+    let conn = db.read().unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, memgarden_store::LATEST_VERSION);
+
+    let mut stmt = conn.prepare("PRAGMA table_info(task_ledger)").unwrap();
+    let cols: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(!cols.iter().any(|c| c == "done"), "{cols:?}");
+    drop(stmt);
+    drop(conn);
+
+    let led = memgarden_store::task_ledger::get(&db, "b")
+        .unwrap()
+        .expect("the row survives the column drop");
+    assert_eq!(led.goal, "ship it");
+    assert_eq!(led.open, "docs");
+    assert_eq!(led.next_action, "merge");
+    assert_eq!(led.anchors, "{\"cwd\":\"/w\"}");
+    assert_eq!(led.created_at, 1);
 }

@@ -1,0 +1,16 @@
+-- MemGarden schema v13: the task ledger loses `done`.
+--
+-- Five live rows were read before anything consumed them
+-- (docs/evidence/task-ledger-observation.md §4, 2026-09-03), and in every one
+-- of them `done` was a shorter copy of a `memory_nodes` row the same retain
+-- job had already written. That is what the fact tier is FOR: a completed
+-- step is a fact, and the extractor already stores it with a date and a
+-- source. The ledger is the other tier — what is open and what to do next —
+-- and a field that duplicates the first tier in fewer words is text a reader
+-- has to skip, plus up to 500 characters the model must produce on every
+-- call.
+--
+-- DROP COLUMN in place, not a table rebuild: one row per bank, no index, no
+-- view and no trigger names the column, and the bundled SQLite drops a
+-- column of a STRICT table directly.
+ALTER TABLE task_ledger DROP COLUMN done;

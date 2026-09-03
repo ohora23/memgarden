@@ -32,7 +32,7 @@ collapsed = empty = 0
 for r in rows:
     when = dt.datetime.fromtimestamp(r["updated_at"] / 1000).strftime("%m-%d %H:%M")
     print(f"\n=== {r['bank_id']}  ({when})")
-    for f in ("goal", "done", "open", "next_action"):
+    for f in ("goal", "open", "next_action"):
         v = (r[f] or "").strip()
         print(f"  {f:12} {v if v else '(empty)'}")
     try:
@@ -47,8 +47,8 @@ for r in rows:
     if (r["open"] or "").strip() and (r["open"] or "").strip() == (r["next_action"] or "").strip():
         print("  ^^ FLAG: open == next_action (the two fields collapsed)")
         collapsed += 1
-    if not (r["done"] or "").strip() and not (r["open"] or "").strip():
-        print("  ^^ FLAG: both done and open are empty (goal with no substance)")
+    if not (r["open"] or "").strip() and not (r["next_action"] or "").strip():
+        print("  ^^ FLAG: both open and next_action are empty (a goal with nothing to do)")
         empty += 1
 
 print(f"\n{len(rows)} row(s) · collapsed open/next_action: {collapsed} · hollow: {empty}")

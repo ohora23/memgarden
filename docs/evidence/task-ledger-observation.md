@@ -54,8 +54,9 @@ The first live row had `open` and `next_action` byte-identical. One toy
 transcript proves nothing; a pattern is a prompt defect.
 
 - [ ] Q4 How many rows collapse `open` into `next_action`? (the script counts)
-- [ ] Q5 Does `done` ever carry something `memory_nodes` does not already have?
-      If never, `done` is duplicated storage and should go.
+- [x] Q5 Does `done` ever carry something `memory_nodes` does not already have?
+      If never, `done` is duplicated storage and should go. **Never, 5 of 5 —
+      dropped by migration `0013` (§7).**
 - [ ] Q6 Does `goal` survive its task finishing, or does the next job replace it?
       A stale `goal` is the survey's failure mode arriving.
 
@@ -393,3 +394,46 @@ the rows answers a cheaper question ("is there anything here") that has to be
 yes before the expensive one is worth asking.
 
 If §4 says yes, the A/B that follows needs its own design and its own corpus.
+
+## 7. Decision — 2026-09-03, after five rows: fix the writer first
+
+Option 2 of §5, chosen by the operator on the five rows above. Not option 1,
+because 4 of 5 rows named a finished goal and one of them would have sent a
+session to merge a merged PR. Not option 3 yet, because row 4 was a row a cold
+session could have acted on, and the three defects that spoiled the others
+each have a cheap, specific fix that the rows themselves point at. Five more
+live rows through the same script decide between 1 and 3.
+
+What changed, and the row that justifies each:
+
+1. **Prompt (content).** Rows 3 and 5: the tail ended with an action announced
+   and then carried out, and the writer kept the announcement. The prompt now
+   says an announced-and-completed action is finished and to look past the
+   announcement to its result. Row 4: `open` held two transient API errors;
+   the prompt now says `open` is work items only, and that tool or API errors
+   are not one unless the work stopped because of them.
+2. **`done` is gone** (migration `0013`). Q5: on all five rows it was a shorter
+   copy of a `memory_nodes` row the same job had already written. Completed
+   steps are facts; the fact tier has them.
+3. **Written at POST, detached** (`retain/ledger.rs::spawn`). Q11: 107 · 102 ·
+   116 · 63 · 19 minutes stale, and the 102 was 99 minutes of queue. The tail
+   is in hand when the job is accepted and the ledger needs nothing from the
+   extraction, so the call now starts from the handler as its own task. It
+   still takes the single Ollama permit, so on a busy daemon it lands after
+   the chunk in flight rather than after the queue. The guard for an empty
+   goal now logs at INFO, because the one live skip (the 0-fact job after
+   row 4) could not be told from a call still running.
+
+What deliberately did not change:
+
+- **Precedence.** `chunks_total` was refuted by row 4 and nothing cheaper
+  replaced it. With the write at POST time, "last job to finish" becomes
+  "last transcript POSTed", which is closer to "newest state" than before,
+  and that is the whole of the fix for now.
+- **Anchor coverage** (7 · 0 · 5 · 1 · 0 paths). That is the Stage 4 work in
+  `.omc/plans/magic-context-parity.md`, not a prompt or a timing change.
+
+The re-observation gate: five more rows, same script, same questions. Q1 (could
+a cold session act on it) and Q3 (is anything wrong) are the ones that decide.
+If the announced-action shape returns after the prompt change, the content
+lever is exhausted and option 3 is the honest answer.
