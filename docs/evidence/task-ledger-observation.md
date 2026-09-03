@@ -120,6 +120,7 @@ regardless of how much of the work it saw.
 |---|---|---|---|---|
 | 2026-09-03 | 1 | 0 | 0 | first live row — no collapse, one fabricated path, 107 min stale |
 | 2026-09-03 | 1 | 0 | 0 | third writer — 18 chunks retook the row from the 1-chunk job; 116 min stale; `next_action` orders a merge that happened 26 s *before* the job was queued |
+| 2026-09-03 | 1 | 0 | 0 | fourth writer — 7 chunks replaced 18; the first resumable row, 63 min stale, `open` holds two transient API errors; a following 0-fact job did **not** overwrite it |
 
 ### 2026-09-03 — the first live row
 
@@ -188,7 +189,8 @@ Candidate directions, **none chosen** (see §5, and note this is a third lever
 distinct from content and timing):
 
 - Do not replace a row from a substantially smaller job — compare `chunks_total`
-  or covered byte range and keep the richer one.
+  or covered byte range and keep the richer one. **Refuted by the fourth row:**
+  the 7-chunk job that replaced 18 was the better row.
 - Merge rather than replace, which needs a second model call and reintroduces
   the contradiction-resolution problem `ledger.rs` explicitly avoided.
 - Key the ledger by something narrower than the bank so a `/config` aside and a
@@ -253,6 +255,65 @@ next — the 1-chunk job above started only after the first row's 167 s.
 **Q12 — 2 of 3 rows named a goal that was already finished** when the row
 landed (the note in row 1, the merge here). Q13 stands: `cwd` and the 5 paths
 would all check out, and the staleness defence would pass this row through.
+
+### 2026-09-03, the same evening — the first row a session could act on
+
+The session that ended 13:34 UTC (the handoff after PR #49) was retained as a
+7-chunk job that finished `partial` (6/7, 53 facts) at 14:35 and wrote the
+row at 14:37:
+
+```
+goal         Answer Q14: Determine how often a row gets replaced by a job covering fewer chunks
+done         Obsidian note updated with handoff section, title corrected to PR #45~#49, resume.md written, native memory refreshed, MEMORY.md pointer not duplicated
+open         API Error: 500 Internal server error; API Error: 529 Overloaded
+next_action  Run `scripts/ledger.sh` to observe the data and analyze the frequency of row replacement by smaller jobs
+anchors      cwd=…/upgrade_contextswitching · paths=1
+```
+
+**Q1/Q2 — yes, for the first time.** `goal` + `next_action` is exactly what
+the next session did: run `scripts/ledger.sh` and answer Q14. The nouns are
+the transcript's own (`Q14`, `scripts/ledger.sh`, `resume.md`, `PR #45~#49`),
+and nothing in `goal`/`done`/`next_action` is wrong.
+
+**Q3 — `open` is noise promoted to a field.** Two transient API errors from the
+client (`500`, `529 Overloaded`) are the whole of "what is outstanding". They
+are not wrong as facts — the same job stored each as a `memory_nodes` row — but
+a session told these are its open items would waste a turn on them. This is a
+different defect from row 1's fabrication: nothing invented, the wrong thing
+kept.
+
+**Q12 — 3 of 4 rows landed after their goal was done.** This one was born 63
+minutes behind (job 61 min, ledger call 155 s) and in that window the next
+session had run the script, written the third-row findings and merged PR #50.
+The row was correct and already executed by the time it existed. Q13 holds
+again: `cwd` and the one path check out.
+
+**Q5 — `done` is a subset for the fourth time.** Every clause of it (Obsidian
+note, `resume.md`, native memory, the `#45~#49` title fix) is a stored node
+from the same job.
+
+**Q7 — 1 path, and it is the least important one.** `resume.md` exists, but the
+session also wrote the Obsidian note, the memory file and `MEMORY.md`, all of
+which `done` names and `anchors` omits. Rows 1 and 3 had 7 and 5 paths; the
+writer's anchor coverage is uneven.
+
+**Q14/Q15 — the third replacement, again by a smaller job, and this time the
+smaller job was right.** Writers so far: 18 → 1 → 18 → 7 chunks. Two of three
+replacements went to fewer chunks. But this 7-chunk row is the best of the
+four, and the 18-chunk row it replaced ordered a merge that had already
+happened. §4's first candidate — *keep the richer row by `chunks_total`* —
+would have kept the wrong one. Chunk count measures how much transcript the
+job saw, not how recent or how relevant; Q15's warning was correct and the
+candidate is out.
+
+**The 0-fact job did not write.** A 1-chunk job queued 61 s later (the next
+session's opening exchange, 0 facts, 110 s of work after 62 min in the queue)
+finished at 14:39 and left the row alone: no `task ledger written`, no
+`extraction failed`. The only silent path in `ledger.rs` is the guard that
+drops a reply with an empty `goal` (or an empty tail), so this is the first
+evidence that guard does what it is for — it is the exact shape of the
+`/config` overwrite in the second row, and this time nothing was lost. Whether
+it skipped on the tail or on the goal is not in the INFO log.
 
 ## 5. The decision this feeds
 
