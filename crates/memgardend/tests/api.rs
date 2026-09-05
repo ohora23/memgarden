@@ -96,7 +96,17 @@ async fn healthz_reports_healthy() {
     let response = app.oneshot(get_request("/healthz")).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body["status"], "HEALTHY");
+    // The Ollama status is a process-wide atomic that the request path now
+    // moves: `dry_run_extract_unreachable_ollama_503` in this same binary
+    // flips it to `failing` while this test may be running. So the assertion
+    // is the invariant between the two fields, not an absolute — a healthy
+    // DB is HEALTHY exactly when Ollama is `ready`, DEGRADED otherwise.
+    let expected = if body["ollama"] == "ready" {
+        "HEALTHY"
+    } else {
+        "DEGRADED"
+    };
+    assert_eq!(body["status"], expected, "{body}");
     assert_eq!(body["schema_version"], memgarden_store::LATEST_VERSION);
 }
 
