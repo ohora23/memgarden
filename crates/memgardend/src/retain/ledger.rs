@@ -191,16 +191,31 @@ impl LedgerInput {
     }
 }
 
+/// At most one ledger call in flight, process-wide.
+///
+/// The Ollama semaphore is FIFO and the retain worker takes it per chunk, so
+/// every ledger task queued while the worker is between chunks runs *ahead*
+/// of the next chunk, and each can hold the permit for its whole deadline.
+/// Unbounded, N POSTs in a burst would stack N of those in front of
+/// extraction. Skipping is free: the row is replace-on-write, and the next
+/// retain for the bank rewrites it from a newer tail anyway.
+static IN_FLIGHT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
 /// Starts the ledger write for a job that is about to be queued, and returns
-/// at once.
+/// at once — or skips it when one is already running (see [`IN_FLIGHT`]).
 ///
 /// Every failure is logged and dropped: the ledger is an addition to a
 /// retain job, never a reason for one to fail or a thing for a client to
 /// wait on. A job that ingests its facts and has no ledger has done the thing
 /// it exists to do.
 pub fn spawn(state: AppState, task: &RetainTask, cwd: Option<&str>) {
+    let Ok(permit) = IN_FLIGHT.try_acquire() else {
+        tracing::debug!(job_id = %task.job_id, "task ledger: one already in flight, skipping");
+        return;
+    };
     let input = LedgerInput::of(task, cwd);
     tokio::spawn(async move {
+        let _permit = permit;
         let job_id = input.job_id.clone();
         if let Err(e) = write(&state, input).await {
             tracing::warn!(job_id = %job_id, error = %e, "task ledger extraction failed");

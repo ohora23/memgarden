@@ -126,11 +126,18 @@ so a larger `num_ctx` in the Modelfile only spends VRAM. The model is one line
 in `config.toml`: `[ollama] model = "qwen3:8b"`.
 
 If the card disappears — a driver that no longer matches the kernel, Secure
-Boot refusing the DKMS module — Ollama falls back to CPU silently and the
-daemon keeps answering HEALTHY. Recall is unaffected. Extraction slows about
-15× (0.25 → 3.8 minutes per chunk, measured on a Ryzen 9800X3D) and
-consolidation rounds stop finishing inside their deadline. When retain looks
-slow, check `nvidia-smi` before anything else.
+Boot refusing the DKMS module — Ollama falls back to CPU silently. Recall is
+unaffected. Extraction slows about 15× (0.25 → 3.8 minutes per chunk,
+measured on a Ryzen 9800X3D) and consolidation rounds stop finishing inside
+their deadline. The daemon says so in three places: `/healthz` turns
+`DEGRADED` with `ollama: cpu-only` (the prober reads `/api/ps` every 30 s) or
+`failing` (a call exhausted its retries; `ollama_last_error` has the reason);
+every settled retain job records the path it ran on in its `detail`
+(`"inference"`); and the recall hook shows one warning line in Claude Code
+per session. A reply that collapsed into one repeated character or phrase is
+refused at the boundary and retried at a higher temperature, so it never
+becomes a fact. When retain looks slow, `nvidia-smi` is still the first thing
+to check.
 
 ## Day to day
 

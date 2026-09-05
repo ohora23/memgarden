@@ -6,6 +6,21 @@ use serde_json::json;
 
 use crate::state::AppState;
 
+/// `HEALTHY` or `DEGRADED` for a daemon whose database answered. Pure, so
+/// it can be tested without touching the process-wide status atomics that a
+/// concurrently running test would also read.
+pub fn overall_status(
+    embedding: crate::embed::EmbedStatus,
+    ollama: crate::ollama::OllamaStatus,
+) -> &'static str {
+    if embedding == crate::embed::EmbedStatus::Error || ollama != crate::ollama::OllamaStatus::Ready
+    {
+        "DEGRADED"
+    } else {
+        "HEALTHY"
+    }
+}
+
 /// Pure liveness ping: touches nothing, always 200.
 pub async fn livez() -> &'static str {
     "ok"
@@ -54,19 +69,17 @@ pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
     let version = env!("CARGO_PKG_VERSION");
     let embedding = crate::embed::embed_status();
     let ollama = crate::ollama::ollama_status();
+    let ollama_last_error = crate::ollama::last_error()
+        .map(|(at, msg)| json!({"at": at, "error": msg}))
+        .unwrap_or(serde_json::Value::Null);
 
     match checked {
         Ok((Ok((schema_version, banks, nodes)), db_size_bytes)) => {
-            // DB is healthy; an embedding load error or an unreachable
-            // Ollama still count as service-degraded, not down — 200, not
-            // 503.
-            let status = if embedding == crate::embed::EmbedStatus::Error
-                || ollama == crate::ollama::OllamaStatus::Unreachable
-            {
-                "DEGRADED"
-            } else {
-                "HEALTHY"
-            };
+            // DB is healthy; an embedding load error, an unreachable Ollama
+            // or an Ollama whose model is off the GPU still count as
+            // service-degraded, not down — 200, not 503. `cpu-only` is the
+            // one that went unreported for three days.
+            let status = overall_status(embedding, ollama);
             (
                 StatusCode::OK,
                 Json(json!({
@@ -80,6 +93,7 @@ pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
                     "nodes": nodes,
                     "embedding": embedding.as_str(),
                     "ollama": ollama.as_str(),
+                    "ollama_last_error": ollama_last_error,
                 })),
             )
         }
@@ -113,5 +127,33 @@ pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
                 "ollama": ollama.as_str(),
             })),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::overall_status;
+    use crate::embed::EmbedStatus;
+    use crate::ollama::OllamaStatus;
+
+    /// Reachable is not healthy: the three states that are not `Ready` all
+    /// degrade, including the one that hid for three days.
+    #[test]
+    fn every_ollama_state_but_ready_is_degraded() {
+        assert_eq!(
+            overall_status(EmbedStatus::Ready, OllamaStatus::Ready),
+            "HEALTHY"
+        );
+        for s in [
+            OllamaStatus::Unreachable,
+            OllamaStatus::CpuOnly,
+            OllamaStatus::Failing,
+        ] {
+            assert_eq!(overall_status(EmbedStatus::Ready, s), "DEGRADED", "{s:?}");
+        }
+        assert_eq!(
+            overall_status(EmbedStatus::Error, OllamaStatus::Ready),
+            "DEGRADED"
+        );
     }
 }

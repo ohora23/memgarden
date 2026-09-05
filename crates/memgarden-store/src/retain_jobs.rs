@@ -176,6 +176,26 @@ pub fn update(db: &Db, job_id: &str, p: &JobProgress) -> Result<()> {
     })
 }
 
+/// Adds one string field to the job's `detail` JSON, keeping the rest.
+///
+/// The worker uses it to record which inference path the job actually ran
+/// on (`"inference": "ready" | "cpu-only" | "unreachable"`) at the moment
+/// it settles — `update` would replace the whole object and lose the token
+/// accounting the route wrote at POST time. `json_set` is SQLite's own; the
+/// bundled build carries JSON1.
+pub fn set_detail_field(db: &Db, job_id: &str, key: &str, value: &str) -> Result<()> {
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE retain_jobs
+                SET detail = json_set(coalesce(detail, '{}'), '$.' || ?2, ?3)
+              WHERE job_id = ?1",
+            params![job_id, key, value],
+        )
+        .map_err(store_err)?;
+        Ok(())
+    })
+}
+
 pub fn get(db: &Db, job_id: &str) -> Result<Option<RetainJob>> {
     let conn = db.read()?;
     conn.query_row(
@@ -359,5 +379,37 @@ mod tests {
         assert_eq!(fail_stale(&db, "daemon restarted").unwrap(), 1);
         assert_eq!(get(&db, "job-1").unwrap().unwrap().status, "failed");
         assert_eq!(get(&db, "job-2").unwrap().unwrap().status, "done");
+    }
+
+    #[test]
+    fn set_detail_field_keeps_what_the_route_wrote() {
+        let db = Db::open_memory().unwrap();
+        banks::create(&db, "b1", None, None).unwrap();
+        insert(
+            &db,
+            "j1",
+            "b1",
+            None,
+            None,
+            Some(r#"{"raw_tokens":7}"#),
+            None,
+        )
+        .unwrap();
+        set_detail_field(&db, "j1", "inference", "cpu-only").unwrap();
+        // No serde_json in this crate: substring checks on SQLite's own
+        // compact rendering are enough to prove both keys are there.
+        let detail = get(&db, "j1").unwrap().unwrap().detail.unwrap();
+        assert!(
+            detail.contains(r#""raw_tokens":7"#),
+            "the POST-time accounting survives: {detail}"
+        );
+        assert!(detail.contains(r#""inference":"cpu-only""#), "{detail}");
+        // A job whose route wrote no detail still gets a well-formed object.
+        insert(&db, "j2", "b1", None, None, None, None).unwrap();
+        set_detail_field(&db, "j2", "inference", "ready").unwrap();
+        assert_eq!(
+            get(&db, "j2").unwrap().unwrap().detail.as_deref(),
+            Some(r#"{"inference":"ready"}"#)
+        );
     }
 }

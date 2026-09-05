@@ -86,6 +86,54 @@ struct Reply {
     injected_text: String,
     #[serde(default)]
     counts: Counts,
+    /// The daemon's Ollama status (`ready` | `cpu-only` | `failing` |
+    /// `unreachable`), ridden on the reply so the hook can warn the person
+    /// without a second request. Empty from a daemon that predates it.
+    #[serde(default)]
+    ollama: String,
+}
+
+/// The one-line warning shown in Claude Code when the daemon's extraction
+/// model is not healthy, or `None` when there is nothing to say.
+///
+/// This goes out as `systemMessage` — Claude Code shows it to the **person**
+/// — and never into `additionalContext`, which the model would then talk
+/// about and the next retain would store as a fact.
+fn ollama_notice(status: &str) -> Option<String> {
+    match status {
+        "" | "ready" => None,
+        "cpu-only" => Some(
+            "MemGarden: the extraction model is running on CPU (Ollama reports it is not on a GPU). \
+             Recall still works; extraction and consolidation are slow or failing. \
+             Check `nvidia-smi`, then `memgarden hooks status`."
+                .to_string(),
+        ),
+        "failing" => Some(
+            "MemGarden: the last Ollama call failed after retries. Recall still works; \
+             extraction is not landing. `curl -s localhost:9100/healthz` has the error."
+                .to_string(),
+        ),
+        other => Some(format!(
+            "MemGarden: Ollama is {other}. Recall still works; nothing new is being remembered. \
+             `memgarden hooks status` has the details."
+        )),
+    }
+}
+
+/// Once per session per status: the marker is `<state_dir>/<session>.<status>.notice`,
+/// created with `create_new` so a planted symlink is refused like every other
+/// write under the state dir. A daemon that recovers and degrades again gets
+/// to say so again, because the marker is per status.
+fn first_notice_this_session(dir: &std::path::Path, session_id: &str, status: &str) -> bool {
+    let Some(path) = state::path_for(dir, session_id) else {
+        return false;
+    };
+    let marker = path.with_extension(format!("{status}.notice"));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(marker)
+        .is_ok()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -423,7 +471,14 @@ fn emit(
     }
 
     let dir = cfg.hooks.state_dir.as_path();
-    if let Some(text) = injected {
+    // The daemon-health warning rides the same stdout line, in `full` mode
+    // only: shadow mode's contract is an empty stdout.
+    let notice = match outcome {
+        Outcome::Recalled(reply) if cfg.hooks.mode == "full" => ollama_notice(&reply.ollama)
+            .filter(|_| first_notice_this_session(dir, &input.session_id, &reply.ollama)),
+        _ => None,
+    };
+    if injected.is_some() || notice.is_some() {
         if cfg.hooks.mode == "full" {
             // Exactly one line of compact JSON. `writeln!` rather than
             // `println!` because `println!` **panics** when the write fails,
@@ -432,17 +487,26 @@ fn emit(
             // `LineWriter`, so the `\n` is also the flush, which is what makes
             // the panic hook's `exit(0)` unable to truncate a line already
             // handed over.
-            let line = serde_json::json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "UserPromptSubmit",
-                    "additionalContext": text,
-                }
-            })
-            .to_string();
+            let mut line = serde_json::Map::new();
+            if let Some(text) = injected {
+                line.insert(
+                    "hookSpecificOutput".into(),
+                    serde_json::json!({
+                        "hookEventName": "UserPromptSubmit",
+                        "additionalContext": text,
+                    }),
+                );
+            }
+            if let Some(message) = notice {
+                line.insert("systemMessage".into(), serde_json::Value::String(message));
+            }
+            let line = serde_json::Value::Object(line).to_string();
             let _ = writeln!(std::io::stdout(), "{line}");
-        } else if let Err(e) = append_shadow(
-            cfg, dir, input, bank_id, query, text, returned, tokens, now_ms,
-        ) {
+        } else if let Some(text) = injected
+            && let Err(e) = append_shadow(
+                cfg, dir, input, bank_id, query, text, returned, tokens, now_ms,
+            )
+        {
             super::debug(&cfg.hooks, &format!("recall: shadow log failed: {e}"));
         }
     }
@@ -674,6 +738,34 @@ mod tests {
         // And the default budget cannot produce a query over the daemon's
         // 8 KB `MAX_QUERY_BYTES`, which is what the config bound guarantees.
         assert!(cut.len() <= 8 * 1024);
+    }
+
+    #[test]
+    fn only_an_unhealthy_daemon_produces_a_notice() {
+        assert_eq!(ollama_notice(""), None, "a daemon that predates the field");
+        assert_eq!(ollama_notice("ready"), None);
+        assert!(ollama_notice("cpu-only").unwrap().contains("nvidia-smi"));
+        assert!(ollama_notice("failing").unwrap().contains("healthz"));
+        assert!(
+            ollama_notice("unreachable")
+                .unwrap()
+                .contains("unreachable")
+        );
+    }
+
+    #[test]
+    fn the_notice_is_shown_once_per_session_per_status() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(first_notice_this_session(dir.path(), "s1", "cpu-only"));
+        assert!(
+            !first_notice_this_session(dir.path(), "s1", "cpu-only"),
+            "second prompt stays quiet"
+        );
+        // A different status is news again; a different session is its own slate.
+        assert!(first_notice_this_session(dir.path(), "s1", "failing"));
+        assert!(first_notice_this_session(dir.path(), "s2", "cpu-only"));
+        // The marker lives beside the state file, under the same name rules.
+        assert!(dir.path().join("s1.cpu-only.notice").exists());
     }
 
     #[test]
