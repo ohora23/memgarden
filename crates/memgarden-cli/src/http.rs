@@ -303,7 +303,10 @@ fn request(
     // `Connection: close` makes the daemon hang up after one response, which
     // is what we want: the process is about to exit anyway, and a pooled
     // connection has nobody to pool it for.
-    req.extend_from_slice(b"\r\nConnection: close\r\n");
+    req.extend_from_slice(b"\r\nConnection: close\r\nX-MemGarden-Client: ");
+    // DP-1 D3: what this binary is, so the daemon can say when they differ.
+    req.extend_from_slice(memgarden_core::BUILD.as_bytes());
+    req.extend_from_slice(b"\r\n");
     if let Some(body) = body {
         req.extend_from_slice(b"Content-Type: application/json\r\nContent-Length: ");
         req.extend_from_slice(body.len().to_string().as_bytes());

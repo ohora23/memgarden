@@ -8,6 +8,19 @@ use memgardend::{embed_task, metrics_task, ollama, routes, state::AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Before config, before the DB: `--version` must never open the live
+    // database (startup closes out orphaned jobs) or touch the port. The
+    // schema version is what a deploy script compares to `PRAGMA
+    // user_version` to decide whether to back up first (DP-1 D2).
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!(
+            "memgardend {} (build {}, schema v{})",
+            env!("CARGO_PKG_VERSION"),
+            memgarden_core::BUILD,
+            memgarden_store::LATEST_VERSION
+        );
+        return Ok(());
+    }
     let cfg = Config::load()?;
     init_tracing(&cfg.log_level);
 

@@ -651,12 +651,32 @@ fn probe_daemon(cfg: Option<&Config>) -> String {
         ),
         Ok(_) => match crate::http::get(&target, "/healthz", &timeouts) {
             Ok(r) => format!(
-                "up — /healthz {} {}",
+                "up — /healthz {} {}\n            {}",
                 r.status,
-                elide(&String::from_utf8_lossy(&r.body), 160)
+                elide(&String::from_utf8_lossy(&r.body), 160),
+                build_line(&r.body)
             ),
             Err(e) => format!("up — /livez ok, /healthz failed ({e})"),
         },
+    }
+}
+
+/// The daemon's build beside this binary's (DP-1 D3). Same commit is the
+/// only good answer; anything else names the fix.
+fn build_line(healthz: &[u8]) -> String {
+    let daemon = serde_json::from_slice::<serde_json::Value>(healthz)
+        .ok()
+        .and_then(|v| v["build"].as_str().map(str::to_string));
+    match daemon.as_deref() {
+        Some(d) if d == memgarden_core::BUILD => format!("build: {d} (daemon and this binary)"),
+        Some(d) => format!(
+            "build: MISMATCH — daemon {d}, this binary {} — reinstall both (memgardend and memgarden)",
+            memgarden_core::BUILD
+        ),
+        None => format!(
+            "build: daemon predates the build field; this binary is {}",
+            memgarden_core::BUILD
+        ),
     }
 }
 
@@ -738,6 +758,19 @@ fn elide(s: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// DP-1 D3: same commit is the only good line; a different one names the
+    /// fix; a daemon without the field is reported, not mistaken for a match.
+    #[test]
+    fn build_line_compares_daemon_and_client() {
+        let me = memgarden_core::BUILD;
+        assert!(!me.is_empty());
+        let same = format!(r#"{{"status":"HEALTHY","build":"{me}"}}"#);
+        assert!(super::build_line(same.as_bytes()).contains("daemon and this binary"));
+        let other = super::build_line(br#"{"status":"HEALTHY","build":"deadbeef"}"#);
+        assert!(other.contains("MISMATCH") && other.contains("deadbeef") && other.contains(me));
+        assert!(super::build_line(br#"{"status":"HEALTHY"}"#).contains("predates"));
+    }
+
     use super::*;
 
     fn argv(rest: &[&str]) -> Vec<String> {

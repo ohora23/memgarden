@@ -12,6 +12,35 @@ use axum::response::{IntoResponse, Response};
 
 use memgarden_core::metrics::METRICS;
 
+/// The header the hook binary stamps with its own `memgarden_core::BUILD`.
+pub const CLIENT_BUILD_HEADER: &str = "x-memgarden-client";
+
+/// Logs, once per distinct client build, a hook binary that was not built
+/// from the same commit as this daemon (DP-1 D3). The request is served
+/// either way — the wire contract is additive across adjacent builds — but
+/// two binaries drifting apart with nothing said is how the `maxTokens`
+/// incident happened, and `hooks status` reads the same two values.
+pub async fn note_client_build(req: Request, next: Next) -> Response {
+    let client = req
+        .headers()
+        .get(CLIENT_BUILD_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|c| *c != memgarden_core::BUILD);
+    if let Some(client) = client {
+        static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        if !seen.iter().any(|s| s == client) {
+            seen.push(client.to_string());
+            tracing::warn!(
+                client_build = client,
+                daemon_build = memgarden_core::BUILD,
+                "hook binary and daemon were built from different commits — reinstall both"
+            );
+        }
+    }
+    next.run(req).await
+}
+
 pub async fn track_http(req: Request, next: Next) -> Response {
     let start = Instant::now();
     METRICS.http_requests.fetch_add(1, Ordering::Relaxed);
