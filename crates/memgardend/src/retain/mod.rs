@@ -439,6 +439,12 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
     }
 
     flush(state, &task.job_id, &progress).await;
+    // Which inference path this job actually ran on, as the prober saw it
+    // when the job settled. Written into the row, not only the log: the
+    // three-day CPU fallback of 2026-09 was only reconstructable afterwards
+    // from `elapsed_ms` per chunk, and a number that has to be inferred is a
+    // number nobody looks at.
+    let inference = crate::ollama::ollama_status().as_str();
     tracing::info!(
         job_id = %task.job_id,
         bank_id = %task.bank_id,
@@ -449,8 +455,22 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
         chunks_failed = progress.chunks_failed,
         facts_written = progress.facts_written,
         elapsed_ms = started.elapsed().as_millis() as u64,
+        inference,
         "retain job finished"
     );
+    {
+        let db = state.db.clone();
+        let job_id = task.job_id.clone();
+        if let Err(e) = tokio::task::spawn_blocking(move || {
+            memgarden_store::retain_jobs::set_detail_field(&db, &job_id, "inference", inference)
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.map_err(|e| e.to_string()))
+        {
+            tracing::warn!(job_id = %task.job_id, error = %e, "could not record the job's inference path");
+        }
+    }
 }
 
 /// Non-blocking check on the pinned shutdown future.

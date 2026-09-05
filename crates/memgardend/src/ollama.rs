@@ -4,11 +4,13 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use memgarden_core::config::OllamaConfig;
+use memgarden_core::metrics::METRICS;
 
 /// Bounded wait for an INTERACTIVE caller's turn at the (size-1, by default)
 /// concurrency semaphore. Critic Revision R11: user-facing paths
@@ -70,6 +72,13 @@ pub enum OllamaError {
     Http { status: u16, body: String },
     #[error("failed to parse ollama response as JSON after retries: {0}")]
     Parse(String),
+    /// The reply is text a model produces when its sampling has collapsed —
+    /// one character or one phrase repeated to the output limit — rather
+    /// than an answer. It may even be valid JSON. Caught at the reply
+    /// boundary, before anything is stored, because a bad fact that gets in
+    /// is only ever found again by an expensive consistency pass, if at all.
+    #[error("ollama reply is degenerate ({reason}): {chars} chars")]
+    Degenerate { reason: &'static str, chars: usize },
     /// The model stopped because it ran out of output budget, so the reply is
     /// a **prefix** of valid JSON rather than malformed JSON.
     ///
@@ -85,6 +94,73 @@ pub enum OllamaError {
         eval_count: Option<u64>,
         chars: usize,
     },
+}
+
+/// Why a reply is not an answer, or `None` when it looks like one.
+///
+/// Three shapes, all things a person recognises at a glance and none of
+/// which a JSON parser or a schema notices:
+///
+/// * one non-space character repeated 40+ times in a row (`!!!!…`, `ㅋㅋㅋ…`);
+/// * one phrase of 6–64 characters repeated 6+ times back to back — the
+///   sampling loop, the most common collapse on a small quantised model;
+/// * a long reply (400+ chars) built from six or fewer distinct characters.
+///
+/// The thresholds are deliberately loose. A false positive costs one retry
+/// at a higher temperature; a false negative stores a fact that reads
+/// `Multiple components Multiple components …` and is never found again.
+pub fn degenerate_reason(text: &str) -> Option<&'static str> {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+
+    let mut run = 1usize;
+    for i in 1..n {
+        if chars[i] == chars[i - 1] && !chars[i].is_whitespace() {
+            run += 1;
+            if run >= 40 {
+                return Some("one character repeated");
+            }
+        } else {
+            run = 1;
+        }
+    }
+
+    // Consecutive repeats of a period-p window, p in 6..=64: at position i,
+    // count how many times chars[i..i+p] recurs immediately after itself.
+    for p in 6..=64usize {
+        if n < p * 6 {
+            break;
+        }
+        let mut i = 0;
+        while i + p * 6 <= n {
+            let mut reps = 1;
+            while i + (reps + 1) * p <= n
+                && chars[i..i + p] == chars[i + reps * p..i + (reps + 1) * p]
+            {
+                reps += 1;
+            }
+            // A window made of one repeated character is the single-character
+            // rule's business, with its own (higher) bar: `------` × 6 is a
+            // markdown rule, not a collapse.
+            let distinct_in_window = chars[i..i + p]
+                .iter()
+                .filter(|c| !c.is_whitespace())
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            if reps >= 6 && distinct_in_window >= 2 {
+                return Some("one phrase repeated");
+            }
+            i += reps.max(1);
+        }
+    }
+
+    if n >= 400 {
+        let distinct = chars.iter().collect::<std::collections::HashSet<_>>().len();
+        if distinct <= 6 {
+            return Some("almost no distinct characters");
+        }
+    }
+    None
 }
 
 /// One `/api/chat` reply, with the envelope fields a failure needs to be
@@ -247,6 +323,20 @@ impl OllamaClient {
                     .try_chat(system, user, schema, num_predict, num_ctx, attempt)
                     .await
                 {
+                    // The sanity gate runs on the raw text, before the JSON
+                    // parse, because the collapse is in the characters and a
+                    // JSON parser does not care how many times a string
+                    // repeats. Retried like a malformed reply: the next
+                    // attempt samples at a higher temperature, which is the
+                    // one thing that moves a collapsed distribution.
+                    Ok(reply) if degenerate_reason(&reply.content).is_some() => {
+                        let reason = degenerate_reason(&reply.content).unwrap_or("degenerate");
+                        let chars = reply.content.chars().count();
+                        let head: String = reply.content.chars().take(160).collect();
+                        tracing::warn!(attempt, reason, chars, head = ?head, "ollama reply is degenerate, retrying");
+                        METRICS.ollama_degenerate_replies.fetch_add(1, Ordering::Relaxed);
+                        last_err = OllamaError::Degenerate { reason, chars };
+                    }
                     Ok(reply) => match serde_json::from_str::<T>(&reply.content) {
                         Ok(parsed) => return Ok(parsed),
                         Err(e) => {
@@ -322,6 +412,10 @@ impl OllamaClient {
         .unwrap_or(Err(OllamaError::Deadline(deadline)));
 
         drop(permit);
+        match &result {
+            Ok(_) => note_call_succeeded(),
+            Err(e) => note_call_failed(e),
+        }
         result
     }
 
@@ -467,16 +561,44 @@ impl OllamaClient {
             Err(_) => false,
         }
     }
+
+    /// `GET /api/ps` — the loaded models as `(size, size_vram)` pairs, or
+    /// `None` when the call or its JSON failed. Prober-only, like `probe`.
+    pub async fn probe_ps(&self) -> Option<Vec<(u64, u64)>> {
+        let url = format!("{}/api/ps", self.cfg.base_url.trim_end_matches('/'));
+        let reply: PsReply = self
+            .http
+            .get(&url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        Some(reply.models.iter().map(|m| (m.size, m.size_vram)).collect())
+    }
 }
 
-/// Coarse Ollama reachability, reported by `/healthz` and read/written via
-/// the atomic below — same lock-free-static pattern as
-/// `crate::embed::EmbedStatus`.
+/// Coarse Ollama health, reported by `/healthz` and read/written via the
+/// atomic below — same lock-free-static pattern as `crate::embed::EmbedStatus`.
+///
+/// `CpuOnly` is the state this daemon ran in for three days (2026-09-02 →
+/// 09-04) without saying so: the driver had stopped loading after a kernel
+/// update, Ollama fell back to CPU silently, `/api/version` kept answering,
+/// `/healthz` kept saying HEALTHY, extraction ran 15× slower and every
+/// consolidation round missed its deadline. Reachability is not health.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OllamaStatus {
     Unreachable = 0,
     Ready = 1,
+    /// Reachable, but the loaded model is not (fully) on a GPU.
+    CpuOnly = 2,
+    /// The last call exhausted its retries or deadline. Set on the request
+    /// path the moment it happens — not 30s later by the prober — and
+    /// cleared by the next call that succeeds. `last_error()` says why.
+    Failing = 3,
 }
 
 impl OllamaStatus {
@@ -484,15 +606,85 @@ impl OllamaStatus {
         match self {
             OllamaStatus::Unreachable => "unreachable",
             OllamaStatus::Ready => "ready",
+            OllamaStatus::CpuOnly => "cpu-only",
+            OllamaStatus::Failing => "failing",
         }
     }
 
     fn from_u8(v: u8) -> OllamaStatus {
         match v {
             1 => OllamaStatus::Ready,
+            2 => OllamaStatus::CpuOnly,
+            3 => OllamaStatus::Failing,
             _ => OllamaStatus::Unreachable,
         }
     }
+}
+
+/// The last request-path failure, `(unix ms, message)`, for `/healthz`.
+/// A status string says *that* something is wrong; this says *what*, which
+/// is the part a person needs in order to fix it.
+static LAST_ERROR: std::sync::Mutex<Option<(i64, String)>> = std::sync::Mutex::new(None);
+
+pub fn last_error() -> Option<(i64, String)> {
+    LAST_ERROR.lock().map(|g| g.clone()).unwrap_or(None)
+}
+
+/// Request-path detection. Called once per exhausted call with the final
+/// error: flips the status to `Failing` immediately and records the reason,
+/// so the next `/healthz` or recall reply carries it without waiting for a
+/// prober tick. A success afterwards clears `Failing` only — it must not
+/// promote `CpuOnly` to `Ready`, because a slow call that succeeded is
+/// exactly what the CPU fallback looks like.
+fn note_call_failed(err: &OllamaError) {
+    let prev = ollama_status();
+    if let Ok(mut g) = LAST_ERROR.lock() {
+        *g = Some((memgarden_core::now_ms(), err.to_string()));
+    }
+    set_ollama_status(OllamaStatus::Failing);
+    if prev != OllamaStatus::Failing {
+        tracing::warn!(from = prev.as_str(), error = %err, "ollama: call failed after retries — status is now failing");
+    }
+}
+
+fn note_call_succeeded() {
+    if ollama_status() == OllamaStatus::Failing {
+        set_ollama_status(OllamaStatus::Ready);
+        tracing::info!("ollama: a call succeeded — status back to ready");
+    }
+}
+
+/// One loaded model as `GET /api/ps` reports it: `size` is the whole
+/// footprint, `size_vram` the part on a GPU. `size_vram < size` is the
+/// silent CPU fallback — or a partial offload, which for a 14B model is the
+/// same outcome in practice.
+#[derive(Debug, Deserialize)]
+struct PsModel {
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    size_vram: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PsReply {
+    #[serde(default)]
+    models: Vec<PsModel>,
+}
+
+/// What the loaded models say about where inference runs. `None` when
+/// nothing is loaded: an idle Ollama proves nothing either way, and the
+/// prober keeps its last observation until a model is loaded again.
+pub fn classify_loaded(models: &[(u64, u64)]) -> Option<OllamaStatus> {
+    if models.is_empty() {
+        return None;
+    }
+    let off_card = models.iter().any(|&(size, vram)| size > 0 && vram < size);
+    Some(if off_card {
+        OllamaStatus::CpuOnly
+    } else {
+        OllamaStatus::Ready
+    })
 }
 
 // Starts optimistic (`Ready`), not `Unreachable`: `tokio::time::interval`
@@ -510,9 +702,30 @@ fn set_ollama_status(status: OllamaStatus) {
     OLLAMA_STATUS.store(status as u8, Ordering::Relaxed);
 }
 
-/// Background reachability prober: every 30s, hits `/api/version` and
-/// publishes the result to the process-wide atomic `/healthz` reads.
-/// Decision #5 (plan): never probe per request.
+/// The next observation folded into the current one.
+///
+/// Sticky on purpose: `/api/ps` is empty whenever Ollama has unloaded the
+/// model (30 min idle), and "nothing loaded" must not launder a `CpuOnly`
+/// observation back into `Ready` — the card is still gone. Only a model
+/// seen on the GPU, or Ollama going away and coming back, changes it.
+pub fn fold_observation(
+    prev: OllamaStatus,
+    reachable: bool,
+    loaded: Option<OllamaStatus>,
+) -> OllamaStatus {
+    match (reachable, loaded) {
+        (false, _) => OllamaStatus::Unreachable,
+        (true, Some(observed)) => observed,
+        (true, None) if prev == OllamaStatus::Unreachable => OllamaStatus::Ready,
+        (true, None) => prev,
+    }
+}
+
+/// Background prober: every 30s, hits `/api/version` for reachability and
+/// `/api/ps` for where the loaded model actually runs, and publishes the
+/// result to the process-wide atomic `/healthz` reads. Decision #5 (plan):
+/// never probe per request. Transitions are logged once, so the journal
+/// carries when the card was lost and when it came back.
 pub async fn run_prober(client: std::sync::Arc<OllamaClient>) {
     let mut ticker = tokio::time::interval(Duration::from_secs(30));
     let shutdown = crate::shutdown_signal();
@@ -520,12 +733,25 @@ pub async fn run_prober(client: std::sync::Arc<OllamaClient>) {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                let prev = ollama_status();
                 let reachable = client.probe().await;
-                set_ollama_status(if reachable {
-                    OllamaStatus::Ready
+                let loaded = if reachable {
+                    client.probe_ps().await.and_then(|m| classify_loaded(&m))
                 } else {
-                    OllamaStatus::Unreachable
-                });
+                    None
+                };
+                let next = fold_observation(prev, reachable, loaded);
+                if next != prev {
+                    match next {
+                        OllamaStatus::CpuOnly => tracing::warn!(
+                            from = prev.as_str(),
+                            "ollama: the loaded model is not on a GPU — extraction and \
+                             consolidation will be slow or time out; check nvidia-smi"
+                        ),
+                        _ => tracing::info!(from = prev.as_str(), to = next.as_str(), "ollama status changed"),
+                    }
+                }
+                set_ollama_status(next);
             }
             _ = &mut shutdown => break,
         }
@@ -585,6 +811,94 @@ mod tests {
         // Restore for other tests in this binary sharing the global static
         // (default is Ready — see the static's doc comment).
         set_ollama_status(OllamaStatus::Ready);
+    }
+
+    #[test]
+    fn a_collapsed_reply_is_caught_before_it_is_parsed() {
+        // The shapes a person spots at a glance.
+        assert_eq!(
+            degenerate_reason(&"!".repeat(40)),
+            Some("one character repeated")
+        );
+        assert_eq!(
+            degenerate_reason(&"ㅋ".repeat(50)),
+            Some("one character repeated")
+        );
+        let phrase = "Multiple components ".repeat(8);
+        assert_eq!(degenerate_reason(&phrase), Some("one phrase repeated"));
+        let json_loop = format!("{{\"facts\":[{}]}}", "{\"text\":\"same\"},".repeat(10));
+        assert_eq!(
+            degenerate_reason(&json_loop),
+            Some("one phrase repeated"),
+            "valid-looking JSON is still a loop"
+        );
+        // Periodic *and* low-alphabet: either reason is right, refusal is
+        // the point.
+        assert!(degenerate_reason(&"ab".repeat(300)).is_some());
+        // Low-alphabet without a short period: the Thue–Morse word is
+        // cube-free, so neither repetition rule can fire and only the
+        // distinct-count rule catches it.
+        let noise: String = (0..600u32)
+            .map(|i| if i.count_ones() % 2 == 0 { 'a' } else { 'b' })
+            .collect();
+        assert_eq!(
+            degenerate_reason(&noise),
+            Some("almost no distinct characters"),
+            "{noise}"
+        );
+
+        // The shapes it must let through: real extraction output, code, a
+        // markdown rule, short repeats, Korean prose, and whitespace runs.
+        let real = r#"{"facts":[{"text":"User merged PR #49 after CI passed","fact_type":"world"},{"text":"The daemon restarted at 23:21 KST","fact_type":"world"}]}"#;
+        assert_eq!(degenerate_reason(real), None);
+        assert_eq!(
+            degenerate_reason(&"-".repeat(39)),
+            None,
+            "a long markdown rule is still under the bar"
+        );
+        assert_eq!(
+            degenerate_reason(&"na ".repeat(5)),
+            None,
+            "five repeats is a chorus, not a collapse"
+        );
+        assert_eq!(
+            degenerate_reason(&("사용자가 PR을 머지했다. ".repeat(3) + "그 뒤 배포했다.")),
+            None
+        );
+        assert_eq!(
+            degenerate_reason(&format!("a{}b", " ".repeat(200))),
+            None,
+            "whitespace is never a collapse"
+        );
+        assert_eq!(degenerate_reason(""), None);
+    }
+
+    #[test]
+    fn loaded_models_off_the_card_are_cpu_only() {
+        // Nothing loaded proves nothing.
+        assert_eq!(classify_loaded(&[]), None);
+        // Fully on the GPU.
+        assert_eq!(classify_loaded(&[(12, 12)]), Some(OllamaStatus::Ready));
+        // The 2026-09-02 shape: size 12 GB, size_vram 0.
+        assert_eq!(classify_loaded(&[(12, 0)]), Some(OllamaStatus::CpuOnly));
+        // Partial offload counts as off the card; one bad model is enough.
+        assert_eq!(
+            classify_loaded(&[(12, 12), (12, 5)]),
+            Some(OllamaStatus::CpuOnly)
+        );
+    }
+
+    #[test]
+    fn an_idle_ollama_does_not_launder_cpu_only_back_to_ready() {
+        use OllamaStatus::*;
+        assert_eq!(fold_observation(CpuOnly, true, None), CpuOnly);
+        assert_eq!(fold_observation(Ready, true, None), Ready);
+        assert_eq!(fold_observation(CpuOnly, true, Some(Ready)), Ready);
+        assert_eq!(fold_observation(Ready, true, Some(CpuOnly)), CpuOnly);
+        assert_eq!(fold_observation(CpuOnly, false, None), Unreachable);
+        // Coming back from unreachable with nothing loaded is optimistic,
+        // as the startup default is: the next load settles it.
+        assert_eq!(fold_observation(Unreachable, true, None), Ready);
     }
 
     #[tokio::test]

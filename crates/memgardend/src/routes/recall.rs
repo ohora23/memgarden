@@ -14,7 +14,7 @@ use memgarden_store::banks;
 
 use crate::error::{ApiError, join_err};
 use crate::json::ApiJson;
-use crate::recall::{self, RecallOutcome, RecallParams, TagsMatch};
+use crate::recall::{self, RecallParams, TagsMatch};
 use crate::state::AppState;
 
 /// A query longer than this is a bug in the caller, not a prompt. The FTS
@@ -67,7 +67,7 @@ pub async fn recall_bank(
     State(state): State<AppState>,
     Path(bank_id): Path<String>,
     ApiJson(body): ApiJson<RecallRequest>,
-) -> Result<Json<RecallOutcome>, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let started = Instant::now();
     METRICS.recall_requests.fetch_add(1, Ordering::Relaxed);
     let result = recall_inner(state, bank_id, body).await;
@@ -84,7 +84,7 @@ async fn recall_inner(
     state: AppState,
     bank_id: String,
     body: RecallRequest,
-) -> Result<Json<RecallOutcome>, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     if body.query.len() > MAX_QUERY_BYTES {
         return Err(memgarden_core::Error::Invalid(format!(
             "query too long: {} bytes (max {MAX_QUERY_BYTES})",
@@ -165,5 +165,16 @@ async fn recall_inner(
     // caller whose result reaches a client, so this is the only call that is
     // an injection.
     outcome.meter();
-    Ok(Json(outcome))
+    // The hook is the one surface a person actually sees, and it already
+    // makes this request every prompt: riding the daemon's Ollama status on
+    // the reply costs nothing and lets the hook say "your card is gone" once
+    // per session without a second round trip.
+    let mut reply = serde_json::to_value(&outcome).map_err(|e| {
+        ApiError::from(memgarden_core::Error::Storage(format!(
+            "serialize recall: {e}"
+        )))
+    })?;
+    reply["ollama"] =
+        serde_json::Value::String(crate::ollama::ollama_status().as_str().to_string());
+    Ok(Json(reply))
 }

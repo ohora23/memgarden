@@ -177,6 +177,10 @@ pub struct Metrics {
     /// endpoint: a 429 is not a failed ingest and a failed ingest is not a
     /// rejected request.
     pub retain_jobs_failed: AtomicU64,
+    /// Ollama replies refused at the boundary as degenerate (a character or
+    /// phrase repeated to the output limit) — each is a retry, and a fact
+    /// that never reached the store.
+    pub ollama_degenerate_replies: AtomicU64,
     /// `benefit_ledger` rows of kind `retain_cap_saving` written by the
     /// retain ingest (AC-6: the ledger auto-populates, MX-1's deferral).
     pub retain_cap_savings: AtomicU64,
@@ -203,6 +207,7 @@ impl Metrics {
             retain_tokens_capped: AtomicU64::new(0),
             retain_chunks_failed: AtomicU64::new(0),
             retain_jobs_failed: AtomicU64::new(0),
+            ollama_degenerate_replies: AtomicU64::new(0),
             retain_cap_savings: AtomicU64::new(0),
             http_latency: Histogram::new(),
             recall_latency: Histogram::new(),
@@ -244,6 +249,7 @@ impl Metrics {
             retain_tokens_capped,
             retain_chunks_failed: self.retain_chunks_failed.load(Ordering::Relaxed),
             retain_jobs_failed: self.retain_jobs_failed.load(Ordering::Relaxed),
+            ollama_degenerate_replies: self.ollama_degenerate_replies.load(Ordering::Relaxed),
             retain_cap_savings: self.retain_cap_savings.load(Ordering::Relaxed),
             retain_tokens_saved,
             retain_saving_ratio,
@@ -271,6 +277,7 @@ pub struct MetricsSnapshot {
     pub retain_tokens_capped: u64,
     pub retain_chunks_failed: u64,
     pub retain_jobs_failed: u64,
+    pub ollama_degenerate_replies: u64,
     pub retain_cap_savings: u64,
     pub retain_tokens_saved: Option<u64>,
     pub retain_saving_ratio: Option<f64>,

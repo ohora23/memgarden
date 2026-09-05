@@ -107,9 +107,12 @@ pub async fn dry_run_extract(
             // A truncation is upstream misbehaviour too, and specifically one
             // that a blind retry cannot fix — the caller's input was simply
             // bigger than the model's output budget for it.
-            OllamaError::Http { .. } | OllamaError::Parse(_) | OllamaError::Truncated { .. } => {
-                ApiError::bad_gateway(message)
-            }
+            // A degenerate reply that survived every retry is the same class:
+            // the upstream produced no answer.
+            OllamaError::Http { .. }
+            | OllamaError::Parse(_)
+            | OllamaError::Truncated { .. }
+            | OllamaError::Degenerate { .. } => ApiError::bad_gateway(message),
         }
     })?;
 

@@ -1767,4 +1767,14 @@ async fn no_task_ledger_is_written_when_the_knob_is_off() {
         memgarden_store::task_ledger::get(&harness.db, "b1").unwrap(),
         None
     );
+
+    // A settled job records where it ran. No prober runs in this harness,
+    // so the status is the startup default; the point is that the field
+    // exists next to the route's token accounting rather than only in a log.
+    let detail: Value = serde_json::from_str(job.detail.as_deref().unwrap()).unwrap();
+    assert_eq!(detail["inference"], "ready");
+    assert!(
+        detail["raw_tokens"].is_number(),
+        "POST-time accounting kept: {detail}"
+    );
 }
