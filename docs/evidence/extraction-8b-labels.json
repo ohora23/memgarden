@@ -1,0 +1,17 @@
+{"judge":"builder (single judge, blind to arm)","hits":{
+"q01":{"L":2,"R":3,"verdict_R_vs_L":"better","note":"R has commits confirmed + 'commit log and PR' + PR #44 merged; L has README/commit but more off-topic noise"},
+"q02":{"L":2,"R":3,"verdict_R_vs_L":"better","note":"L9 (commit two days old) is the sharpest single item but R has more items that answer"},
+"q03":{"L":1,"R":1,"verdict_R_vs_L":"equivalent","note":"neither says what was to be cleaned before the reboot"},
+"q04":{"L":0,"R":3,"verdict_R_vs_L":"better","note":"R: Stage 2 rewritten to PreCompact+Orca restart, Stage 4 anchor adapter; L only describes Orca's graph"},
+"q05":{"L":2,"R":3,"verdict_R_vs_L":"better","note":"both have 'merged #48, observation phase'; R adds '0번은 장부를 며칠 쌓고 읽는 일'"},
+"q06":{"L":0,"R":0,"verdict_R_vs_L":"equivalent","note":"neither extracted 'one row per bank, 11 banks'"},
+"q07":{"L":0,"R":0,"verdict_R_vs_L":"equivalent","note":"neither recalled the Obsidian note / resume.md location for this question"},
+"q08":{"L":3,"R":1,"verdict_R_vs_L":"worse","note":"L has the conclusion (do not replicate PI, hook verifiers locally, build 3); R lists PI's structure only"},
+"q09":{"L":4,"R":0,"verdict_R_vs_L":"worse","note":"L: 'do not build' list, harness verdict, gate.sh loop, interception proxy; R has nothing about prime-agent"},
+"q10":{"L":3,"R":4,"verdict_R_vs_L":"better","note":"both good; R adds names-only caching answer and the 7 excluded skills"},
+"q11":{"L":1,"R":2,"verdict_R_vs_L":"better","note":"R: disabled, tokens 11,440→5,100; neither states the exact command"},
+"q12":{"L":0,"R":1,"verdict_R_vs_L":"better","note":"R8: CLAUDE.md role rules, memgarden recovery / agentmemory manual only"},
+"q13":{"L":0,"R":1,"verdict_R_vs_L":"better","note":"L returned nothing (that arm's job on this bank failed); R: no project existed in that directory"},
+"q14":{"L":1,"R":0,"verdict_R_vs_L":"worse","note":"L8 is the status recap that answers; R has nothing from this transcript"},
+"q15":{"L":2,"R":3,"verdict_R_vs_L":"better","note":"both: ledger.sh, Q14 first; R adds the precise 'check whether rows are mostly the last finished job'"}
+},"totals":{"L_hits":21,"R_hits":27,"R_better":9,"equivalent":3,"R_worse":3}}

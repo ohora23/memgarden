@@ -117,7 +117,11 @@ about 0.5 GB more for the driver context.
 |---|---|---|---|---|
 | **16 GB** | `qwen3-14b-nothink` (Qwen3-14B Q6_K), the default | 11.3 GB | **12.2 GB** | validated — every number in this README came from it |
 | **12 GB** | Qwen3-14B Q5_K_M (`hf.co/bartowski/Qwen_Qwen3-14B-GGUF:Q5_K_M`) | 9.8 GB | **10.7 GB** | same model, smaller quant; 1.3 GB to spare |
-| **8 GB** | `qwen3:8b` (Qwen3-8B Q4_K_M) | 4.9 GB | **5.6 GB** | fits with 2.4 GB to spare; extraction quality on the recall harness not yet measured |
+| **8 GB** | `qwen3:8b` (Qwen3-8B Q4_K_M) | 4.9 GB | **5.6 GB** | fits — and measured short: 17 vs 29 recall hits on the same 15 questions, worse on 9 of 15. It keeps what things are and drops what was decided. **12 GB is the practical minimum.** |
+
+The 8 GB measurement is `docs/evidence/extraction-8b-result.md`: the 8B never
+malformed a reply and ran three times faster, and still lost two of every
+three questions about conclusions.
 
 Two settings decide whether a card fits. `OLLAMA_KV_CACHE_TYPE=q8_0` halves
 the KV cache — the 14B's is 0.7 GB at 8k tokens quantized, 1.4 GB at Ollama's
