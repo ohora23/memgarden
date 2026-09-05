@@ -125,6 +125,18 @@ database's `PRAGMA user_version` and takes a `VACUUM INTO` backup first if
 they differ, installs by rename, restarts the service (the socket unit keeps
 the port open), and then refuses to finish until `/healthz` reports the commit
 it just built and `memgarden hooks status` says the hook binary matches.
+
+Without a checkout, the same steps from a GitHub release:
+
+```bash
+memgarden self-update              # latest release for this machine's target
+memgarden self-update --version v0.1.0
+```
+
+It downloads the release asset, checks its sha256, refuses a build older than
+your database, backs up before a schema change, installs both binaries beside
+the running ones (previous kept as `.prev`), restarts the service, and waits
+for `/healthz` to report the new build.
 </details>
 
 ---

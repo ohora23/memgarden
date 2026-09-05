@@ -433,9 +433,11 @@ prints what it did; next SessionStart is quiet
 
 ### 8.5 Order of work (after §7)
 
-6. Tag `v0.1.0`, a release workflow that builds artefacts and sha256 for
-   Linux x86_64 first, `memgarden self-update` with the download/verify/
-   rename half only.
+6. ~~Tag `v0.1.0`, a release workflow that builds artefacts and sha256 for
+   Linux x86_64 first, `memgarden self-update`.~~ Shipped: `.github/workflows/release.yml`
+   (notes from `docs/releases/<tag>.md`, build id = tag), `memgarden self-update`
+   with the schema check, `--backup-to` backup and restart included — no
+   "half": the schema gate is what makes an update safe to approve.
 7. The plugin (`hooks/hooks.json`, `skills/update`, `skills/doctor`) and the
    SessionStart comparison + notice.
 8. The detached releases-API check for non-plugin installs.

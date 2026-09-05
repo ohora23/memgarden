@@ -123,6 +123,45 @@ fn migrate_refuses_a_database_newer_than_the_binary() {
     );
 }
 
+/// `backup_into` is the pre-migration snapshot: same `user_version`, the vec0
+/// virtual tables re-created (the part a plain `sqlite3` connection cannot
+/// do), and the rows there. Opened afterwards by `Db::open` like any file.
+#[test]
+fn backup_into_copies_a_live_database_with_its_vec_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("live.db");
+    let dest = dir.path().join("backup.db");
+    {
+        let db = Db::open(&src).unwrap();
+        memgarden_store::banks::create(&db, "b1", None, None).unwrap();
+        memgarden_store::nodes::insert(&db, NewNode::new("b1", FactType::World, "kept")).unwrap();
+        // The daemon keeps `src` open while the backup runs.
+        memgarden_store::backup_into(&src, &dest).unwrap();
+    }
+    let copy = Db::open(&dest).unwrap();
+    let conn = copy.read().unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, memgarden_store::LATEST_VERSION);
+    let nodes: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM memory_nodes WHERE text = 'kept'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(nodes, 1);
+    let vec_tables: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE sql LIKE '%USING vec0%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(vec_tables >= 1, "vec0 tables must survive the copy");
+}
+
 #[test]
 fn fts_triggers_sync() {
     let db = Db::open_memory().unwrap();

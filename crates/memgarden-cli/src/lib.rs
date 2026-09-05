@@ -79,6 +79,11 @@ pub fn dispatch(args: &[String]) -> ExitCode {
     {
         return cmd::hooks::run(sub, args);
     }
+    // Run by hand, may exit 1, and must work with the hooks disabled — same
+    // family as `hooks install`.
+    if args.first().map(String::as_str) == Some("self-update") {
+        return cmd::self_update::run(&args[1..]);
+    }
 
     // Checked once, here, before the match and before any config load — so no
     // subcommand added later can forget it, and a user who has turned the
