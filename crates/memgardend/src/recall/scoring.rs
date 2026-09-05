@@ -136,10 +136,19 @@ pub fn proof_norm(proof_count: i64) -> f64 {
 /// `combined = base * recency_boost * temporal_boost * proof_boost`
 /// (`reranking.py:190`). Each boost is `1 + alpha * (signal - 0.5)`, so a
 /// neutral signal contributes exactly 1.0.
-pub fn combined(base: f64, recency: f64, temporal: f64, proof_norm: f64) -> f64 {
+///
+/// `proof_alpha` is a parameter rather than the constant because
+/// `proof_count` is the one signal recall *writes back*: consolidation pools
+/// existing observations by recall, the LLM UPDATEs what it was shown, and
+/// the UPDATE grows `proof_count`. With the boost on inside that pooling
+/// recall the loop has no damping — the first live round's ten-source
+/// observation dissolving into "Multiple components…" is the recorded
+/// failure. The pooling site passes `0.0`; the injection keeps
+/// [`PROOF_COUNT_ALPHA`].
+pub fn combined(base: f64, recency: f64, temporal: f64, proof_norm: f64, proof_alpha: f64) -> f64 {
     base * (1.0 + RECENCY_ALPHA * (recency - NEUTRAL))
         * (1.0 + TEMPORAL_ALPHA * (temporal - NEUTRAL))
-        * (1.0 + PROOF_COUNT_ALPHA * (proof_norm - NEUTRAL))
+        * (1.0 + proof_alpha * (proof_norm - NEUTRAL))
 }
 
 /// Where a candidate's cosine sits inside the spread this query actually
@@ -183,10 +192,12 @@ pub fn combined_with_semantic(
     recency: f64,
     temporal: f64,
     proof_norm: f64,
+    proof_alpha: f64,
     semantic: f64,
     alpha: f64,
 ) -> f64 {
-    combined(base, recency, temporal, proof_norm) * (1.0 + alpha * (semantic - NEUTRAL))
+    combined(base, recency, temporal, proof_norm, proof_alpha)
+        * (1.0 + alpha * (semantic - NEUTRAL))
 }
 
 #[cfg(test)]
@@ -228,22 +239,33 @@ mod tests {
             (0.31, 0.5, 0.5, 0.5, 0.5),
         ] {
             assert_eq!(
-                combined_with_semantic(b, r, t, p, sem, 0.0).to_bits(),
-                combined(b, r, t, p).to_bits()
+                combined_with_semantic(b, r, t, p, PROOF_COUNT_ALPHA, sem, 0.0).to_bits(),
+                combined(b, r, t, p, PROOF_COUNT_ALPHA).to_bits()
             );
         }
     }
 
     #[test]
     fn the_semantic_boost_is_symmetric_around_neutral() {
-        let base = combined(1.0, NEUTRAL, NEUTRAL, NEUTRAL);
+        let base = combined(1.0, NEUTRAL, NEUTRAL, NEUTRAL, PROOF_COUNT_ALPHA);
         // NEUTRAL is exactly no boost, whatever alpha says.
         assert_eq!(
-            combined_with_semantic(1.0, NEUTRAL, NEUTRAL, NEUTRAL, NEUTRAL, 0.6).to_bits(),
+            combined_with_semantic(
+                1.0,
+                NEUTRAL,
+                NEUTRAL,
+                NEUTRAL,
+                PROOF_COUNT_ALPHA,
+                NEUTRAL,
+                0.6
+            )
+            .to_bits(),
             base.to_bits()
         );
-        let top = combined_with_semantic(1.0, NEUTRAL, NEUTRAL, NEUTRAL, 1.0, 0.6);
-        let bottom = combined_with_semantic(1.0, NEUTRAL, NEUTRAL, NEUTRAL, 0.0, 0.6);
+        let top =
+            combined_with_semantic(1.0, NEUTRAL, NEUTRAL, NEUTRAL, PROOF_COUNT_ALPHA, 1.0, 0.6);
+        let bottom =
+            combined_with_semantic(1.0, NEUTRAL, NEUTRAL, NEUTRAL, PROOF_COUNT_ALPHA, 0.0, 0.6);
         assert!(top > base && base > bottom);
         assert!(((top - base) - (base - bottom)).abs() < 1e-12);
     }
@@ -321,7 +343,7 @@ mod tests {
     fn temporal_boost_at_zero_half_and_one() {
         let base = 0.8;
         for (temporal, want) in [(0.0, 0.9), (0.5, 1.0), (1.0, 1.1)] {
-            let got = combined(base, NEUTRAL, temporal, NEUTRAL);
+            let got = combined(base, NEUTRAL, temporal, NEUTRAL, PROOF_COUNT_ALPHA);
             assert!(
                 (got - base * want).abs() < 1e-12,
                 "temporal={temporal} -> {got}"
@@ -354,11 +376,26 @@ mod tests {
     #[test]
     fn proof_boost_at_one_and_at_the_clamp() {
         let base = 0.8;
-        assert!((combined(base, NEUTRAL, NEUTRAL, proof_norm(1)) - base).abs() < 1e-12);
+        let a = PROOF_COUNT_ALPHA;
+        assert!((combined(base, NEUTRAL, NEUTRAL, proof_norm(1), a) - base).abs() < 1e-12);
         assert!(
-            (combined(base, NEUTRAL, NEUTRAL, proof_norm(150)) - base * 1.05).abs() < 1e-12,
+            (combined(base, NEUTRAL, NEUTRAL, proof_norm(150), a) - base * 1.05).abs() < 1e-12,
             "the clamp caps the boost at +5%"
         );
+    }
+
+    /// `proof_alpha = 0.0` is the damped arm: the proof signal is inert at
+    /// every count, and the other boosts are untouched. This is what the
+    /// consolidation pooling recall runs with.
+    #[test]
+    fn a_zero_proof_alpha_makes_the_count_inert() {
+        for count in [0, 1, 2, 26, 150] {
+            assert_eq!(
+                combined(0.8, 0.9, 0.2, proof_norm(count), 0.0).to_bits(),
+                combined(0.8, 0.9, 0.2, NEUTRAL, 0.0).to_bits()
+            );
+        }
+        assert!(combined(0.8, NEUTRAL, NEUTRAL, proof_norm(26), PROOF_COUNT_ALPHA) > 0.8);
     }
 
     /// The three COALESCE orders must coexist. Named explicitly, because the
@@ -405,10 +442,13 @@ mod tests {
 
     #[test]
     fn combined_is_neutral_when_every_signal_is() {
-        assert_eq!(combined(0.7, NEUTRAL, NEUTRAL, NEUTRAL), 0.7);
+        assert_eq!(
+            combined(0.7, NEUTRAL, NEUTRAL, NEUTRAL, PROOF_COUNT_ALPHA),
+            0.7
+        );
         // Documented envelope: max ≈ +21%, min ≈ -19% over the base.
-        let hi = combined(1.0, 1.0, 1.0, 1.0);
-        let lo = combined(1.0, 0.0, 0.0, 0.0);
+        let hi = combined(1.0, 1.0, 1.0, 1.0, PROOF_COUNT_ALPHA);
+        let lo = combined(1.0, 0.0, 0.0, 0.0, PROOF_COUNT_ALPHA);
         assert!((hi - 1.1 * 1.1 * 1.05).abs() < 1e-12, "{hi}");
         assert!((lo - 0.9 * 0.9 * 0.95).abs() < 1e-12, "{lo}");
     }

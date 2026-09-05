@@ -90,8 +90,8 @@ struct RetainReply {
 /// `status` **decides**; `chunks_failed` is read only to say so out loud.
 ///
 /// The distinction matters and the manual verification is what surfaced it.
-/// The daemon fails a job only when *nothing* was written
-/// (`all_failed = facts_written == 0 && chunks_failed > 0`), but it withholds
+/// The daemon fails a job only when *no chunk got through*
+/// (`all_failed = chunks_done == 0 && chunks_failed > 0`), but it withholds
 /// the content hash — and therefore declines to advance `confirmed_offset` —
 /// on any run with `chunks_failed > 0` (`retain/mod.rs`'s `clean`). So a job
 /// can be `done` and still leave a **permanent** gap between the two cursors,

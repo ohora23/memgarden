@@ -176,6 +176,7 @@ pub async fn reflect(
         // reflection, not the injection, and re-ranking it is a separate
         // question from the one `semantic_alpha` was measured against.
         semantic_alpha: 0.0,
+        proof_alpha: crate::recall::scoring::PROOF_COUNT_ALPHA,
         preamble: String::new(),
         now_ms: memgarden_core::now_ms(),
     };
