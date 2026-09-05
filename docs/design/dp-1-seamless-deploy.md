@@ -403,12 +403,19 @@ prints what it did; next SessionStart is quiet
 
 ### 8.3 Decisions
 
-* **The plugin is the distribution unit, the binary is the payload.** Plugin
-  version and release version are the same number. The marketplace's own
-  auto-update is the signal source, so the per-session check is a local
-  comparison of two version strings — zero network on the hook path. The
-  releases-API check exists only for installs without the plugin, and runs
-  in the same detached-child shape as `catchup`, never in the hook itself.
+* **The plugin carries the skills; the binary is the payload; the signal is
+  the daily check.** Revised while building: the docs say a plugin's
+  `hooks.json` and a `settings.json` hook with the same command **both run
+  and nothing deduplicates them**, so a plugin that also wired the four
+  events would double every hook for anyone who ran `hooks install`. The
+  plugin therefore ships `skills/update` and `skills/doctor` only, and the
+  signal comes from `hook update-check` — the detached child `session-start`
+  spawns beside `catchup`, once a day, one request, one cache file. The
+  recall hook reads that file (one `read`, no network) and says one line when
+  the release's `published_at` is newer than the binary's own mtime — which
+  works for a source build as well as a release build, where comparing tags
+  would not. Plugin version and release tag are still the same number; the
+  release workflow refuses a tag that does not match `plugin.json`.
 * **The approval is the permission prompt.** `self-update` is deliberately
   *not* in the skill's `allowed-tools`. A pre-approved update is an
   auto-update, and a daemon that rewrites the person's memory store is not
@@ -438,6 +445,8 @@ prints what it did; next SessionStart is quiet
    (notes from `docs/releases/<tag>.md`, build id = tag), `memgarden self-update`
    with the schema check, `--backup-to` backup and restart included — no
    "half": the schema gate is what makes an update safe to approve.
-7. The plugin (`hooks/hooks.json`, `skills/update`, `skills/doctor`) and the
-   SessionStart comparison + notice.
-8. The detached releases-API check for non-plugin installs.
+7. ~~The plugin (`skills/update`, `skills/doctor`) and the notice.~~ Shipped;
+   no `hooks.json` (see §8.3). The notice rides the recall hook's
+   `systemMessage`, because `session-start` emits nothing by design.
+8. ~~The detached releases-API check.~~ Shipped as `hook update-check`, for
+   every install, plugin or not.

@@ -118,6 +118,7 @@ pub fn run() {
     // Detached, and last: whatever it costs is not on the session's clock.
     if let Ok(exe) = std::env::current_exe() {
         super::spawn_detached(&exe, &["hook", "catchup", &input.session_id]);
+        super::spawn_detached(&exe, &["hook", "update-check"]);
     }
 }
 
