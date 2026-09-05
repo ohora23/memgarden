@@ -249,8 +249,9 @@ pub async fn run(opts: &Options<'_>) -> Result<Vec<BankReport>> {
         work.push((archive, stats));
     }
 
+    // A file from a newer binary is refused inside `Db::open` (DP-1 §4.1);
+    // the import used to carry its own copy of that check.
     let db = Arc::new(Db::open(opts.db).map_err(store)?);
-    assert_schema_version(&db)?;
     let drain = opts
         .drain
         .clone()
@@ -354,25 +355,6 @@ fn parse_bind(bind: &str) -> Result<std::net::SocketAddr> {
     bind.parse().map_err(|_| MigrateError::UnparseableBind {
         bind: bind.to_string(),
     })
-}
-
-/// `Db::open` migrates forward (`lib.rs:52-58`) but has nothing to say about a
-/// database written by a **newer** binary: every migration entry sees
-/// `version <= current` and skips (`migrate.rs:44-48`), leaving `user_version`
-/// ahead of us and the import writing into a schema it does not know.
-fn assert_schema_version(db: &Db) -> Result<()> {
-    let found: i64 = db
-        .read()
-        .map_err(store)?
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .map_err(|e| store(e.to_string()))?;
-    if found != memgarden_store::LATEST_VERSION {
-        return Err(MigrateError::SchemaVersionMismatch {
-            found,
-            supported: memgarden_store::LATEST_VERSION,
-        });
-    }
-    Ok(())
 }
 
 /// The target bank must be empty and unmarked, or `--replace` must say so.
@@ -2325,8 +2307,9 @@ mod tests {
         );
     }
 
-    /// `Db::open` migrates forward and is silent about a database written by a
-    /// newer binary: every entry sees `version <= current` and skips.
+    /// `Db::open` refuses a database written by a newer binary (the guard in
+    /// `migrate.rs`), and the import surfaces that as a store error rather
+    /// than opening a schema it does not know.
     #[tokio::test]
     async fn a_database_from_a_newer_binary_is_refused() {
         let fixture = Fixture::real();
@@ -2337,10 +2320,12 @@ mod tests {
         })
         .unwrap();
         drop(db);
-        assert!(matches!(
-            fixture.import().await,
-            Err(MigrateError::SchemaVersionMismatch { .. })
-        ));
+        match fixture.import().await {
+            Err(MigrateError::Store { message }) => {
+                assert!(message.contains("older binary"), "{message}")
+            }
+            other => panic!("expected the store guard, got {other:?}"),
+        }
     }
 
     /// The checksum guard is in front of everything, so a snapshot whose bytes

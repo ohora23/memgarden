@@ -321,13 +321,6 @@ pub enum MigrateError {
     #[error("{bind:?} is not a socket address this binary can probe")]
     UnparseableBind { bind: String },
 
-    /// `Db::open` migrates forward but never backward: a database written by a
-    /// newer binary keeps its `user_version` and every migration entry skips
-    /// (`migrate.rs:44-48`), so an import would write into a schema it does
-    /// not know.
-    #[error("database is at schema_version {found}, this binary writes {supported}")]
-    SchemaVersionMismatch { found: i64, supported: i64 },
-
     /// An import must start from an empty bank or it is not reproducible —
     /// `recall_bench.rs:180-186`'s rule, moved from the database to the bank.
     #[error("{bank} already holds {nodes} nodes; pass --replace to purge it first")]

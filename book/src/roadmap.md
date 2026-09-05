@@ -606,6 +606,13 @@ ported, each row with the fact that would reopen it.
 - **Git branch and HEAD in `anchors`.** The hook reads them — every transcript
   record carries `gitBranch` — and does not send them. It is a wire-contract
   change, deferred until the read path needs it.
+- **Seamless deploys.** A restart already loses no data by design (cursor
+  protocol, `fail_stale`, the NULL watermark, `catchup`); what it lacks is a
+  socket that stays open across the process, a backup that happens *because*
+  the schema version changed, a guard against an older binary opening a newer
+  DB, and a build identity the hook and daemon can compare.
+  [The design](../../docs/design/dp-1-seamless-deploy.md), with the
+  version-to-version risk table.
 
 ### Out of scope
 

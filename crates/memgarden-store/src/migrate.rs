@@ -47,6 +47,23 @@ pub const LATEST_VERSION: i64 = MIGRATIONS[MIGRATIONS.len() - 1].0;
 /// first one's already-committed version and skips, so the DDL is never
 /// double-applied.
 pub fn migrate(conn: &mut Connection) -> Result<()> {
+    // A file newer than this binary is refused, not opened. Without this an
+    // older daemon started against a newer schema: every migration is
+    // `<= user_version`, the loop is a no-op, `/healthz` says HEALTHY, and
+    // the first statement naming a column the newer schema dropped fails —
+    // possibly hours later, inside a background task. Rolling back means
+    // restoring the backup the deploy made, then the old binary; this error
+    // is what makes that order the only one that works (DP-1 §4.1).
+    let current: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(store_err)?;
+    if current > LATEST_VERSION {
+        return Err(memgarden_core::Error::Storage(format!(
+            "database schema is v{current} but this build only knows v{LATEST_VERSION}: \
+             this is an older binary opening a newer file. Restore the backup taken \
+             before the v{current} migration, or run the newer build."
+        )));
+    }
     for &(version, sql) in MIGRATIONS {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)

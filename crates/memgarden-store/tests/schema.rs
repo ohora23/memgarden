@@ -99,6 +99,30 @@ fn migrate_upgrades_a_v1_database_in_place() {
     assert_eq!(banks, 1);
 }
 
+/// The rollback guard: a file stamped newer than this build is refused
+/// with a named error, not silently opened. `Db::open` reaching `migrate`
+/// is the whole path; nothing in between inspects the version.
+#[test]
+fn migrate_refuses_a_database_newer_than_the_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("future.db");
+    {
+        let db = Db::open(&path).unwrap();
+        let conn = db.read().unwrap();
+        conn.pragma_update(None, "user_version", memgarden_store::LATEST_VERSION + 1)
+            .unwrap();
+    }
+    let err = match Db::open(&path) {
+        Ok(_) => panic!("an older binary must not open a newer file"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains(&format!("v{}", memgarden_store::LATEST_VERSION + 1))
+            && err.contains("older binary"),
+        "{err}"
+    );
+}
+
 #[test]
 fn fts_triggers_sync() {
     let db = Db::open_memory().unwrap();
