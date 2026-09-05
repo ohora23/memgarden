@@ -1,0 +1,14 @@
+# systemd owns the port so a restart never refuses a hook (DP-1 D1).
+# Install both files into ~/.config/systemd/user/, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now memgardend.socket memgardend.service
+[Unit]
+Description=MemGarden daemon socket (:9100)
+Documentation=https://github.com/ohora23/memgarden
+
+[Socket]
+ListenStream=127.0.0.1:9100
+Backlog=128
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

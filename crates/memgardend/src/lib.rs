@@ -7,6 +7,7 @@ pub mod events;
 pub mod extract;
 pub mod json;
 pub mod links;
+pub mod listen;
 pub mod mental;
 pub mod metrics_task;
 pub mod middleware;
