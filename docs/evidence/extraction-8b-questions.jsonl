@@ -1,0 +1,15 @@
+{"id":"q01","corpus":"c1","bank":"memgarden","q":"mg-1b-import 세션 끝에서 README 갱신과 커밋은 어떻게 마무리됐나? PR을 올렸나?"}
+{"id":"q02","corpus":"c1","bank":"memgarden","q":"freezing이 있었던 뒤에 README 정리와 커밋이 됐는지 확인한 결과는?"}
+{"id":"q03","corpus":"c1","bank":"memgarden","q":"재부팅하기 전에 정리하기로 한 것은 무엇이었나?"}
+{"id":"q04","corpus":"c2","bank":"memgarden","q":"Orca의 그래프로 세션을 자동으로 잇자는 제안은 계획에 어떻게 반영됐나?"}
+{"id":"q05","corpus":"c2","bank":"memgarden","q":"PR #48을 머지한 뒤에 무엇을 며칠 기다리기로 했나?"}
+{"id":"q06","corpus":"c2","bank":"memgarden","q":"task_ledger 행 수의 상한이 11인 이유는?"}
+{"id":"q07","corpus":"c2","bank":"memgarden","q":"세션 핸드오프 문서는 어디에 어떤 형태로 만들었나?"}
+{"id":"q08","corpus":"c3","bank":"PrInter_Improve","q":"PrimeIntellect 플랫폼의 장단점 분석 결론은 무엇이었나?"}
+{"id":"q09","corpus":"c3","bank":"PrInter_Improve","q":"prime-agent 저장소에서 참고하기로 한 점은 무엇인가?"}
+{"id":"q10","corpus":"c3","bank":"PrInter_Improve","q":"스킬을 캐싱 형태로 두자는 요청에 대한 답과 skillOverrides 설정은?"}
+{"id":"q11","corpus":"c3","bank":"PrInter_Improve","q":"agentmemory 플러그인을 끄는 방법은?"}
+{"id":"q12","corpus":"c3","bank":"PrInter_Improve","q":"memgarden과 agentmemory의 역할 분담은 어떻게 정해졌나?"}
+{"id":"q13","corpus":"c4","bank":"physicalAI_Mujoco","q":"physicalAI_Mujoco 프로젝트는 무엇을 했던 프로젝트인가?"}
+{"id":"q14","corpus":"c5","bank":"memgarden","q":"'이제 뭐 해야 해'라는 물음에 정리된 남은 일은 무엇이었나?"}
+{"id":"q15","corpus":"c2","bank":"memgarden","q":"Q14(장부 덮어쓰기 빈도)는 어떻게 답하기로 했나?"}
