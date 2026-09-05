@@ -1,0 +1,18 @@
+[Unit]
+Description=MemGarden daemon (:9100)
+Documentation=https://github.com/ohora23/memgarden
+Requires=memgardend.socket
+After=memgardend.socket network-online.target
+
+[Service]
+Type=simple
+# The binary itself, never a wrapper script: LISTEN_PID must be this process.
+ExecStart=%h/.cargo/bin/memgardend
+# Graceful shutdown finishes the current chunk; 30 s is a chunk on the GPU.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

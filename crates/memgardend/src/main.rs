@@ -74,8 +74,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let app = routes::router(state.clone());
-    let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
-    tracing::info!(addr = %cfg.bind, "listening");
+    let (listener, source) = memgardend::listen::listener(&cfg.bind).await?;
+    tracing::info!(addr = %cfg.bind, source, "listening");
 
     let metrics_task_handle = tokio::spawn(metrics_task::run(
         db.clone(),

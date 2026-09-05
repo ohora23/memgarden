@@ -98,24 +98,20 @@ curl -s localhost:9100/metrics.json | jq .   # 카운터, 히스토그램, 원�
 
 <details><summary>systemd user unit 예시</summary>
 
-```ini
-# ~/.config/systemd/user/memgardend.service
-[Unit]
-Description=MemGarden daemon
-After=network.target
-
-[Service]
-ExecStart=%h/repositories/memgarden/target/release/memgardend
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
+Two units, in `scripts/systemd/`: the **socket** unit owns `127.0.0.1:9100`
+and hands it to the daemon, so a restart (a deploy, a crash) never refuses a
+hook — connections wait in the kernel backlog for the new process. The daemon
+detects the handed-over socket (`LISTEN_FDS`/`LISTEN_PID`) and binds itself
+only when there is none.
 
 ```bash
-systemctl --user enable --now memgardend
+cp scripts/systemd/memgardend.{socket,service} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now memgardend.socket memgardend.service
 ```
+
+The service's `ExecStart` must be the binary itself, not a wrapper script:
+systemd names the process the socket is for by PID.
 </details>
 
 ---
