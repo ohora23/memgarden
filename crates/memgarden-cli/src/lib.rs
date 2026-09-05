@@ -125,6 +125,9 @@ pub fn dispatch(args: &[String]) -> ExitCode {
         // name so it can be run by hand with `--dry-run`, which is the only
         // way to observe a process whose three streams are `/dev/null`.
         (Some("hook"), Some("catchup")) => cmd::catchup::run(args),
+        // The other detached child `session-start` spawns: the daily release
+        // check (DP-1 §8). Never on a hook's own clock.
+        (Some("hook"), Some("update-check")) => cmd::update_check::run(),
 
         // Test-only. Reachable by name but not documented in `hooks status` or
         // the installer, because its entire job is to prove that a panic

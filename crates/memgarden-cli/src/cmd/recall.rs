@@ -478,6 +478,17 @@ fn emit(
             .filter(|_| first_notice_this_session(dir, &input.session_id, &reply.ollama)),
         _ => None,
     };
+    // A newer release, at most once a day, from the cache the detached
+    // `update-check` child keeps — one file read, no network (DP-1 §8).
+    let notice = match (
+        notice,
+        (cfg.hooks.mode == "full")
+            .then(|| super::update_check::notice(dir, now_ms))
+            .flatten(),
+    ) {
+        (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
+        (a, b) => a.or(b),
+    };
     if injected.is_some() || notice.is_some() {
         if cfg.hooks.mode == "full" {
             // Exactly one line of compact JSON. `writeln!` rather than

@@ -24,8 +24,10 @@ jobs:
         with:
           toolchain: "1.95.0"
       - uses: Swatinem/rust-cache@v2
-      - name: notes must exist
-        run: test -f "docs/releases/${GITHUB_REF_NAME}.md"
+      - name: notes must exist, plugin version must match the tag
+        run: |
+          test -f "docs/releases/${GITHUB_REF_NAME}.md"
+          test "v$(python3 -c 'import json; print(json.load(open(".claude-plugin/plugin.json"))["version"])')" = "$GITHUB_REF_NAME"
       - name: build
         run: MEMGARDEN_BUILD="$GITHUB_REF_NAME" cargo build --release --bin memgardend --bin memgarden
       - name: package

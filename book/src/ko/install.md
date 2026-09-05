@@ -136,6 +136,25 @@ It downloads the release asset, checks its sha256, refuses a build older than
 your database, backs up before a schema change, installs both binaries beside
 the running ones (previous kept as `.prev`), restarts the service, and waits
 for `/healthz` to report the new build.
+
+**Being told.** Once a day, a detached child of the session-start hook asks
+GitHub for the latest release and caches the answer; when a release newer
+than your install exists, the recall hook shows one line — once a day, not
+every prompt — saying so. `memgarden self-update --snooze 7` defers it.
+
+**From Claude Code.** The repository is also a plugin with two skills:
+
+```
+/plugin marketplace add ohora23/memgarden
+/plugin install memgarden@memgarden
+```
+
+`/memgarden:update` runs the dry run, tells you what would change, and then
+runs `memgarden self-update` — the permission prompt on that command is the
+approval, on purpose. `/memgarden:doctor` reads `memgarden hooks status` for
+you. The plugin carries **no hooks**: a plugin hook and a `settings.json` hook
+both run and nothing deduplicates them, so the wiring stays with
+`memgarden hooks install`.
 </details>
 
 ---

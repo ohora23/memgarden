@@ -1,0 +1,10 @@
+{
+  "name": "memgarden",
+  "version": "0.1.0",
+  "description": "Skills for operating a MemGarden install from Claude Code: /memgarden:update (a release is available, the person approves, it installs) and /memgarden:doctor. Hooks are wired by `memgarden hooks install`, not by this plugin — a plugin hook and a settings.json hook both run, and nothing deduplicates them.",
+  "author": { "name": "ohora23", "url": "https://github.com/ohora23/memgarden" },
+  "homepage": "https://github.com/ohora23/memgarden",
+  "repository": "https://github.com/ohora23/memgarden",
+  "license": "MIT",
+  "keywords": ["memory", "claude-code", "hooks", "rust"]
+}

@@ -13,6 +13,7 @@ pub mod retain;
 pub mod self_update;
 pub mod session_end;
 pub mod session_start;
+pub mod update_check;
 
 use std::io::Write;
 use std::path::Path;

@@ -97,9 +97,19 @@ fn update(argv: &[String]) -> Result<(), String> {
         match a.as_str() {
             "--version" => version = Some(it.next().ok_or("--version needs a tag")?.clone()),
             "--dry-run" => dry_run = true,
+            "--snooze" => {
+                let days: i64 = it
+                    .next()
+                    .and_then(|d| d.parse().ok())
+                    .ok_or("--snooze needs a number of days")?;
+                let cfg = memgarden_core::config::Config::load().map_err(|e| e.to_string())?;
+                super::update_check::snooze(&cfg.hooks.state_dir, days, memgarden_core::now_ms());
+                println!("update notices snoozed for {days} day(s)");
+                return Ok(());
+            }
             other => {
                 return Err(format!(
-                    "unknown argument {other}; usage: memgarden self-update [--version <tag>] [--dry-run]"
+                    "unknown argument {other}; usage: memgarden self-update [--version <tag>] [--dry-run] [--snooze <days>]"
                 ));
             }
         }

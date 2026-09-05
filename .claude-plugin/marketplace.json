@@ -1,0 +1,15 @@
+{
+  "name": "memgarden",
+  "owner": {
+    "name": "ohora23",
+    "url": "https://github.com/ohora23"
+  },
+  "description": "MemGarden \u2014 a local memory system for Claude Code. This marketplace carries the operating skills (/memgarden:update, /memgarden:doctor); the daemon and hook binary come from GitHub releases.",
+  "plugins": [
+    {
+      "name": "memgarden",
+      "source": "./",
+      "description": "Operate a MemGarden install from Claude Code: /memgarden:update and /memgarden:doctor."
+    }
+  ]
+}
