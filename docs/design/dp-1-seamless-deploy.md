@@ -338,9 +338,11 @@ first time it calls.
 
 1. ~~The `user_version > LATEST_VERSION` guard (§4.1).~~ Shipped with this
    note: the only item here that closes a silent-corruption path.
-2. D1 socket activation + unit files under `scripts/systemd/`.
-3. D3 build identity: `build.rs`, `/healthz.build`, client header, `doctor`.
-4. D2 `scripts/deploy.sh` using 1–3.
+2. ~~D1 socket activation + unit files under `scripts/systemd/`.~~ #59; measured on
+   the live machine: 219 `/livez` probes across a restart, 0 refused, 55 ms worst.
+3. ~~D3 build identity: `build.rs`, `/healthz.build`, client header, `hooks status`.~~ #60.
+4. ~~D2 `scripts/deploy.sh` using 1–3.~~ Shipped; the `doctor` extension became
+   a line in `hooks status`.
 5. D4 `interrupted`, when the `failed` count from deploys becomes a nuisance.
 
 Each is a PR with a Premises box whose commands are the ones in §0.

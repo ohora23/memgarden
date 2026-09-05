@@ -113,6 +113,18 @@ systemctl --user enable --now memgardend.socket memgardend.service
 
 The service's `ExecStart` must be the binary itself, not a wrapper script:
 systemd names the process the socket is for by PID.
+
+**Upgrading** is one script from a clean checkout at the commit you want:
+
+```bash
+scripts/deploy.sh
+```
+
+It builds both binaries, compares the schema this build wants with the
+database's `PRAGMA user_version` and takes a `VACUUM INTO` backup first if
+they differ, installs by rename, restarts the service (the socket unit keeps
+the port open), and then refuses to finish until `/healthz` reports the commit
+it just built and `memgarden hooks status` says the hook binary matches.
 </details>
 
 ---
