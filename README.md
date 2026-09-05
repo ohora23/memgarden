@@ -73,7 +73,7 @@ Every one of those stores what **was** true. What none of them holds is what is 
 
 ## Getting started
 
-Requires Rust and a running [Ollama](https://ollama.com) with an extraction model (default `qwen3-14b-nothink`).
+Requires Rust and a running [Ollama](https://ollama.com) with an extraction model (default `qwen3-14b-nothink`, a 16 GB card; 12 GB and 8 GB options in [What GPU it needs](#what-gpu-it-needs)).
 
 ```bash
 cargo install --path crates/memgardend --bin memgardend    # the daemon
@@ -97,6 +97,40 @@ memgarden hooks uninstall           # restores settings.json to its pre-install 
 The web UI is at `http://127.0.0.1:9100/ui/` — dashboard, benefit ledger, and the memory graph.
 
 **Coming from the old Python system?** Only then: [migration runbook](docs/runbook-migration.md). A fresh install skips it and just lets the bank fill.
+
+## What GPU it needs
+
+The hot path never touches the GPU. Recall, embeddings and reranking run on CPU
+and finish in milliseconds. The card serves one thing — the local extraction
+model behind Ollama — and only in the background: fact extraction after a
+session, the task ledger, consolidation, mental-model refresh. On this machine
+that is about a hundred calls a day, nothing waits on any of them, and the card
+sits idle in between. So it does not have to be *your* GPU. The spare in the
+second slot, or the card you just replaced, is the right home for it.
+
+Measured with Ollama 0.21 at an 8,192-token context (the largest window the
+daemon ever requests), `q8_0` KV cache, flash attention, every layer on the
+card. "VRAM" is what `ollama ps` reports after a warm load; `nvidia-smi` reads
+about 0.5 GB more for the driver context.
+
+| Card | Model | Weights on disk | VRAM in use | Status |
+|---|---|---|---|---|
+| **16 GB** | `qwen3-14b-nothink` (Qwen3-14B Q6_K), the default | 11.3 GB | **12.2 GB** | validated — every number in this README came from it |
+| **12 GB** | Qwen3-14B Q5_K_M (`hf.co/bartowski/Qwen_Qwen3-14B-GGUF:Q5_K_M`) | 9.8 GB | **10.7 GB** | same model, smaller quant; 1.3 GB to spare |
+| **8 GB** | `qwen3:8b` (Qwen3-8B Q4_K_M) | 4.9 GB | **5.6 GB** | fits with 2.4 GB to spare; extraction quality on the recall harness not yet measured |
+
+Two settings decide whether a card fits. `OLLAMA_KV_CACHE_TYPE=q8_0` halves
+the KV cache — the 14B's is 0.7 GB at 8k tokens quantized, 1.4 GB at Ollama's
+f16 default — and the daemon never asks for more than 8,192 tokens of context,
+so a larger `num_ctx` in the Modelfile only spends VRAM. The model is one line
+in `config.toml`: `[ollama] model = "qwen3:8b"`.
+
+If the card disappears — a driver that no longer matches the kernel, Secure
+Boot refusing the DKMS module — Ollama falls back to CPU silently and the
+daemon keeps answering HEALTHY. Recall is unaffected. Extraction slows about
+15× (0.25 → 3.8 minutes per chunk, measured on a Ryzen 9800X3D) and
+consolidation rounds stop finishing inside their deadline. When retain looks
+slow, check `nvidia-smi` before anything else.
 
 ## Day to day
 
