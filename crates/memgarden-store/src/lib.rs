@@ -1,4 +1,26 @@
 pub mod banks;
+
+/// A consistent snapshot of `src` at `dest` via `VACUUM INTO`, without
+/// migrating, without stopping a daemon that has `src` open (WAL), and with
+/// the vec extension registered — `VACUUM INTO` re-creates every
+/// `CREATE VIRTUAL TABLE … USING vec0` in the new file, which fails on a
+/// connection that does not know the module. This is why the deploy takes
+/// its pre-migration backup through the binary and not through `sqlite3`.
+pub fn backup_into(
+    src: &std::path::Path,
+    dest: &std::path::Path,
+) -> memgarden_core::error::Result<()> {
+    use rusqlite::OpenFlags;
+    register_vec_extension();
+    let conn = rusqlite::Connection::open_with_flags(
+        src,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| memgarden_core::Error::Storage(e.to_string()))?;
+    conn.execute("VACUUM INTO ?1", [dest.to_string_lossy().as_ref()])
+        .map_err(|e| memgarden_core::Error::Storage(e.to_string()))?;
+    Ok(())
+}
 mod conn;
 pub mod consolidate;
 pub mod documents;

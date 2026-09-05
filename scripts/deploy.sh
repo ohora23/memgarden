@@ -51,7 +51,9 @@ else
     #    snapshot under WAL and does not stop the daemon.
     BACKUP="$(dirname "$DB")/backup-pre-v${WANT}-$(date -u +%Y%m%dT%H%M%SZ).db"
     say "backup (schema v$HAVE -> v$WANT)"
-    python3 -c 'import sqlite3,sys; sqlite3.connect(sys.argv[1]).execute(f"VACUUM INTO \x27{sys.argv[2]}\x27")' "$DB" "$BACKUP"
+    # Through the new binary: `VACUUM INTO` re-creates the vec0 virtual
+    # tables, which only a connection with the extension can do.
+    ./target/release/memgardend --backup-to "$BACKUP"
     ls -la "$BACKUP"
   elif [ "$WANT" -lt "$HAVE" ]; then
     echo "this build (v$WANT) is OLDER than the database (v$HAVE): it will refuse to start. Restore the backup first."

@@ -10,6 +10,7 @@ pub mod catchup;
 pub mod hooks;
 pub mod recall;
 pub mod retain;
+pub mod self_update;
 pub mod session_end;
 pub mod session_start;
 

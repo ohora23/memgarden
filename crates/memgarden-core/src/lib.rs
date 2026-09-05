@@ -13,6 +13,10 @@ pub use error::Error;
 /// request so the two can be compared (DP-1 D3).
 pub const BUILD: &str = env!("MEMGARDEN_BUILD");
 
+/// The target triple this binary was built for (`x86_64-unknown-linux-gnu`),
+/// which is the suffix of the release asset `self-update` downloads.
+pub const TARGET: &str = env!("MEMGARDEN_TARGET");
+
 /// Embedding vector dimension (bge-small-en-v1.5 parity with legacy system).
 pub const EMBEDDING_DIM: usize = 384;
 

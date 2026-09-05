@@ -29,4 +29,9 @@ fn main() {
         }
     });
     println!("cargo:rustc-env=MEMGARDEN_BUILD={build}");
+    // The triple this binary is for, so `self-update` can name its release asset.
+    println!(
+        "cargo:rustc-env=MEMGARDEN_TARGET={}",
+        std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string())
+    );
 }

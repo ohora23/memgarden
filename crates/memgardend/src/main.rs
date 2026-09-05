@@ -21,6 +21,19 @@ async fn main() -> anyhow::Result<()> {
         );
         return Ok(());
     }
+    // `--backup-to <path>`: a pre-migration snapshot of the configured
+    // database through a connection that knows vec0, without `Db::open`
+    // (which would migrate first — the wrong order for a backup).
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) == Some("--backup-to") {
+        let Some(dest) = argv.get(2) else {
+            anyhow::bail!("--backup-to needs a path");
+        };
+        let cfg = Config::load()?;
+        memgarden_store::backup_into(&cfg.db_path, std::path::Path::new(dest))?;
+        println!("backup: {} -> {dest}", cfg.db_path.display());
+        return Ok(());
+    }
     let cfg = Config::load()?;
     init_tracing(&cfg.log_level);
 
