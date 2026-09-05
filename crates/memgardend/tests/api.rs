@@ -108,6 +108,9 @@ async fn healthz_reports_healthy() {
     };
     assert_eq!(body["status"], expected, "{body}");
     assert_eq!(body["schema_version"], memgarden_store::LATEST_VERSION);
+    // DP-1 D3: the daemon says which commit it is, and it is this one.
+    assert_eq!(body["build"], memgarden_core::BUILD, "{body}");
+    assert!(!memgarden_core::BUILD.is_empty());
 }
 
 #[tokio::test]

@@ -21,7 +21,7 @@ use axum::{Json, Router};
 use serde_json::json;
 use tower_http::trace::TraceLayer;
 
-use crate::middleware::{check_host, stamp_token, track_http};
+use crate::middleware::{check_host, note_client_build, stamp_token, track_http};
 use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
@@ -153,6 +153,7 @@ pub fn router(state: AppState) -> Router {
         // Both apply to every route, including the unmeasured ones.
         .layer(from_fn(check_host))
         .layer(from_fn(stamp_token))
+        .layer(from_fn(note_client_build))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

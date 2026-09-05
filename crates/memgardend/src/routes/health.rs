@@ -67,6 +67,7 @@ pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
 
     let db_path = state.cfg.db_path.display().to_string();
     let version = env!("CARGO_PKG_VERSION");
+    let build = memgarden_core::BUILD;
     let embedding = crate::embed::embed_status();
     let ollama = crate::ollama::ollama_status();
     let ollama_last_error = crate::ollama::last_error()
@@ -85,6 +86,7 @@ pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
                 Json(json!({
                     "status": status,
                     "version": version,
+                    "build": build,
                     "schema_version": schema_version,
                     "uptime_ms": uptime_ms,
                     "db_path": db_path,
@@ -102,6 +104,7 @@ pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
             Json(json!({
                 "status": "UNHEALTHY",
                 "version": version,
+                "build": build,
                 "schema_version": null,
                 "uptime_ms": uptime_ms,
                 "db_path": db_path,
@@ -117,6 +120,7 @@ pub async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
             Json(json!({
                 "status": "UNHEALTHY",
                 "version": version,
+                "build": build,
                 "schema_version": null,
                 "uptime_ms": uptime_ms,
                 "db_path": db_path,

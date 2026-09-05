@@ -6,6 +6,13 @@ pub mod types;
 
 pub use error::Error;
 
+/// What is running: the short git SHA this binary was built from, `-dirty`
+/// if the tree had uncommitted changes, `unknown` without a repository, or
+/// whatever `MEMGARDEN_BUILD` said at build time (a release tag). Stamped by
+/// `build.rs`; reported by `/healthz` and sent by the hook binary on every
+/// request so the two can be compared (DP-1 D3).
+pub const BUILD: &str = env!("MEMGARDEN_BUILD");
+
 /// Embedding vector dimension (bge-small-en-v1.5 parity with legacy system).
 pub const EMBEDDING_DIM: usize = 384;
 
