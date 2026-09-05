@@ -401,10 +401,12 @@ This is the finding the manual verification produced, and it is the one to read
 first, because it contradicts the criterion the plan sets for that very
 verification ("`byte_offset` and `confirmed_offset` **converging**").
 
-The daemon fails a job only when *nothing* was written:
+The daemon fails a job only when *no chunk got through* (as of 2026-09-05;
+it was `facts_written == 0`, which failed a transcript of empty chunks beside
+one lost one and re-extracted all of them):
 
 ```rust
-let all_failed = progress.facts_written == 0 && progress.chunks_failed > 0;
+let all_failed = progress.chunks_done == 0 && progress.chunks_failed > 0;
 let clean = aborted.is_none() && !all_failed && progress.chunks_failed == 0;
 ```
 

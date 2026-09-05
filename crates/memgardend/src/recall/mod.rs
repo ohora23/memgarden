@@ -100,6 +100,10 @@ pub struct RecallParams {
     pub cap_per_source: usize,
     /// `[recall] semantic_alpha`; `0.0` is legacy scoring exactly.
     pub semantic_alpha: f64,
+    /// Weight of the `proof_count` boost — `scoring::PROOF_COUNT_ALPHA` for
+    /// the injection, `0.0` where the caller's result feeds an UPDATE that
+    /// grows `proof_count` (consolidation pooling). See `scoring::combined`.
+    pub proof_alpha: f64,
     pub preamble: String,
     /// Injected rather than read from the clock so `injected_text` can be
     /// asserted byte-exact (Critic Revision NIT-20).
@@ -584,6 +588,7 @@ pub async fn recall(
                 recency,
                 temporal,
                 proof,
+                p.proof_alpha,
                 semantic,
                 p.semantic_alpha,
             );

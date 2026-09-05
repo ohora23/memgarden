@@ -30,15 +30,25 @@ struct StubState {
     calls: Arc<AtomicUsize>,
     /// 1-based call ordinals that should answer HTTP 500 instead of facts.
     fail_on: Arc<Vec<usize>>,
+    /// 1-based call ordinals that extract cleanly and find nothing.
+    empty_on: Arc<Vec<usize>>,
 }
 
 /// Spawns a stub `/api/chat` on a free loopback port; returns its base URL and
 /// the call counter.
 async fn spawn_stub_ollama(fail_on: Vec<usize>) -> (String, Arc<AtomicUsize>) {
+    spawn_stub_ollama_with(fail_on, vec![]).await
+}
+
+async fn spawn_stub_ollama_with(
+    fail_on: Vec<usize>,
+    empty_on: Vec<usize>,
+) -> (String, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let state = StubState {
         calls: calls.clone(),
         fail_on: Arc::new(fail_on),
+        empty_on: Arc::new(empty_on),
     };
     let app = axum::Router::new()
         .route("/api/generate", axum::routing::post(stub_chat))
@@ -59,6 +69,10 @@ async fn stub_chat(
     let n = state.calls.fetch_add(1, Ordering::SeqCst) + 1;
     if state.fail_on.contains(&n) {
         return (StatusCode::INTERNAL_SERVER_ERROR, "stub failure").into_response();
+    }
+    if state.empty_on.contains(&n) {
+        return axum::Json(json!({ "response": json!({ "facts": [] }).to_string() }))
+            .into_response();
     }
     // The ledger call reuses this stub and wants a different shape. It is
     // told apart by its system prompt rather than by call order, because
@@ -831,6 +845,39 @@ async fn one_failed_chunk_does_not_fail_the_job() {
         "the failure is recorded, not swallowed"
     );
     assert!(calls.load(Ordering::SeqCst) >= 3);
+}
+
+/// `all_failed` is "no chunk got through", not "nothing was written". A
+/// transcript whose chunks legitimately hold nothing worth keeping, with one
+/// chunk lost to a 500, is partial: failing it rewound the cursor and
+/// re-extracted every empty chunk on the next post.
+#[tokio::test]
+async fn empty_chunks_beside_one_failure_are_partial_not_failed() {
+    let (url, _calls) = spawn_stub_ollama_with(vec![2], vec![1, 3, 4, 5, 6, 7, 8]).await;
+    let harness = with_worker(&url, |cfg| cfg.retain.chunk_size = 400).await;
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let response = harness
+        .app
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({ "messages": transcript(6), "session_id": "sess-empty", "is_initial": true }),
+        ))
+        .await
+        .unwrap();
+    let job_id = body_json(response).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let job = await_job(&harness.db, &job_id).await;
+    assert_eq!(job.facts_written, 0);
+    assert_eq!(job.chunks_failed, 1);
+    assert_eq!(job.chunks_done, job.chunks_total - 1);
+    assert_eq!(
+        job.status, "partial",
+        "empty extractions are chunks that got through, not failures"
+    );
 }
 
 #[tokio::test]

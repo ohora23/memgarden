@@ -741,6 +741,13 @@ async fn pool_observations(
             // reflection, not the injection, and re-ranking it is a separate
             // question from the one `semantic_alpha` was measured against.
             semantic_alpha: 0.0,
+            // Off, and not for parity: this is the one recall whose result
+            // feeds an UPDATE that grows `proof_count`, so a proof boost
+            // here is a loop with no damping — heavily-sourced observations
+            // rank higher, get pooled more, get updated more, gain sources.
+            // Relatedness alone decides the pool; the count stays a
+            // read-only signal for the injection. See `scoring::combined`.
+            proof_alpha: 0.0,
             preamble: String::new(),
             now_ms: memgarden_core::now_ms(),
         };

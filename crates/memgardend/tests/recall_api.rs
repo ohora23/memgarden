@@ -640,6 +640,7 @@ async fn reranker_disabled_is_a_pure_passthrough() {
             tags_match: memgardend::recall::TagsMatch::Any,
             cap_per_source: 0,
             semantic_alpha: 0.0,
+            proof_alpha: memgardend::recall::scoring::PROOF_COUNT_ALPHA,
             preamble: state.cfg.recall.preamble.clone(),
             now_ms: NOW,
         };

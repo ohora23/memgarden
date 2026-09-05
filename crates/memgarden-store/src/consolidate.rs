@@ -305,6 +305,12 @@ pub struct FactRow {
 /// `types=[...]` on its unconsolidated query (`consolidator.py:890-933`),
 /// where the equivalent guard is a `consolidated_at IS NULL` column.
 ///
+/// Retracted and expired facts are excluded, the same predicate
+/// `search::hydrate` applies: a fact the user has withdrawn must not be
+/// summarised into an observation that outlives the retraction. A skipped
+/// fact stays below the watermark, which is fine — it was never going to be
+/// consolidated.
+///
 /// **`id > after_id` is the whole watermark mechanism.** MemGarden has no
 /// per-fact `consolidated_at`: `memory_nodes.id` is a monotone SQLite rowid,
 /// so "everything newer than the last run's high-water mark" is one indexed
@@ -318,6 +324,8 @@ pub fn unconsolidated(db: &Db, bank_id: &str, after_id: i64, limit: usize) -> Re
             "SELECT id, uuid, text, occurred_start, occurred_end, mentioned_at
              FROM memory_nodes
              WHERE bank_id = ?1 AND fact_type <> 'observation' AND id > ?2
+               AND superseded_by IS NULL
+               AND (expires_at IS NULL OR expires_at > unixepoch('subsec') * 1000)
              ORDER BY id LIMIT ?3",
         )
         .map_err(store_err)?;
@@ -343,7 +351,9 @@ pub fn count_unconsolidated(db: &Db, bank_id: &str, after_id: i64) -> Result<i64
     db.read()?
         .query_row(
             "SELECT count(*) FROM memory_nodes
-             WHERE bank_id = ?1 AND fact_type <> 'observation' AND id > ?2",
+             WHERE bank_id = ?1 AND fact_type <> 'observation' AND id > ?2
+               AND superseded_by IS NULL
+               AND (expires_at IS NULL OR expires_at > unixepoch('subsec') * 1000)",
             params![bank_id, after_id],
             |r| r.get(0),
         )
@@ -957,6 +967,24 @@ mod tests {
         assert_eq!(count_unconsolidated(&db, "b1", 0).unwrap(), 4);
         assert_eq!(count_unconsolidated(&db, "b1", facts[2]).unwrap(), 1);
         assert_eq!(count_unconsolidated(&db, "b1", experience).unwrap(), 0);
+
+        // A retracted fact is not input either: the same liveness predicate
+        // `search::hydrate` applies, so a withdrawn fact cannot be summarised
+        // into an observation that outlives the retraction.
+        assert_eq!(
+            nodes::mark_superseded(&db, "b1", &[(facts[0], facts[1])]).unwrap(),
+            1
+        );
+        assert_eq!(
+            unconsolidated(&db, "b1", 0, 100)
+                .unwrap()
+                .iter()
+                .map(|f| f.id)
+                .collect::<Vec<_>>(),
+            vec![facts[1], facts[2], experience],
+            "superseded fact excluded"
+        );
+        assert_eq!(count_unconsolidated(&db, "b1", 0).unwrap(), 3);
     }
 
     #[test]

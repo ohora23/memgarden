@@ -361,9 +361,12 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
         flush(state, &task.job_id, &progress).await;
     }
 
-    // Review LOW 13: "nothing was written and something failed" is the real
-    // all-failed condition. Skipped chunks must not mask it.
-    let all_failed = progress.facts_written == 0 && progress.chunks_failed > 0;
+    // Review LOW 13: "no chunk got through and something failed" is the real
+    // all-failed condition. Skipped chunks must not mask it — and neither
+    // must chunks that extracted cleanly and found nothing to keep: counting
+    // on `facts_written` failed a job whose only failure was one chunk
+    // beside N empty ones, rewound the cursor, and re-extracted all of them.
+    let all_failed = progress.chunks_done == 0 && progress.chunks_failed > 0;
     let clean = aborted.is_none() && !all_failed && progress.chunks_failed == 0;
     progress.status = if aborted.is_some() || all_failed {
         METRICS.retain_errors.fetch_add(1, Ordering::Relaxed);

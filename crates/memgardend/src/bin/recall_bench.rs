@@ -532,6 +532,8 @@ fn mean(rows: &[QueryMetrics]) -> QueryMetrics {
 /// overall recall@10 moved 0.3345 -> 0.3363, and the memcompare stratum
 /// *dropped* 0.3476 -> 0.3276. Small, signed, real. MRR and nDCG@10 are still
 /// the columns with something to say.
+// Positional knobs of a fixed-arity CLI, not a struct in waiting.
+#[allow(clippy::too_many_arguments)]
 async fn bench(
     db_path: &Path,
     gold_path: &Path,
@@ -539,6 +541,7 @@ async fn bench(
     out_path: Option<&Path>,
     rerank_top_k: Option<usize>,
     semantic_alpha: f64,
+    proof_alpha: f64,
     fact_types: Vec<FactType>,
 ) -> anyhow::Result<()> {
     let gold = read_gold(gold_path)?;
@@ -596,6 +599,7 @@ async fn bench(
             tags_match: TagsMatch::Any,
             cap_per_source: 0,
             semantic_alpha,
+            proof_alpha,
             preamble: String::new(),
             now_ms: BENCH_NOW_MS,
         };
@@ -716,6 +720,9 @@ async fn bench(
             // The second treatment. `0.0` is legacy scoring, so every row
             // written before this knob existed is a `0.0` row.
             "semantic_alpha": semantic_alpha,
+            // The third. `PROOF_COUNT_ALPHA` (0.1) is what every row written
+            // before this knob existed ran with; `0.0` is the damped arm.
+            "proof_alpha": proof_alpha,
         },
         // The **set** of per-query statuses present in this run, sorted. Travels
         // with every number so a figure can never be quoted without the caveat
@@ -956,7 +963,7 @@ async fn load_reranker(state: &AppState) -> anyhow::Result<()> {
 const USAGE: &str = "\
 usage:
   recall_bench import <corpus.jsonl> <db-path>
-  recall_bench bench  <db-path> <gold.jsonl> <corpus.jsonl> [results.jsonl] [rerank=<top_k>] [semantic=<alpha>]
+  recall_bench bench  <db-path> <gold.jsonl> <corpus.jsonl> [results.jsonl] [rerank=<top_k>] [semantic=<alpha>] [proof=<alpha>] [types=<a,b>]
 
 `rerank=<top_k>` turns CE-11's cross-encoder on. Everything else about the
 measurement is pinned to the AX-2 baseline's configuration and is not
@@ -975,6 +982,9 @@ async fn main() -> anyhow::Result<()> {
     // legacy scoring exactly, which is the ledger's baseline arm, so a run
     // without the flag stays comparable to every row already in the file.
     let mut semantic_alpha: f64 = 0.0;
+    // The proof-count boost's weight. Default is the production constant so
+    // a run without the flag stays comparable to every earlier row.
+    let mut proof_alpha: f64 = memgardend::recall::scoring::PROOF_COUNT_ALPHA;
     // `types=world`, `types=world,observation`, ... Default: all three.
     let mut fact_types = vec![FactType::World, FactType::Observation, FactType::Experience];
     if let Some(i) = args.iter().position(|a| a.starts_with("types=")) {
@@ -1001,6 +1011,17 @@ async fn main() -> anyhow::Result<()> {
         anyhow::ensure!(
             (0.0..=1.0).contains(&semantic_alpha),
             "semantic= must be in 0.0..=1.0, got {semantic_alpha}"
+        );
+    }
+    if let Some(i) = args.iter().position(|a| a.starts_with("proof=")) {
+        let raw = args.remove(i);
+        let value = raw.trim_start_matches("proof=");
+        proof_alpha = value
+            .parse()
+            .map_err(|_| anyhow::anyhow!("proof= wants a number, got {value:?}"))?;
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&proof_alpha),
+            "proof= must be in 0.0..=1.0, got {proof_alpha}"
         );
     }
     if let Some(i) = args.iter().position(|a| a.starts_with("rerank=")) {
@@ -1032,6 +1053,7 @@ async fn main() -> anyhow::Result<()> {
                 None,
                 rerank_top_k,
                 semantic_alpha,
+                proof_alpha,
                 fact_types,
             )
             .await
@@ -1044,6 +1066,7 @@ async fn main() -> anyhow::Result<()> {
                 Some(&path(4)),
                 rerank_top_k,
                 semantic_alpha,
+                proof_alpha,
                 fact_types,
             )
             .await
