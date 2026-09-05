@@ -13,7 +13,7 @@ Neither needs root, a database server, or a network.
 | | why | check |
 |---|---|---|
 | **Rust 1.95+** | the whole thing | `cargo --version` |
-| **Ollama**, with a model pulled | fact extraction. Default `qwen3-14b-nothink` needs a 16 GB card (12.2 GB measured); a 12 GB card takes the Q5_K_M quant, an 8 GB card takes `qwen3:8b` (5.6 GB). The GPU is background-only — a spare card is fine. See the README, *What GPU it needs* | `curl -s localhost:11434/api/tags` |
+| **Ollama**, with a model pulled | fact extraction. Default `qwen3-14b-nothink` needs a 16 GB card (12.2 GB measured); a 12 GB card takes the Q5_K_M quant, an 8 GB card fits `qwen3:8b` (5.6 GB) but its extraction measured well short (`docs/evidence/extraction-8b-result.md`), so 12 GB is the practical minimum. The GPU is background-only — a spare card is fine. See the README, *What GPU it needs* | `curl -s localhost:11434/api/tags` |
 | **~500 MB disk** | embedding model cache + the SQLite file | |
 | **Linux** | the only tested platform. `File::lock()` is portable; nothing else is tested elsewhere | |
 

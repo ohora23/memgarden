@@ -13,7 +13,7 @@ DB 서버도, 네트워크도 필요 없다.
 | | 이유 | 확인 |
 |---|---|---|
 | **Rust 1.95+** | 전부 | `cargo --version` |
-| **Ollama** + 받아둔 모델 | 사실 추출. 기본 `qwen3-14b-nothink`은 16 GB 카드가 필요하다(실측 12.2 GB). 12 GB 카드는 Q5_K_M 양자화, 8 GB 카드는 `qwen3:8b`(5.6 GB). GPU는 백그라운드 전용이라 남는 카드 하나면 된다. README의 *What GPU it needs* 참고 | `curl -s localhost:11434/api/tags` |
+| **Ollama** + 받아둔 모델 | 사실 추출. 기본 `qwen3-14b-nothink`은 16 GB 카드가 필요하다(실측 12.2 GB). 12 GB 카드는 Q5_K_M 양자화, 8 GB 카드에는 `qwen3:8b`(5.6 GB)가 들어가지만 추출 품질이 실측에서 크게 못 미쳤다(`docs/evidence/extraction-8b-result.md`). 실질 최소는 12 GB. GPU는 백그라운드 전용이라 남는 카드 하나면 된다. README의 *What GPU it needs* 참고 | `curl -s localhost:11434/api/tags` |
 | **디스크 ~500MB** | 임베딩 모델 캐시 + SQLite 파일 | |
 | **Linux** | 유일하게 테스트된 플랫폼. `File::lock()`은 이식 가능하지만 나머지는 검증 안 됨 | |
 
