@@ -97,6 +97,13 @@ pub fn run() {
         if !input.cwd.is_empty() {
             input.cwd.clone_into(&mut st.cwd);
         }
+        // The context was rebuilt or emptied: what recall injected before is
+        // no longer in front of the model, so it may be sent again. `resume`
+        // and `startup` keep the list — a resumed session still holds its
+        // history.
+        if matches!(input.source.as_str(), "compact" | "clear") {
+            st.injected_uuids.clear();
+        }
         match mirrored {
             Mirrored::Ok(_) => {
                 st.transport_failures = 0;

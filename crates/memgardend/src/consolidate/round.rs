@@ -748,6 +748,7 @@ async fn pool_observations(
             // Relatedness alone decides the pool; the count stays a
             // read-only signal for the injection. See `scoring::combined`.
             proof_alpha: 0.0,
+            exclude_uuids: vec![],
             preamble: String::new(),
             now_ms: memgarden_core::now_ms(),
         };

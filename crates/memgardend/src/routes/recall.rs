@@ -54,7 +54,16 @@ pub struct RecallRequest {
     /// Overrides `[recall] preamble` for this request.
     #[serde(default)]
     pub preamble: Option<String>,
+    /// Node uuids the client already injected this session; withheld from
+    /// the result after the budget fit. Bounded so a client cannot make the
+    /// daemon scan an unbounded list on every prompt.
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
+
+/// More than this and the client is not tracking a session, it is sending
+/// its whole history; the hook caps its own list well below this.
+pub const MAX_EXCLUDE: usize = 2_000;
 
 /// Hybrid recall: BM25 + vector, RRF-fused, combined-scored, cut to the
 /// token budget, plus the ready-to-inject `<memgarden_memories>` block.
@@ -155,6 +164,11 @@ async fn recall_inner(
         cap_per_source: state.cfg.recall.cap_per_source,
         semantic_alpha: state.cfg.recall.semantic_alpha,
         proof_alpha: recall::scoring::PROOF_COUNT_ALPHA,
+        exclude_uuids: {
+            let mut ex = body.exclude;
+            ex.truncate(MAX_EXCLUDE);
+            ex
+        },
         preamble: body
             .preamble
             .unwrap_or_else(|| state.cfg.recall.preamble.clone()),

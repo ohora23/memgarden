@@ -84,6 +84,10 @@ const LAST_RECALL: &str = "last_recall.jsonl";
 struct Reply {
     #[serde(default)]
     injected_text: String,
+    /// What is in `injected_text`, by uuid — remembered so the next prompt
+    /// can ask the daemon not to send it again.
+    #[serde(default)]
+    results: Vec<ReplyItem>,
     #[serde(default)]
     counts: Counts,
     /// The daemon's Ollama status (`ready` | `cpu-only` | `failing` |
@@ -134,6 +138,12 @@ fn first_notice_this_session(dir: &std::path::Path, session_id: &str, status: &s
         .create_new(true)
         .open(marker)
         .is_ok()
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplyItem {
+    #[serde(default)]
+    uuid: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -242,7 +252,13 @@ pub fn run() {
     }
 
     let query = truncate_chars(prompt, cfg.hooks.recall_max_query_chars);
-    let outcome = fetch(&cfg, &bank_id, query);
+    // What this session already holds. Only in `full` mode: in `shadow`
+    // nothing reaches the model, so nothing is "already there".
+    let exclude: Vec<String> = match &st {
+        Some(s) if cfg.hooks.mode == "full" => s.injected_uuids.clone(),
+        _ => Vec::new(),
+    };
+    let outcome = fetch(&cfg, &bank_id, query, &exclude);
     // `record` hands back what it settled on, because the diagnostic must
     // report the counters **as of the end of this invocation** — see `emit`.
     let after = record(&cfg, dir, &input.session_id, &bank_id, &outcome, now);
@@ -288,7 +304,7 @@ fn truncate_chars(s: &str, max: usize) -> &str {
 /// because collapsing them made the live fork's `budget = "low"` cut the
 /// injection to 100 tokens and invalidated the AC-1 A/B against a fork that
 /// sends `low` **and** 1024.
-fn fetch(cfg: &Config, bank_id: &str, query: &str) -> Outcome {
+fn fetch(cfg: &Config, bank_id: &str, query: &str, exclude: &[String]) -> Outcome {
     let target = match super::target(&cfg.hooks) {
         Ok(t) => t,
         // A config fault: it must not move `transport_failures`.
@@ -309,6 +325,7 @@ fn fetch(cfg: &Config, bank_id: &str, query: &str) -> Outcome {
         "maxTokens": cfg.recall.max_tokens,
         "budget": cfg.profile.recall_budget,
         "recallTypes": cfg.recall.types,
+        "exclude": exclude,
     })
     .to_string();
     let path = format!("/v1/banks/{}/recall", http::encode_path_segment(bank_id));
@@ -396,9 +413,17 @@ fn record(
         match outcome {
             // Any success clears the breaker, including a 200 that recalled
             // nothing: the daemon answered, which is all the breaker measures.
-            Outcome::Recalled(_) => {
+            Outcome::Recalled(reply) => {
                 st.transport_failures = 0;
                 st.breaker_open_until_ms = 0;
+                // Remembered only when it will actually be injected: `full`
+                // mode, and under the same size bound `emit` applies.
+                if cfg.hooks.mode == "full"
+                    && !reply.injected_text.is_empty()
+                    && reply.injected_text.len() <= cfg.hooks.max_inject_bytes
+                {
+                    st.note_injected(reply.results.iter().map(|r| r.uuid.clone()));
+                }
             }
             Outcome::Transport => {
                 st.transport_failures = st.transport_failures.saturating_add(1);

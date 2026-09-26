@@ -600,6 +600,7 @@ async fn bench(
             cap_per_source: 0,
             semantic_alpha,
             proof_alpha,
+            exclude_uuids: vec![],
             preamble: String::new(),
             now_ms: BENCH_NOW_MS,
         };
