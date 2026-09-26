@@ -164,7 +164,19 @@ pub struct SessionState {
     /// hook still retries once per `poison_retry_secs`, and any success
     /// clears it.
     pub poisoned_at: Option<i64>,
+
+    /// Node uuids already injected into this session's context, newest last.
+    /// Sent as `exclude` on the next recall so the model is not sold the
+    /// same memory twice; cleared when Claude Code compacts or clears the
+    /// context (`SessionStart` `source = compact | clear`), because the
+    /// context no longer holds them. Capped at [`INJECTED_CAP`], oldest out.
+    #[serde(default)]
+    pub injected_uuids: Vec<String>,
 }
+
+/// Room for a long session: at ~17 items a turn this is ~60 turns of
+/// distinct memories, and the daemon's own cap is above it.
+pub const INJECTED_CAP: usize = 1_000;
 
 impl SessionState {
     /// A session seen for the first time.
@@ -186,6 +198,20 @@ impl SessionState {
             reject_failures: 0,
             breaker_open_until_ms: 0,
             poisoned_at: None,
+            injected_uuids: Vec::new(),
+        }
+    }
+
+    /// Remember what was injected, newest last, bounded.
+    pub fn note_injected(&mut self, uuids: impl IntoIterator<Item = String>) {
+        for u in uuids {
+            if !self.injected_uuids.contains(&u) {
+                self.injected_uuids.push(u);
+            }
+        }
+        if self.injected_uuids.len() > INJECTED_CAP {
+            let drop = self.injected_uuids.len() - INJECTED_CAP;
+            self.injected_uuids.drain(..drop);
         }
     }
 
@@ -558,6 +584,24 @@ pub fn gc(dir: &Path, cutoff_ms: i64) -> std::io::Result<usize> {
 
 #[cfg(test)]
 mod tests {
+    /// The session's "already in context" list: no duplicates, newest last,
+    /// oldest out at the cap, and a pre-field state file still loads.
+    #[test]
+    fn injected_uuids_are_deduped_capped_and_default_empty() {
+        let mut st = super::SessionState::new("s", "b");
+        st.note_injected(["a".to_string(), "b".to_string()]);
+        st.note_injected(["b".to_string(), "c".to_string()]);
+        assert_eq!(st.injected_uuids, ["a", "b", "c"]);
+        st.note_injected((0..super::INJECTED_CAP).map(|i| format!("n{i}")));
+        assert_eq!(st.injected_uuids.len(), super::INJECTED_CAP);
+        assert_eq!(st.injected_uuids[0], "n0", "oldest dropped first");
+        let json = serde_json::to_value(&st).unwrap();
+        let mut old = json.clone();
+        old.as_object_mut().unwrap().remove("injected_uuids");
+        let back: super::SessionState = serde_json::from_value(old).unwrap();
+        assert!(back.injected_uuids.is_empty());
+    }
+
     use super::*;
 
     fn sample(session_id: &str) -> SessionState {

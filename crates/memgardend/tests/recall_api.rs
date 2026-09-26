@@ -504,6 +504,52 @@ async fn token_budget_truncates_at_the_boundary() {
     assert_eq!(body["error"]["code"], "invalid");
 }
 
+/// `exclude` withholds items the client already holds — after the budget
+/// fit, so the injection shrinks rather than refilling with the next
+/// candidate. Repeats were 74% of injected items on this project's own
+/// transcripts.
+#[tokio::test]
+async fn exclude_withholds_already_injected_items_without_refilling() {
+    let (app, db) = test_app(|_| {});
+    banks::create(&db, "b1", None, None).unwrap();
+    for i in 0..5 {
+        seed(&db, FactType::World, &format!("exclword number {i}"), &[]);
+    }
+    let first = recall(&app, json!({ "query": "exclword", "limit": 3 })).await;
+    let got: Vec<String> = first["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["uuid"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(got.len(), 3);
+    assert_eq!(first["counts"]["excluded"], 0);
+
+    let second = recall(
+        &app,
+        json!({ "query": "exclword", "limit": 3, "exclude": got }),
+    )
+    .await;
+    // The three already held are gone and NOT replaced by the two remaining
+    // seeds: `limit` 3 was the cut, and the cut is where the exclusion
+    // applies.
+    assert_eq!(second["counts"]["excluded"], 3);
+    assert_eq!(second["counts"]["returned"], 0);
+    assert_eq!(second["injected_text"], "");
+
+    // Excluding one leaves two, and the tokens are recounted for those two.
+    let third = recall(
+        &app,
+        json!({ "query": "exclword", "limit": 3, "exclude": [got[0].clone()] }),
+    )
+    .await;
+    assert_eq!(third["counts"]["returned"], 2);
+    assert_eq!(third["counts"]["excluded"], 1);
+    assert!(
+        third["counts"]["tokens"].as_u64().unwrap() < first["counts"]["tokens"].as_u64().unwrap()
+    );
+}
+
 #[tokio::test]
 async fn limit_caps_results_below_the_budget() {
     let (app, db) = test_app(|_| {});
@@ -641,6 +687,7 @@ async fn reranker_disabled_is_a_pure_passthrough() {
             cap_per_source: 0,
             semantic_alpha: 0.0,
             proof_alpha: memgardend::recall::scoring::PROOF_COUNT_ALPHA,
+            exclude_uuids: vec![],
             preamble: state.cfg.recall.preamble.clone(),
             now_ms: NOW,
         };
