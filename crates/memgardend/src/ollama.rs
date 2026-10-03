@@ -12,6 +12,17 @@ use tokio::sync::Semaphore;
 use memgarden_core::config::OllamaConfig;
 use memgarden_core::metrics::METRICS;
 
+/// The largest string `maxLength` any `format` schema may carry, in characters.
+///
+/// `maxLength: N` compiles into a grammar of N character repetitions, and both
+/// backends refuse past a limit instead of degrading: Ollama 0.21.2
+/// `/api/generate` compiles 2000 and refuses 2031; llama.cpp on hrvl (reached
+/// through memgarden-shim) compiles 1999 and answers HTTP 400 `failed to parse
+/// grammar` at 2000 (both measured, the second on 2026-09-29). 1500 leaves room
+/// under both and matches the shim's own cap; 2 of 4,772 live observations are
+/// longer (p99 515 chars). `num_predict` stays the primary output bound.
+pub const GRAMMAR_MAX_CHARS: usize = 1500;
+
 /// Bounded wait for an INTERACTIVE caller's turn at the (size-1, by default)
 /// concurrency semaphore. Critic Revision R11: user-facing paths
 /// (`/dry-run-extract` here; `/reflect` later) must fail fast with a 503
@@ -483,6 +494,11 @@ impl OllamaClient {
         //
         // The two-message chat is expressed as `system` + `prompt`, which
         // Ollama renders through the same model template.
+        debug_assert!(
+            max_string_len(schema) <= GRAMMAR_MAX_CHARS,
+            "format schema maxLength {} over GRAMMAR_MAX_CHARS",
+            max_string_len(schema)
+        );
         let body = json!({
             "model": self.cfg.model,
             "system": system,
@@ -670,6 +686,25 @@ struct PsModel {
 struct PsReply {
     #[serde(default)]
     models: Vec<PsModel>,
+}
+
+/// The largest string `maxLength` anywhere in `schema`, 0 if none.
+pub(crate) fn max_string_len(schema: &Value) -> usize {
+    match schema {
+        Value::Object(map) => {
+            let mut best = map
+                .get("maxLength")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(0);
+            for v in map.values() {
+                best = best.max(max_string_len(v));
+            }
+            best
+        }
+        Value::Array(arr) => arr.iter().map(max_string_len).max().unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// What the loaded models say about where inference runs. `None` when
@@ -1011,6 +1046,25 @@ mod tests {
             "a background caller must wait the holder out, got {background:?}"
         );
         assert!(holder.await.unwrap().is_ok());
+    }
+
+    #[test]
+    fn max_string_len_finds_a_nested_max_length() {
+        let deep = json!({
+            "properties": {
+                "a": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "t": {"type": "string", "maxLength": 2000}
+                        }
+                    }
+                }
+            }
+        });
+        assert_eq!(max_string_len(&deep), 2000);
+        assert_eq!(max_string_len(&json!({"type": "string"})), 0);
     }
 
     #[tokio::test]
