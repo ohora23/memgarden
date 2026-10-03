@@ -93,7 +93,10 @@ const FIELD_MAX_CHARS: usize = 500;
 /// left unrun; this bound turns the whole feature into a 100% failure rate
 /// when crossed, which is how CE-10 stayed broken for two months without
 /// anyone noticing, so it must not be possible to build past it.
-const _: () = assert!(FIELD_MAX_CHARS <= 2000, "GBNF repetition limit");
+const _: () = assert!(
+    FIELD_MAX_CHARS <= crate::ollama::GRAMMAR_MAX_CHARS,
+    "GBNF repetition limit"
+);
 
 /// The model's reply. Every field is **required** in the schema and
 /// non-optional here.

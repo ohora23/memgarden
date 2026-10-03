@@ -106,8 +106,8 @@ pub const REFRESH_NUM_CTX: u32 = 8192;
 /// This is a *second* bound, not the primary one: `num_predict`
 /// ([`REFRESH_REPLY_MAX_TOKENS`]) already stops generation. The grammar length
 /// only has to be large enough not to truncate a legitimate document and small
-/// enough to compile, so it is pinned to the largest value measured to work.
-const REFRESH_CONTENT_MAX_CHARS: usize = 2000;
+/// enough to compile, so it takes the shared [`crate::ollama::GRAMMAR_MAX_CHARS`].
+const REFRESH_CONTENT_MAX_CHARS: usize = crate::ollama::GRAMMAR_MAX_CHARS;
 
 /// Memories asked of recall for one refresh. The prompt bound is what
 /// actually decides how many survive; this only stops the pipeline hydrating
@@ -831,7 +831,7 @@ mod tests {
             "system prompt is {system} tokens"
         );
         // The schema's character cap tracks the token cap.
-        assert_eq!(REFRESH_CONTENT_MAX_CHARS, 2000);
+        assert_eq!(REFRESH_CONTENT_MAX_CHARS, 1500);
     }
 
     /// Every `maxLength` this daemon puts on the wire has to compile to a GBNF
@@ -850,7 +850,7 @@ mod tests {
     /// holds with no Ollama running.
     #[test]
     fn every_schema_maxlength_compiles_as_a_grammar() {
-        const GRAMMAR_REPETITION_LIMIT: usize = 2000;
+        const GRAMMAR_REPETITION_LIMIT: usize = crate::ollama::GRAMMAR_MAX_CHARS;
         let cases: [(&str, usize); 2] = [
             ("mental::refresh content", REFRESH_CONTENT_MAX_CHARS),
             (

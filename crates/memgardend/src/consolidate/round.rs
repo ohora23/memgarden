@@ -1106,7 +1106,7 @@ fn validate(
 /// needs. `required` carries the prompt's "every entry must include a
 /// `reason`" (`prompts.py:94`) down to the grammar.
 fn plan_schema() -> Value {
-    let text = json!({"type": "string", "maxLength": 2000});
+    let text = json!({"type": "string", "maxLength": crate::ollama::GRAMMAR_MAX_CHARS});
     let reason = json!({"type": "string", "maxLength": 500});
     let ids = json!({"type": "array", "items": {"type": "string"}});
     json!({

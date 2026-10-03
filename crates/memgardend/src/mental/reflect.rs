@@ -67,7 +67,7 @@ pub const REFLECT_NUM_CTX: u32 = 8192;
 /// for `maxLength` (2000 compiles, 2031 does not, bisected on 0.21.2), so
 /// every reflect call would have failed the moment one was made. `num_predict`
 /// remains the primary bound.
-const REFLECT_ANSWER_MAX_CHARS: usize = 2000;
+const REFLECT_ANSWER_MAX_CHARS: usize = crate::ollama::GRAMMAR_MAX_CHARS;
 
 /// Readable by the grammar-limit guard in `mental::mod`'s tests, which checks
 /// every `maxLength` this daemon emits in one place rather than per module.
@@ -428,7 +428,7 @@ mod tests {
             REFLECT_PROMPT_MAX_TOKENS + u64::from(REFLECT_REPLY_MAX_TOKENS)
                 <= u64::from(REFLECT_NUM_CTX)
         );
-        assert_eq!(REFLECT_ANSWER_MAX_CHARS, 2000);
+        assert_eq!(REFLECT_ANSWER_MAX_CHARS, 1500);
         assert_eq!(
             reflect_schema()["properties"]["answer"]["maxLength"],
             json!(REFLECT_ANSWER_MAX_CHARS)

@@ -989,14 +989,15 @@ async fn the_reply_bounds_reach_the_ollama_request() {
     let body = h.last_request();
     assert_eq!(body["options"]["num_predict"], 256, "refresh: {body}");
     assert_eq!(body["options"]["num_ctx"], 8192, "refresh: {body}");
-    // 2000, not the 8192 this line pinned until 2026-08-29. `maxLength`
+    // 1500 (`GRAMMAR_MAX_CHARS`), not the 8192 this line pinned until
+    // 2026-08-29. `maxLength`
     // compiles to that many GBNF character repetitions and Ollama's
     // `/api/generate` parser refuses past ~2000, so the value this test was
     // guarding made every refresh fail with `failed to load model vocabulary
     // required for format`. The test held the defect in place; nothing caught
     // it because nothing ever called refresh. `num_ctx` above is a different
     // knob and stays at 8192.
-    assert_eq!(body["format"]["properties"]["content"]["maxLength"], 2000);
+    assert_eq!(body["format"]["properties"]["content"]["maxLength"], 1500);
 
     // Reflect: a fixed const ceiling and its own window.
     h.set_reply(json!({"answer": "yes", "memory_ids": [], "mental_model_ids": []}));
@@ -1012,5 +1013,5 @@ async fn the_reply_bounds_reach_the_ollama_request() {
     assert_eq!(body["options"]["num_predict"], 1024, "reflect: {body}");
     assert_eq!(body["options"]["num_ctx"], 8192, "reflect: {body}");
     // Same grammar limit as refresh above — 4096 did not compile either.
-    assert_eq!(body["format"]["properties"]["answer"]["maxLength"], 2000);
+    assert_eq!(body["format"]["properties"]["answer"]["maxLength"], 1500);
 }
