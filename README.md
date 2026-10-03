@@ -43,7 +43,7 @@ Measured on one machine (Ryzen 7 9800X3D, release build) and traceable to a desi
 | recall, under concurrent ingest | 19.6ms p50 / 48.8ms p95 while ~35,700 nodes load | ≤35 / ≤60ms |
 | **hooks, whole turn** | **0.845ms p50** (`recall` + `retain`) | <10ms |
 | cost of measuring | **88ns per request** — 0.00025% of the SLO | zero added latency |
-| input-cap savings | **−75.3%** live, **−86.9%** over a 5.8MB transcript | −55…−87% |
+| input-cap savings | **−86.9%** on a 5.8MB transcript's first retain, **−75.3%** on a tool-heavy fixture; **~0%** on per-turn retains in the default text mode ([why](docs/performance.md#ingest-and-extraction)) | −55…−87% |
 | embedding | 2.41ms p50 single · 26.2s for a 2,718-node corpus | — |
 
 The legacy Python hooks cost **33ms on their disabled path** — more to do nothing than these cost to work.

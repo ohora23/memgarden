@@ -42,9 +42,11 @@ The binary is 1.58MB, links only glibc/libgcc/vdso, and its dependency closure i
 | embedding, corpus | 26.2s for 2,718 nodes | real drain worker including its KNN pass |
 | legacy migration, whole corpus | 207s for 5,288 nodes | dev build; snapshot 1.6s, then documents, facts, entities, observations, links and re-embedding, four banks |
 | transcript delta read | 0.46ms for a 200KB tail; 64.3ms to parse 106.9MB | byte-offset resume, so the common case never re-reads |
-| input-cap savings | **−75.3%** live, **−86.9%** over a 5.8MB transcript | written to the benefit ledger on every retain |
+| input-cap savings | **−86.9%** over a 5.8MB transcript, **−75.3%** on the `live_retain` fixture | first retain of a 1,193-message session (the 300-message backfill cap); a fixture with tool calls on (`include_tool_calls`) |
 | consolidation round | 151s for 50 facts | real Ollama qwen3-14b-nothink, ~50% duty cycle against a 300s interval |
 | reflect | 1.70s warm, 6.21s cold | 3 memories in the payload |
+
+**The cap savings are conditional, and in the default setup they are near zero.** Both figures come from inputs the caps were built for. In the default text mode (`include_tool_calls = false`, no `[profile]`) tool calls and results are dropped before the caps run, so the tool caps have nothing to cut; what remains is the backfill cap, which only fires on a session's first retain past 300 messages. The hooks retain from the first turn, so that is rare. Live ledger, 2026: August 22.6% (a few backfilled sessions), September 0.8%, early October 0.0%. That is not a regression and not a cost increase — the extractor never saw the tool output in the first place. The `coding` profile turns tool calls on, and with it the tool caps.
 
 Extraction wall time is **deliberately not quoted**: the one live measurement (564s for three chunks) ran on a GPU shared with the legacy daemon and against a pathological fixture. It needs re-measuring on an idle card before it means anything.
 
