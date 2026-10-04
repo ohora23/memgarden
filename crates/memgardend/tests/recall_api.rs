@@ -589,9 +589,7 @@ async fn injected_text_carries_the_scores_and_the_block() {
     let injected = out["injected_text"].as_str().unwrap();
     assert!(injected.starts_with("<memgarden_memories>\nRelevant memories:\nCurrent time - "));
     assert!(injected.ends_with("</memgarden_memories>"));
-    assert!(
-        injected.contains("- the daemon binds 127.0.0.1:9100 [observation] (2026-07-01 09:30 UTC)")
-    );
+    assert!(injected.contains("- the daemon binds 127.0.0.1:9100 [observation] (2026-07-01)\n"));
 
     let scores = &out["results"][0]["scores"];
     // n = 1 -> the passthrough denominator guard gives base 1.0; recency is
