@@ -79,7 +79,7 @@ record.
 | recall p50 | ≤ 35 ms | ✅ |
 | recall p95 | ≤ 60 ms | ✅ |
 | **hook overhead** | **< 10 ms** | **0.845 ms per turn** |
-| retain cap savings | −55…−87 % held | ✅ |
+| retain cap savings | −55…−87 % held on a backfilled first retain; ~0 % on per-turn retains in text mode (2026-10) | ✅ |
 
 The hook figure is `recall` + `retain` on one turn, interleaved-paired against
 the same binary doing nothing. For context, the legacy Python hooks cost
