@@ -750,10 +750,55 @@ fn defang(text: &str) -> std::borrow::Cow<'_, str> {
     )
 }
 
-/// The block the Phase C hook injects verbatim, reproducing
-/// `scripts/recall.py:252-258` + `content.py:203-219`: item lines
-/// `- {text} [{type}] ({mentioned_at})` joined by a blank line. Only the tag
-/// name changes (`<memgarden_memories>`); B3's strip list covers both names.
+/// Within this of `now`, an item keeps its time of day ("earlier today" needs
+/// it); older items show the date alone.
+const ITEM_TIME_OF_DAY_MS: i64 = 24 * 3_600_000;
+
+/// `Involving:` values that name no one the model does not already know is in
+/// the conversation. Compared case-insensitively.
+const TRIVIAL_INVOLVING: [&str; 6] = [
+    "user",
+    "assistant",
+    "사용자",
+    "user, assistant",
+    "user and assistant",
+    "the user",
+];
+
+/// The stored text minus the segments that repeat what the line already says.
+///
+/// Extraction stores `what | When: … | Involving: … | why` (`extract::parse`).
+/// Measured on 1,762 items injected after #64: `When:` equalled the item's
+/// own mentioned date 1,112 of 1,176 times, and `Involving:` was `user` /
+/// `assistant` / `사용자` in most of the rest. Only those are dropped — a
+/// `When:` that says something else ("last week", another date) or a real
+/// name stays. Rendering only: the stored text, which BM25 and the embedding
+/// read, is untouched.
+fn compact_text(text: &str, mentioned_date: Option<&str>) -> String {
+    let mut segs = text.split(" | ");
+    let mut out = segs.next().unwrap_or_default().to_string();
+    for seg in segs {
+        let redundant = match (seg.strip_prefix("When: "), seg.strip_prefix("Involving: ")) {
+            (Some(when), _) => mentioned_date.is_some_and(|d| when.trim().starts_with(d)),
+            (_, Some(who)) => TRIVIAL_INVOLVING
+                .iter()
+                .any(|t| who.trim().eq_ignore_ascii_case(t)),
+            _ => false,
+        };
+        if !redundant {
+            out.push_str(" | ");
+            out.push_str(seg);
+        }
+    }
+    out
+}
+
+/// The block the Phase C hook injects verbatim. Shape from
+/// `scripts/recall.py:252-258` + `content.py:203-219` — item lines
+/// `- {text} [{type}] ({mentioned_at})` — trimmed for cost: one newline
+/// between items, the time of day only within [`ITEM_TIME_OF_DAY_MS`], and
+/// [`compact_text`]. Only the tag name changes from legacy
+/// (`<memgarden_memories>`); B3's strip list covers both names.
 ///
 /// Empty when there is nothing to inject — the hook prints nothing then, and
 /// an empty envelope would cost tokens for no content.
@@ -764,17 +809,28 @@ fn build_injection(results: &[RecallItem], preamble: &str, now_ms: i64) -> Strin
     let lines: Vec<String> = results
         .iter()
         .map(|r| {
-            let date = r
-                .mentioned_at
-                .map(|ms| format!(" ({})", format_utc(ms)))
-                .unwrap_or_default();
-            format!("- {} [{}]{}", defang(&r.text), r.fact_type.as_str(), date)
+            let stamp = r.mentioned_at.map(format_utc);
+            // `format_utc` is "%Y-%m-%d %H:%M UTC"; the first 10 bytes are the date.
+            let date = stamp.as_deref().and_then(|s| s.get(..10));
+            let suffix = match (r.mentioned_at, &stamp, date) {
+                (Some(ms), Some(full), _) if now_ms - ms < ITEM_TIME_OF_DAY_MS => {
+                    format!(" ({full})")
+                }
+                (_, _, Some(d)) => format!(" ({d})"),
+                _ => String::new(),
+            };
+            format!(
+                "- {} [{}]{}",
+                defang(&compact_text(&r.text, date)),
+                r.fact_type.as_str(),
+                suffix
+            )
         })
         .collect();
     format!(
         "<memgarden_memories>\n{preamble}\nCurrent time - {}\n\n{}\n</memgarden_memories>",
         format_utc(now_ms),
-        lines.join("\n\n")
+        lines.join("\n")
     )
 }
 
@@ -871,11 +927,48 @@ mod tests {
              Relevant memories:\n\
              Current time - 2026-08-02 04:55 UTC\n\
              \n\
-             - the daemon binds 127.0.0.1:9100 [world] (2026-07-01 09:30 UTC)\n\
-             \n\
+             - the daemon binds 127.0.0.1:9100 [world] (2026-07-01)\n\
              - 메모리 회수는 하이브리드 [observation]\n\
              </memgarden_memories>"
         );
+    }
+
+    #[test]
+    fn injection_keeps_the_time_of_day_within_a_day() {
+        let recent = NOW - 3_600_000; // 03:55:41Z the same day
+        let text = build_injection(&[item("x", FactType::World, Some(recent))], "", NOW);
+        assert!(
+            text.contains("- x [world] (2026-08-02 03:55 UTC)\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn compact_text_drops_only_what_the_line_already_says() {
+        let d = Some("2026-07-01");
+        assert_eq!(
+            compact_text(
+                "moved the port | When: 2026-07-01 | Involving: user | new job",
+                d
+            ),
+            "moved the port | new job"
+        );
+        // A different date, a relative time, and a real name all stay.
+        assert_eq!(
+            compact_text("x | When: 2026-06-30 | Involving: Alice", d),
+            "x | When: 2026-06-30 | Involving: Alice"
+        );
+        assert_eq!(
+            compact_text("x | When: last week", d),
+            "x | When: last week"
+        );
+        // No mentioned date: `When:` cannot be redundant.
+        assert_eq!(
+            compact_text("x | When: 2026-07-01 | Involving: Assistant", None),
+            "x | When: 2026-07-01"
+        );
+        // A `|` inside the fact itself is not a segment boundary.
+        assert_eq!(compact_text("a|b", d), "a|b");
     }
 
     #[test]
