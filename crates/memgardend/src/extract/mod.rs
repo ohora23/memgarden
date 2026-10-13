@@ -215,7 +215,10 @@ mod tests {
             let schema = output_schema(supersession);
             let mut unbounded = Vec::new();
             walk(&schema, "", &mut unbounded);
-            assert!(unbounded.is_empty(), "unbounded string fields: {unbounded:?}");
+            assert!(
+                unbounded.is_empty(),
+                "unbounded string fields: {unbounded:?}"
+            );
             assert!(crate::ollama::max_string_len(&schema) <= crate::ollama::GRAMMAR_MAX_CHARS);
         }
     }
