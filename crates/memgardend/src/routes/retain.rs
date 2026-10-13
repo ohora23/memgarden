@@ -459,7 +459,21 @@ fn prepare(
         content_hash: plan.content_hash.clone(),
         byte_offset: body.byte_offset,
         offset_from: body.offset_from,
+        chunk_size: state.cfg.retain.chunk_size,
+        chunker: crate::retain::chunk::CHUNKER_VERSION,
+        resume: None,
     };
+    // Migration 0014: the job keeps its own input until it settles, so a
+    // restart resumes it instead of failing it. A failed write costs only
+    // that: the row stays task-less and a restart closes it out as before.
+    match serde_json::to_string(&task) {
+        Ok(json) => {
+            if let Err(e) = retain_jobs::set_task(&state.db, job_id, &json) {
+                tracing::warn!(job_id, error = %e, "could not store the retain task; a restart will fail this job");
+            }
+        }
+        Err(e) => tracing::warn!(job_id, error = %e, "could not serialize the retain task"),
+    }
     Ok(Prepared::Queued {
         plan,
         task: Box::new(task),

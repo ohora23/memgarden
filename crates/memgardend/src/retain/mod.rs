@@ -163,7 +163,15 @@ pub fn plan_ingest(
 }
 
 /// One enqueued unit of background work.
-#[derive(Debug, Clone)]
+///
+/// Serialized into `retain_jobs.task` at enqueue (migration `0014`) so a
+/// restart can run the job again — every field is input, nothing is derived
+/// state, except `resume` which startup fills in and is never stored.
+///
+/// `#[serde(default)]`: a field added later must not make every task stored by
+/// the previous build unreadable on the very deploy that adds it.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct RetainTask {
     pub job_id: String,
     pub bank_id: String,
@@ -191,6 +199,21 @@ pub struct RetainTask {
     /// (migration `0008`). `None` leaves the cursor alone rather than
     /// advancing it on a guess.
     pub offset_from: Option<i64>,
+    /// `[retain] chunk_size` when the job was planned. Carried with the task
+    /// so a resumed job cuts the same chunks it counted, even if the config
+    /// changed across the restart.
+    pub chunk_size: usize,
+    /// [`chunk::CHUNKER_VERSION`] when the job was planned. Resume skips
+    /// chunks *by count*, which is only sound if the same text cuts into the
+    /// same chunks; a deploy that changes the chunker changes that, and a
+    /// mismatch fails the job instead of skipping text it never extracted.
+    pub chunker: u32,
+    /// Set only on a job resumed at startup: the counters its row had when the
+    /// daemon stopped. The worker skips the chunks those counters account for
+    /// — chunking is deterministic for the same transcript and chunk size —
+    /// and carries the counts on, so the finished row describes the whole job.
+    #[serde(skip)]
+    pub resume: Option<JobProgress>,
 }
 
 /// Total transcript bytes currently sitting in the retain queue.
@@ -227,6 +250,73 @@ pub fn queued_bytes() -> usize {
     QUEUED_BYTES.load(Ordering::Relaxed)
 }
 
+/// Jobs a previous daemon left unfinished with their task stored (migration
+/// `0014`), ready to re-queue: each carries its row's counters in `resume`,
+/// and its byte budget is reserved as the route would have. A task that no
+/// longer deserializes — written by a build with a different `RetainTask` —
+/// is failed with the reason rather than retried forever.
+pub fn resumable_tasks(db: &memgarden_store::Db) -> Vec<RetainTask> {
+    let rows = match retain_jobs::resumable(db) {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read resumable retain jobs; failing them as before v14");
+            if let Err(e) =
+                retain_jobs::fail_unfinished(db, "daemon restarted before the job finished")
+            {
+                tracing::warn!(error = %e, "failed to close out unfinished retain jobs");
+            }
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for (job, json) in rows {
+        let fail = |reason: String| {
+            let p = JobProgress {
+                status: JobStatus::Failed,
+                chunks_total: job.chunks_total,
+                chunks_done: job.chunks_done,
+                chunks_skipped: job.chunks_skipped,
+                chunks_failed: job.chunks_failed,
+                facts_written: job.facts_written,
+                error: Some(reason),
+                detail: None,
+            };
+            if let Err(e) = retain_jobs::update(db, &job.job_id, &p) {
+                tracing::warn!(job_id = %job.job_id, error = %e, "could not close out an unresumable retain job");
+            }
+        };
+        let mut task: RetainTask = match serde_json::from_str(&json) {
+            Ok(t) => t,
+            Err(e) => {
+                fail(format!("stored retain task unreadable after restart: {e}"));
+                continue;
+            }
+        };
+        if !try_reserve_bytes(task.transcript.len()) {
+            fail("retain queue byte budget exhausted on resume".to_string());
+            continue;
+        }
+        let progress = JobProgress {
+            status: JobStatus::Pending,
+            chunks_total: job.chunks_total,
+            chunks_done: job.chunks_done,
+            chunks_skipped: job.chunks_skipped,
+            chunks_failed: job.chunks_failed,
+            facts_written: job.facts_written,
+            error: job.error.clone(),
+            detail: None,
+        };
+        // Back to `pending` while it waits in the queue: a row left `running`
+        // by the dead process would claim work nobody is doing.
+        if let Err(e) = retain_jobs::update(db, &job.job_id, &progress) {
+            tracing::warn!(job_id = %job.job_id, error = %e, "could not mark a resumed retain job pending");
+        }
+        task.resume = Some(progress);
+        out.push(task);
+    }
+    out
+}
+
 /// Drains the retain queue until shutdown. One task at a time — extraction is
 /// serialized by Ollama's single permit anyway, so a second concurrent job
 /// would only add lock contention.
@@ -234,12 +324,18 @@ pub async fn run_worker(state: AppState, mut rx: tokio::sync::mpsc::Receiver<Ret
     let shutdown = crate::shutdown_signal();
     tokio::pin!(shutdown);
     loop {
+        // `biased`, shutdown first: once SIGTERM is in, a job still waiting
+        // in the queue must stay queued (its stored task resumes it on the
+        // next start). A fair select could start it, and the job's own
+        // shutdown listener — created after the signal was delivered — would
+        // never fire, leaving it to run into SIGKILL.
         tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
             task = rx.recv() => match task {
                 Some(task) => run_job(&state, task).await,
                 None => break,
             },
-            _ = &mut shutdown => break,
         }
     }
 }
@@ -257,7 +353,13 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
 
     // Chunking is a pure CPU pass over a transcript that can reach the body
     // limit; it does not belong on a runtime worker thread.
-    let chunk_size = cfg.chunk_size;
+    // 0 only on a task stored without the field; such a task cannot resume
+    // past chunk 0 anyway (its `chunker` is 0 too — checked below).
+    let chunk_size = if task.chunk_size == 0 {
+        cfg.chunk_size
+    } else {
+        task.chunk_size
+    };
     let transcript = task.transcript.clone();
     let chunks =
         match tokio::task::spawn_blocking(move || chunk::chunk_text(&transcript, chunk_size)).await
@@ -276,26 +378,54 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
             }
         };
 
+    // A resumed job carries its counters on and skips the chunks they account
+    // for. Chunks run strictly in order, so done + failed + skipped is the
+    // index of the first chunk not yet attempted.
+    let resumed = task.resume.clone().unwrap_or_default();
+    let already = (resumed.chunks_done + resumed.chunks_failed + resumed.chunks_skipped) as usize;
+    if already > 0 && task.chunker != chunk::CHUNKER_VERSION {
+        let progress = JobProgress {
+            status: JobStatus::Failed,
+            error: Some(format!(
+                "cannot resume after a restart: planned with chunker v{}, this build cuts v{}",
+                task.chunker,
+                chunk::CHUNKER_VERSION
+            )),
+            ..resumed
+        };
+        flush(state, &task.job_id, &progress).await;
+        METRICS.retain_jobs_failed.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
     let mut progress = JobProgress {
         status: JobStatus::Running,
         chunks_total: chunks.len() as i64,
+        chunks_done: resumed.chunks_done,
+        chunks_failed: resumed.chunks_failed,
+        chunks_skipped: resumed.chunks_skipped,
+        facts_written: resumed.facts_written,
         ..Default::default()
     };
     flush(state, &task.job_id, &progress).await;
+    if already > 0 {
+        tracing::info!(job_id = %task.job_id, from_chunk = already, chunks = chunks.len(), "resuming retain job after a restart");
+    }
 
     // Absolute fact index across the whole document (NIT 16) — the +10ms
     // ordering offsets must keep increasing across chunk boundaries, not
-    // restart at 0 in every chunk.
-    let mut abs_fact_index: usize = 0;
-    let mut last_error: Option<String> = None;
+    // restart at 0 in every chunk. A resumed job starts past the facts it
+    // already wrote.
+    let mut abs_fact_index: usize = resumed.facts_written.max(0) as usize;
+    let mut last_error: Option<String> = resumed.error;
     let mut aborted: Option<String> = None;
+    let mut interrupted = false;
 
     // Critic Revision NIT 15: a long job must react to SIGTERM between
     // chunks, not only between jobs.
     let shutdown = crate::shutdown_signal();
     tokio::pin!(shutdown);
 
-    for (i, chunk) in chunks.iter().enumerate() {
+    for (i, chunk) in chunks.iter().enumerate().skip(already) {
         if started.elapsed() > wall_timeout {
             // Critic Revision R11: parity with the live hindsight daemon's
             // RETAIN_WALL_TIMEOUT=7200. Partial progress stays committed.
@@ -308,7 +438,10 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
             break;
         }
         if futures_ready(&mut shutdown) {
-            aborted = Some(format!("daemon shut down at chunk {}/{}", i, chunks.len()));
+            // Not a failure any more: the job keeps its stored task and the
+            // next start resumes it at this chunk (migration `0014`).
+            interrupted = true;
+            tracing::info!(job_id = %task.job_id, chunk = i, chunks = chunks.len(), "retain job paused for shutdown; resumes on next start");
             break;
         }
 
@@ -329,7 +462,22 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
         // lookup costs a retraction, never a chunk.
         let known = candidate_facts(state, &task.bank_id, chunk).await;
 
-        match extract_chunk(state, &task, chunk, &known).await {
+        // The extraction is the long await — tens of seconds, longer than the
+        // unit's TimeoutStopSec=30 — so it races the shutdown instead of
+        // finishing first. Cancelled here, nothing of this chunk has been
+        // written and the counters say so: a resume starts at this chunk
+        // and stores it exactly once. Waiting it out instead meant SIGKILL
+        // mid-`write_facts` on most restarts, and the chunk stored twice.
+        let extracted = tokio::select! {
+            biased;
+            _ = &mut shutdown => {
+                interrupted = true;
+                tracing::info!(job_id = %task.job_id, chunk = i, chunks = chunks.len(), "retain job paused for shutdown mid-chunk; resumes on next start");
+                break;
+            }
+            r = extract_chunk(state, &task, chunk, &known) => r,
+        };
+        match extracted {
             Ok(facts) => {
                 let n = facts.len();
                 match write_facts(state, &task, facts, abs_fact_index, &known).await {
@@ -359,6 +507,13 @@ async fn run_job_inner(state: &AppState, task: RetainTask) {
             }
         }
         flush(state, &task.job_id, &progress).await;
+    }
+
+    if interrupted {
+        progress.status = JobStatus::Pending;
+        progress.error = last_error;
+        flush(state, &task.job_id, &progress).await;
+        return;
     }
 
     // Review LOW 13: "no chunk got through and something failed" is the real
@@ -1080,6 +1235,9 @@ mod tests {
             content_hash: "hash".to_string(),
             byte_offset: None,
             offset_from: None,
+            chunk_size: 3000,
+            chunker: chunk::CHUNKER_VERSION,
+            resume: None,
         }
     }
 
