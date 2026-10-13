@@ -1815,11 +1815,19 @@ async fn no_task_ledger_is_written_when_the_knob_is_off() {
         None
     );
 
-    // A settled job records where it ran. No prober runs in this harness,
-    // so the status is the startup default; the point is that the field
-    // exists next to the route's token accounting rather than only in a log.
+    // A settled job records where it ran; the point is that the field exists
+    // next to the route's token accounting rather than only in a log. Not
+    // pinned to "ready": the status is a process-wide static
+    // (`ollama::OLLAMA_STATUS`), and tests in this binary that fail chunks on
+    // purpose flip it while this one runs in parallel — 1 in 7 full runs.
     let detail: Value = serde_json::from_str(job.detail.as_deref().unwrap()).unwrap();
-    assert_eq!(detail["inference"], "ready");
+    assert!(
+        matches!(
+            detail["inference"].as_str(),
+            Some("ready" | "cpu-only" | "unreachable" | "failing")
+        ),
+        "inference recorded: {detail}"
+    );
     assert!(
         detail["raw_tokens"].is_number(),
         "POST-time accounting kept: {detail}"
