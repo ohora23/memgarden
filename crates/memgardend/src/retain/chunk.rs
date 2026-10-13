@@ -20,6 +20,12 @@
 
 use serde_json::Value;
 
+/// Bump this whenever a change here can cut the same text into different
+/// chunks. A retain job resumed after a restart skips the chunks it already
+/// finished **by count** (`retain::RetainTask::chunker`), so a stale count
+/// against new boundaries would skip text that was never extracted.
+pub const CHUNKER_VERSION: u32 = 1;
+
 /// Separators for sentence-aware recursive splitting, most- to
 /// least-preferred. The final `""` lets the splitter break mid-word as a
 /// last resort so a chunk can never exceed the budget.

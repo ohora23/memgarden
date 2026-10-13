@@ -319,6 +319,7 @@ mod tests {
             byte_offset: None,
             offset_from: None,
             chunk_size: 3000,
+            chunker: crate::retain::chunk::CHUNKER_VERSION,
             resume: None,
         }
     }

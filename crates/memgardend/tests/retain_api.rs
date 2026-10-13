@@ -1924,3 +1924,57 @@ async fn a_job_cut_off_by_a_restart_resumes_after_its_finished_chunks() {
         "a settled job drops its stored task"
     );
 }
+
+/// A job planned by a chunker this build no longer runs cannot resume by
+/// count — the boundaries may have moved — so it fails with the reason
+/// instead of skipping text it never extracted.
+#[tokio::test]
+async fn a_job_planned_by_another_chunker_fails_instead_of_resuming() {
+    let (url, calls) = spawn_stub_ollama(vec![]).await;
+    let (harness, lost_queue, state) = build(&url, |cfg| cfg.retain.chunk_size = 400);
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+    let response = harness
+        .app
+        .clone()
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({"messages": transcript(6), "session_id": "sess-chunker", "is_initial": true}),
+        ))
+        .await
+        .unwrap();
+    let job_id = body_json(response).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    harness
+        .db
+        .write(|tx| {
+            tx.execute(
+                "UPDATE retain_jobs SET task = json_set(task, '$.chunker', 0),
+                        status = 'running', chunks_total = 7, chunks_done = 1, facts_written = 2
+                  WHERE job_id = ?1",
+                [&job_id],
+            )
+            .map_err(|e| memgarden_core::Error::Storage(e.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+    drop(lost_queue);
+
+    let tasks = retain::resumable_tasks(&harness.db);
+    assert_eq!(tasks.len(), 1);
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tokio::spawn(retain::run_worker(state, rx));
+    for t in tasks {
+        tx.send(t).await.unwrap();
+    }
+    let job = await_job(&harness.db, &job_id).await;
+    assert_eq!(job.status, "failed");
+    assert!(
+        job.error.as_deref().unwrap_or("").contains("chunker v0"),
+        "{:?}",
+        job.error
+    );
+    assert_eq!(job.chunks_done, 1, "the counters it had are kept");
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing re-extracted");
+}

@@ -460,6 +460,7 @@ fn prepare(
         byte_offset: body.byte_offset,
         offset_from: body.offset_from,
         chunk_size: state.cfg.retain.chunk_size,
+        chunker: crate::retain::chunk::CHUNKER_VERSION,
         resume: None,
     };
     // Migration 0014: the job keeps its own input until it settles, so a

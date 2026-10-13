@@ -292,6 +292,22 @@ pub fn fail_stale(db: &Db, reason: &str) -> Result<usize> {
     })
 }
 
+/// The pre-v14 close-out: every `pending`/`running` job failed, stored task
+/// or not. Startup falls back to it when it cannot read the resumable rows —
+/// left alone they would stay `pending` with nothing to run them, and the
+/// hook would wait on them indefinitely.
+pub fn fail_unfinished(db: &Db, reason: &str) -> Result<usize> {
+    let now = now_ms();
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE retain_jobs SET status = 'failed', error = ?1, updated_at = ?2, task = NULL
+             WHERE status IN ('pending','running')",
+            params![reason, now],
+        )
+        .map_err(store_err)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
