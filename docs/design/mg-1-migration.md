@@ -571,7 +571,7 @@ merged into**:
 ```
 ce-4       → ce-1          phase e   → phase a       prd      → pr
 ci.yml     → cli.mjs       shell     → schedule      degraded → derived
-mindvault  → invaliddata   idx_links_to → links      linkedin_obsidian → obsidian
+mindvault  → invaliddata   idx_links_to → links      <project>_obsidian → obsidian
 ```
 
 The mechanism is in the scoring. `resolution_score` is
