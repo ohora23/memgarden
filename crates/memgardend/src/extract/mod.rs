@@ -36,6 +36,33 @@ const MAX_FACTS_PER_CHUNK: usize = 24;
 /// rather than trusted.
 const MAX_SUPERSEDES_PER_FACT: usize = 1;
 
+/// Per-field `maxLength`s, **enforced by the grammar** like `maxItems` above.
+///
+/// An unbounded string field is where a looping reply goes to die: the model
+/// keeps appending to one value until `num_predict` cuts the object off, and
+/// the whole chunk is lost as a truncated prefix. Measured on the live daemon
+/// (2026-10-13): of 5 replies that failed to parse, 2 ran away inside
+/// `occurred_start` (`…Z/N/A/N/A, N/A:00:00.000Z/2026-10-13T…` and an ISO
+/// duration loop), 2 inside a prose field repeating one sentence, and 1
+/// spilled reasoning into a value. Over three weeks, 24 retain jobs ended
+/// `partial` or `failed` on a truncated or degenerate reply. With a
+/// bound, the grammar closes the string and the object, so a runaway costs
+/// one field's tail instead of the chunk — and the degenerate-reply check
+/// still sees the repetition.
+///
+/// Dates get 40: the longest legitimate value is an RFC 3339 timestamp with
+/// a zone offset (29 chars). The prose bounds are well above anything the
+/// prompt asks for; `what` takes the shared grammar ceiling.
+const DATE_MAX_CHARS: usize = 40;
+const SHORT_MAX_CHARS: usize = 300;
+const WHY_MAX_CHARS: usize = 600;
+const ENTITY_MAX_CHARS: usize = 120;
+const MAX_ENTITIES_PER_FACT: usize = 16;
+
+fn bounded(max: usize) -> Value {
+    json!({"type": "string", "maxLength": max})
+}
+
 /// The JSON schema sent as `format`, and — since the transport moved to
 /// `/api/generate` — **actually enforced**. See `ollama.rs::try_chat`: the
 /// same schema on `/api/chat` is silently ignored, which is what made a
@@ -60,16 +87,20 @@ fn output_schema(supersession: bool) -> Value {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "what": {"type": "string"},
-                        "when": {"type": "string"},
-                        "where": {"type": "string"},
-                        "who": {"type": "string"},
-                        "why": {"type": "string"},
+                        "what": bounded(crate::ollama::GRAMMAR_MAX_CHARS),
+                        "when": bounded(SHORT_MAX_CHARS),
+                        "where": bounded(SHORT_MAX_CHARS),
+                        "who": bounded(SHORT_MAX_CHARS),
+                        "why": bounded(WHY_MAX_CHARS),
                         "fact_kind": {"type": "string", "enum": ["event", "conversation"]},
                         "fact_type": {"type": "string", "enum": ["world", "assistant"]},
-                        "occurred_start": {"type": "string"},
-                        "occurred_end": {"type": "string"},
-                        "entities": {"type": "array", "items": {"type": "string"}},
+                        "occurred_start": bounded(DATE_MAX_CHARS),
+                        "occurred_end": bounded(DATE_MAX_CHARS),
+                        "entities": {
+                            "type": "array",
+                            "maxItems": MAX_ENTITIES_PER_FACT,
+                            "items": bounded(ENTITY_MAX_CHARS),
+                        },
                     },
                     "required": ["what", "when", "where", "who", "why", "fact_type"],
                 },
@@ -93,8 +124,8 @@ fn output_schema(supersession: bool) -> Value {
             .and_then(Value::as_object_mut)
             .expect("items.properties");
         if supersession {
-            props.insert("expires_at".to_string(), json!({"type": "string"}));
-            props.insert("superseded_quote".to_string(), json!({"type": "string"}));
+            props.insert("expires_at".to_string(), bounded(DATE_MAX_CHARS));
+            props.insert("superseded_quote".to_string(), bounded(WHY_MAX_CHARS));
             props.insert("supersedes".to_string(), supersedes);
 
             let required = items
@@ -157,6 +188,40 @@ pub async fn extract(
 mod tests {
     use super::*;
     use crate::ollama::OllamaClient;
+
+    /// Every string the model writes is bounded, in both schema arms — an
+    /// unbounded one is where a looping reply runs until `num_predict` cuts
+    /// the chunk off. Enums are already bounded by their values.
+    #[test]
+    fn every_free_string_field_is_bounded() {
+        fn walk(v: &Value, path: &str, unbounded: &mut Vec<String>) {
+            match v {
+                Value::Object(m) => {
+                    if m.get("type") == Some(&json!("string"))
+                        && !m.contains_key("enum")
+                        && !m.contains_key("maxLength")
+                    {
+                        unbounded.push(path.to_string());
+                    }
+                    for (k, child) in m {
+                        walk(child, &format!("{path}/{k}"), unbounded);
+                    }
+                }
+                Value::Array(a) => a.iter().for_each(|c| walk(c, path, unbounded)),
+                _ => {}
+            }
+        }
+        for supersession in [false, true] {
+            let schema = output_schema(supersession);
+            let mut unbounded = Vec::new();
+            walk(&schema, "", &mut unbounded);
+            assert!(
+                unbounded.is_empty(),
+                "unbounded string fields: {unbounded:?}"
+            );
+            assert!(crate::ollama::max_string_len(&schema) <= crate::ollama::GRAMMAR_MAX_CHARS);
+        }
+    }
 
     /// Live end-to-end against the real Ollama (spec: PR B2 Tests bullet).
     /// The `/api/chat` schema-ignoring behavior is only observable live, so
