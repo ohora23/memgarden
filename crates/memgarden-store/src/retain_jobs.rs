@@ -156,7 +156,8 @@ pub fn update(db: &Db, job_id: &str, p: &JobProgress) -> Result<()> {
         tx.execute(
             "UPDATE retain_jobs SET status = ?1, chunks_total = ?2, chunks_done = ?3,
              chunks_skipped = ?4, chunks_failed = ?5, facts_written = ?6, error = ?7,
-             detail = coalesce(?8, detail), updated_at = ?9
+             detail = coalesce(?8, detail), updated_at = ?9,
+             task = CASE WHEN ?1 IN ('done','partial','failed') THEN NULL ELSE task END
              WHERE job_id = ?10",
             params![
                 p.status.as_str(),
@@ -196,6 +197,51 @@ pub fn set_detail_field(db: &Db, job_id: &str, key: &str, value: &str) -> Result
     })
 }
 
+/// Stores the job's serialized input (migration `0014`) so a restart can run
+/// it again. `update` clears it the moment the job reaches a terminal status.
+///
+/// A separate write rather than an `insert` parameter: a crash between the two
+/// leaves a row without a task, which is exactly a pre-v14 row and gets the
+/// old close-out — the safe direction.
+pub fn set_task(db: &Db, job_id: &str, task: &str) -> Result<()> {
+    db.write(|tx| {
+        tx.execute(
+            "UPDATE retain_jobs SET task = ?2 WHERE job_id = ?1",
+            params![job_id, task],
+        )
+        .map_err(store_err)?;
+        Ok(())
+    })
+}
+
+/// Unfinished jobs that still carry their input, oldest first, as
+/// `(job, serialized task)`. Called once at startup, before `fail_stale`,
+/// which leaves these rows alone.
+pub fn resumable(db: &Db) -> Result<Vec<(RetainJob, String)>> {
+    let conn = db.read()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT job_id, task FROM retain_jobs
+              WHERE status IN ('pending','running') AND task IS NOT NULL
+              ORDER BY created_at",
+        )
+        .map_err(store_err)?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(store_err)?
+        .collect::<std::result::Result<_, _>>()
+        .map_err(store_err)?;
+    drop(stmt);
+    drop(conn);
+    let mut out = Vec::with_capacity(rows.len());
+    for (job_id, task) in rows {
+        if let Some(job) = get(db, &job_id)? {
+            out.push((job, task));
+        }
+    }
+    Ok(out)
+}
+
 pub fn get(db: &Db, job_id: &str) -> Result<Option<RetainJob>> {
     let conn = db.read()?;
     conn.query_row(
@@ -229,16 +275,17 @@ pub fn get(db: &Db, job_id: &str) -> Result<Option<RetainJob>> {
     .map_err(store_err)
 }
 
-/// Marks every job still `pending`/`running` as `failed`. Called once at
-/// startup: the queue lives in memory, so a job left mid-flight by a crash
-/// or restart will never be picked up again and must not sit "running"
-/// forever in the Phase C hook's progress view.
+/// Marks every job still `pending`/`running` **that has no stored task** as
+/// `failed`. Called once at startup: the queue lives in memory, so a job left
+/// mid-flight by a crash or restart will never be picked up again and must
+/// not sit "running" forever in the Phase C hook's progress view. A job that
+/// kept its task (migration `0014`) is resumed instead — see `resumable`.
 pub fn fail_stale(db: &Db, reason: &str) -> Result<usize> {
     let now = now_ms();
     db.write(|tx| {
         tx.execute(
             "UPDATE retain_jobs SET status = 'failed', error = ?1, updated_at = ?2
-             WHERE status IN ('pending','running')",
+             WHERE status IN ('pending','running') AND task IS NULL",
             params![reason, now],
         )
         .map_err(store_err)
@@ -294,6 +341,47 @@ mod tests {
         assert_eq!(sorted.len(), names.len(), "status strings must be distinct");
     }
     use crate::banks;
+
+    /// A job that kept its task survives a restart's close-out and comes back
+    /// from `resumable`; one without a task is failed as before; reaching a
+    /// terminal status drops the stored task.
+    #[test]
+    fn a_job_with_its_task_is_resumed_not_failed() {
+        let db = Db::open_memory().unwrap();
+        banks::create(&db, "b1", None, None).unwrap();
+        insert(&db, "kept", "b1", None, None, None, None).unwrap();
+        insert(&db, "bare", "b1", None, None, None, None).unwrap();
+        set_task(&db, "kept", r#"{"job_id":"kept"}"#).unwrap();
+
+        assert_eq!(fail_stale(&db, "restart").unwrap(), 1);
+        assert_eq!(get(&db, "bare").unwrap().unwrap().status, "failed");
+        let resumable_now = resumable(&db).unwrap();
+        assert_eq!(resumable_now.len(), 1);
+        assert_eq!(resumable_now[0].0.job_id, "kept");
+        assert_eq!(resumable_now[0].0.status, "pending");
+        assert_eq!(resumable_now[0].1, r#"{"job_id":"kept"}"#);
+
+        // Still running keeps the task; settling drops it.
+        let mut p = JobProgress {
+            status: JobStatus::Running,
+            ..Default::default()
+        };
+        update(&db, "kept", &p).unwrap();
+        assert_eq!(resumable(&db).unwrap().len(), 1);
+        p.status = JobStatus::Partial;
+        update(&db, "kept", &p).unwrap();
+        assert!(resumable(&db).unwrap().is_empty());
+        let task: Option<String> = db
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT task FROM retain_jobs WHERE job_id = 'kept'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(task, None, "a settled job must not keep its input");
+    }
 
     #[test]
     fn insert_update_get_roundtrip() {

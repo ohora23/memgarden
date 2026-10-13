@@ -2084,11 +2084,11 @@ fn fresh_database_has_the_0012_task_ledger() {
     let db = Db::open_memory().unwrap();
     let conn = db.read().unwrap();
 
-    assert_eq!(memgarden_store::LATEST_VERSION, 13);
+    assert_eq!(memgarden_store::LATEST_VERSION, 14);
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 14);
 
     let mut stmt = conn.prepare("PRAGMA table_info(task_ledger)").unwrap();
     let cols: Vec<(String, i64, Option<String>)> = stmt
@@ -2153,11 +2153,13 @@ fn upgrading_from_v12_drops_done_and_keeps_the_ledger_row() {
     let path = dir.path().join("v12.db");
     {
         let db = Db::open(&path).unwrap();
-        // Rewind a fresh v13 database to the v12 shape: the column back, the
-        // version back, the audit row gone.
+        // Rewind a fresh database to the v12 shape: v14's column gone, the
+        // ledger column back, the version back, the audit rows gone.
         db.write(|tx| {
             tx.execute_batch(
-                "ALTER TABLE task_ledger ADD COLUMN done TEXT NOT NULL DEFAULT '';
+                "ALTER TABLE retain_jobs DROP COLUMN task;
+                 DELETE FROM schema_migrations WHERE version = 14;
+                 ALTER TABLE task_ledger ADD COLUMN done TEXT NOT NULL DEFAULT '';
                  DELETE FROM schema_migrations WHERE version = 13;
                  PRAGMA user_version = 12;
                  INSERT INTO banks (bank_id, created_at, updated_at) VALUES ('b', 0, 0);
@@ -2196,4 +2198,55 @@ fn upgrading_from_v12_drops_done_and_keeps_the_ledger_row() {
     assert_eq!(led.next_action, "merge");
     assert_eq!(led.anchors, "{\"cwd\":\"/w\"}");
     assert_eq!(led.created_at, 1);
+}
+
+/// 0014 adds a nullable `task` to `retain_jobs`, which already holds live
+/// rows. An old row must survive with `task` NULL — that NULL is what tells
+/// startup to close it out the old way rather than resume it.
+#[test]
+fn upgrading_from_v13_adds_a_null_task_to_existing_jobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v13.db");
+    {
+        let db = Db::open(&path).unwrap();
+        db.write(|tx| {
+            tx.execute_batch(
+                "ALTER TABLE retain_jobs DROP COLUMN task;
+                 DELETE FROM schema_migrations WHERE version = 14;
+                 PRAGMA user_version = 13;
+                 INSERT INTO banks (bank_id, created_at, updated_at) VALUES ('b', 0, 0);
+                 INSERT INTO retain_jobs (job_id, bank_id, status, created_at, updated_at)
+                 VALUES ('old', 'b', 'running', 1, 1);",
+            )
+            .map_err(store_err)?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    let db = Db::open(&path).unwrap();
+    let conn = db.read().unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, memgarden_store::LATEST_VERSION);
+    let task: Option<String> = conn
+        .query_row(
+            "SELECT task FROM retain_jobs WHERE job_id = 'old'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(task, None);
+    drop(conn);
+    assert!(
+        memgarden_store::retain_jobs::resumable(&db)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        memgarden_store::retain_jobs::fail_stale(&db, "restart").unwrap(),
+        1,
+        "a pre-v14 job is closed out exactly as before"
+    );
 }

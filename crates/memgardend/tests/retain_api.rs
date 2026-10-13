@@ -1825,3 +1825,102 @@ async fn no_task_ledger_is_written_when_the_knob_is_off() {
         "POST-time accounting kept: {detail}"
     );
 }
+
+/// Migration 0014: a job cut off by a restart is resumed, not failed. The
+/// queue lives in memory, so the "restart" here is a receiver nobody drains:
+/// the 202 lands, the task is stored on the row, one chunk is recorded as
+/// finished, and the in-memory queue is thrown away. What a new process does
+/// next must extract only the chunks that were never attempted.
+#[tokio::test]
+async fn a_job_cut_off_by_a_restart_resumes_after_its_finished_chunks() {
+    let (url, calls) = spawn_stub_ollama(vec![]).await;
+    let (harness, lost_queue, state) = build(&url, |cfg| cfg.retain.chunk_size = 400);
+    memgarden_store::banks::create(&harness.db, "b1", None, None).unwrap();
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(post(
+            "/v1/banks/b1/retain",
+            json!({"messages": transcript(6), "session_id": "sess-resume", "is_initial": true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(response).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The first process got through chunk 0 (two facts, as the stub answers)
+    // and died; its queue went with it.
+    let total = {
+        let transcript_len = serde_json::from_str::<Value>(
+            &harness
+                .db
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT task FROM retain_jobs WHERE job_id = ?1",
+                    [&job_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .expect("the route stores the task with the job"),
+        )
+        .unwrap()["transcript"]
+            .as_str()
+            .unwrap()
+            .len();
+        assert!(transcript_len > 800, "the transcript must split at 400");
+        let tasks_before = memgarden_store::retain_jobs::resumable(&harness.db).unwrap();
+        assert_eq!(tasks_before.len(), 1);
+        let task: retain::RetainTask = serde_json::from_str(&tasks_before[0].1).unwrap();
+        retain::chunk::chunk_text(&task.transcript, task.chunk_size).len() as i64
+    };
+    assert!(total > 1);
+    memgarden_store::retain_jobs::update(
+        &harness.db,
+        &job_id,
+        &memgarden_store::retain_jobs::JobProgress {
+            status: memgarden_store::retain_jobs::JobStatus::Running,
+            chunks_total: total,
+            chunks_done: 1,
+            facts_written: 2,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    drop(lost_queue);
+
+    // The new process: startup's close-out leaves the row alone, and the
+    // resumable task carries the row's counters.
+    assert_eq!(
+        memgarden_store::retain_jobs::fail_stale(&harness.db, "restart").unwrap(),
+        0
+    );
+    let tasks = retain::resumable_tasks(&harness.db);
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].resume.as_ref().unwrap().chunks_done, 1);
+
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tokio::spawn(retain::run_worker(state, rx));
+    for t in tasks {
+        tx.send(t).await.unwrap();
+    }
+    let job = await_job(&harness.db, &job_id).await;
+    assert_eq!(job.status, "done");
+    assert_eq!(job.chunks_total, total);
+    assert_eq!(job.chunks_done, total);
+    assert_eq!(job.facts_written, total * 2);
+    assert_eq!(
+        calls.load(Ordering::SeqCst) as i64,
+        total - 1,
+        "the finished chunk must not be extracted again"
+    );
+    assert!(
+        memgarden_store::retain_jobs::resumable(&harness.db)
+            .unwrap()
+            .is_empty(),
+        "a settled job drops its stored task"
+    );
+}

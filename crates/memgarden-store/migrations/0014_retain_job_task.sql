@@ -1,0 +1,19 @@
+-- MemGarden schema v14: a retain job keeps its own input until it settles.
+--
+-- The retain queue lives in memory. A daemon restart used to close every
+-- unfinished job `failed` ("daemon restarted before the job finished"), and
+-- nothing ever re-sent those bytes: the hook's optimistic cursor had already
+-- moved past them. Measured on the live database (2026-10-14): 29 jobs ended
+-- that way, about 32 MB of transcript never extracted — the single largest
+-- source of retain loss, ahead of the LLM's own failures.
+--
+-- `task` is the serialized `RetainTask` — everything the worker needs to run
+-- the job again, and nothing the request handler would have to recompute. It
+-- is written at enqueue and cleared to NULL when the job reaches a terminal
+-- status, so it costs space only while a job is outstanding. At startup a
+-- `pending`/`running` row that still has its `task` is resumed after the
+-- chunks it already finished, instead of being failed.
+--
+-- Nullable and no default: rows written before v14 carry no task and keep
+-- the old close-out behaviour.
+ALTER TABLE retain_jobs ADD COLUMN task TEXT;

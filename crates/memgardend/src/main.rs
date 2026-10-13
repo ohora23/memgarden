@@ -86,6 +86,25 @@ async fn main() -> anyhow::Result<()> {
     memgardend::retain::warm_tokenizer();
 
     let (retain_tx, retain_rx) = tokio::sync::mpsc::channel(cfg.retain.queue_capacity);
+    // Migration 0014: an unfinished job that kept its task is resumed after
+    // the chunks it already finished — `fail_stale` above left those rows
+    // alone. Sent from a detached task so a backlog longer than the queue
+    // waits for the worker instead of blocking startup.
+    let resumed = memgardend::retain::resumable_tasks(&db);
+    if !resumed.is_empty() {
+        tracing::info!(
+            count = resumed.len(),
+            "resuming retain jobs left unfinished by a restart"
+        );
+        let tx = retain_tx.clone();
+        tokio::spawn(async move {
+            for task in resumed {
+                if tx.send(task).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
     let state = AppState {
         db: db.clone(),
         cfg: cfg.clone(),
