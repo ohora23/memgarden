@@ -293,6 +293,20 @@ pub fn pending_embeddings(db: &Db, limit: usize) -> Result<Vec<PendingEmbeddingR
         .map_err(store_err)
 }
 
+/// `(unembedded, total)` nodes in one bank. Consolidation reads it to wait
+/// out a bulk re-embed (migration 0015), when most of a bank's observations
+/// are briefly invisible to the dense arm it pools and dedups through.
+pub fn embed_backlog(db: &Db, bank_id: &str) -> Result<(i64, i64)> {
+    let conn = db.read()?;
+    conn.query_row(
+        "SELECT COALESCE(SUM(embedding IS NULL), 0), COUNT(*)
+         FROM memory_nodes WHERE bank_id = ?1",
+        params![bank_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(store_err)
+}
+
 /// Embedded nodes of one bank, keyset-paginated by `id` — the CE-7 relink
 /// pass's source. `vecblob::decode` is the exact inverse of what
 /// `set_embeddings_batch` wrote, so rows come back in the shape

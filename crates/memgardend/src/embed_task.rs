@@ -25,6 +25,7 @@ pub async fn load_at_startup(state: AppState) {
             *state.embedder.write().expect("embedder lock poisoned") = Some(Arc::new(embedder));
             embed::set_embed_status(EmbedStatus::Ready);
             tracing::info!("embedding model ready");
+            reembed_stale_mental_models(&state).await;
         }
         Ok(Err(e)) => {
             embed::set_embed_status(EmbedStatus::Error);
@@ -34,6 +35,54 @@ pub async fn load_at_startup(state: AppState) {
             embed::set_embed_status(EmbedStatus::Error);
             tracing::error!(error = %e, "embedding model load task panicked");
         }
+    }
+}
+
+/// Memory nodes go back on the backlog when the embedder changes (migration
+/// 0015); mental models have no backlog, so without this a model whose
+/// trigger never fires would stay invisible to `knn` for good. A handful of
+/// rows, once per start, and a no-op once they all carry the current id.
+async fn reembed_stale_mental_models(state: &AppState) {
+    let db = state.db.clone();
+    let stale = match tokio::task::spawn_blocking(move || {
+        memgarden_store::mental_models::stale_embeddings(&db)
+    })
+    .await
+    {
+        Ok(Ok(rows)) => rows,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "listing stale mental-model vectors failed");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "listing stale mental-model vectors panicked");
+            return;
+        }
+    };
+    let mut done = 0usize;
+    for (bank, id, name, content) in &stale {
+        let text = crate::mental::embedding_text(name, content);
+        let Some(vector) = crate::mental::embed_one(state, text).await else {
+            continue;
+        };
+        let (db, bank, id) = (state.db.clone(), bank.clone(), id.clone());
+        let written = tokio::task::spawn_blocking(move || {
+            let patch = memgarden_store::mental_models::Patch::default();
+            memgarden_store::mental_models::update(&db, &bank, &id, &patch, Some(&vector))
+        })
+        .await;
+        match written {
+            Ok(Ok(_)) => done += 1,
+            Ok(Err(e)) => tracing::warn!(error = %e, "re-embedding a mental model failed"),
+            Err(e) => tracing::warn!(error = %e, "re-embedding a mental model panicked"),
+        }
+    }
+    if !stale.is_empty() {
+        tracing::info!(
+            stale = stale.len(),
+            done,
+            "re-embedded mental models made by another embedder"
+        );
     }
 }
 
@@ -162,7 +211,7 @@ pub async fn drain_once(db: &Arc<Db>, state: &AppState) {
 /// retain-time KNN would find nothing forever.
 ///
 /// For each node just embedded: KNN inside its bank, keep the same-fact_type
-/// neighbours at cosine `>= 0.7`, cap at 20 (`orchestrator.py:1232`).
+/// neighbours at cosine `>= links::SEMANTIC_LINK_THRESHOLD`, cap at 20 (`orchestrator.py:1232`).
 /// Best-effort: the embeddings are already committed and a missing link is a
 /// weaker graph, not a lost fact.
 ///

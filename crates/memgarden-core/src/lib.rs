@@ -17,7 +17,8 @@ pub const BUILD: &str = env!("MEMGARDEN_BUILD");
 /// which is the suffix of the release asset `self-update` downloads.
 pub const TARGET: &str = env!("MEMGARDEN_TARGET");
 
-/// Embedding vector dimension (bge-small-en-v1.5 parity with legacy system).
+/// Embedding vector dimension — 384 for both `multilingual-e5-small` and the
+/// `bge-small-en-v1.5` it replaced, so `vec_nodes` kept its schema.
 pub const EMBEDDING_DIM: usize = 384;
 
 /// Identifies the *producer* of a vector, stored on
@@ -47,7 +48,12 @@ pub const EMBEDDING_DIM: usize = 384;
 /// Lives here rather than in `memgardend::embed` (which owns the model) only
 /// because `memgarden-store` writes the column and cannot depend on the
 /// daemon crate — the same reason `EMBEDDING_DIM` is here.
-pub const EMBEDDING_MODEL_ID: &str = "fastembed:BAAI/bge-small-en-v1.5";
+///
+/// **2026-10: bumped for a weights change.** The E5 `passage: `/`query: `
+/// prefixes are part of the producer too (`embed.rs`). Migration 0015 nulls
+/// every vector tagged otherwise so the backlog re-embeds it, and its SQL
+/// spells this string — `tests/schema.rs` holds the two equal.
+pub const EMBEDDING_MODEL_ID: &str = "fastembed:intfloat/multilingual-e5-small";
 
 /// Current unix time in milliseconds.
 pub fn now_ms() -> i64 {

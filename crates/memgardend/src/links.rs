@@ -20,9 +20,21 @@ pub const TEMPORAL_WINDOW_HOURS: f64 = 24.0;
 /// most 10-20 neighbours per node, so more is write amplification.
 pub const MAX_TEMPORAL_LINKS_PER_NODE: usize = 20;
 
-/// `DEFAULT_SEMANTIC_LINK_MIN_SIMILARITY` (`config.py:929`). Compared with
-/// `>=` (`link_utils.py:561,619`).
-pub const SEMANTIC_LINK_THRESHOLD: f64 = 0.7;
+/// Compared with `>=` (`link_utils.py:561,619`). Legacy's
+/// `DEFAULT_SEMANTIC_LINK_MIN_SIMILARITY` was 0.7 for `bge-small-en-v1.5`;
+/// `multilingual-e5-small` packs every cosine into a higher, narrower band
+/// (query-to-memory deciles 0.79-0.87), so 0.7 would link everything. 0.87 is
+/// the threshold that writes the same number of edges as bge's 0.7 did over
+/// the live `memgarden` bank — 55,513 against 54,196 for 3,971 nodes. Matched
+/// on count, not on which pairs: the two models agree on only ~22% of them,
+/// which is the point of switching.
+pub const SEMANTIC_LINK_THRESHOLD: f64 = 0.87;
+
+/// The weight bge's 0.7 threshold gave the weakest edge. Edge weights are
+/// rescaled onto `[this, 1]` so the graph arm, which takes each neighbour's
+/// max over its semantic, temporal (0.3-1.0) and causal (1.0) edges, weighs a
+/// semantic edge against the others as it did before the model change.
+const SEMANTIC_WEIGHT_FLOOR: f64 = 0.7;
 
 /// Neighbours per node in the streaming semantic pass. **20, not 50**: the
 /// signature default is 50 but the only live caller passes 20
@@ -145,9 +157,15 @@ pub fn semantic_links(
             from_node_id: node_id,
             to_node_id: id,
             link_type: "semantic",
-            weight: sim.clamp(0.0, 1.0),
+            weight: semantic_weight(sim),
         })
         .collect()
+}
+
+/// `[SEMANTIC_LINK_THRESHOLD, 1]` onto `[SEMANTIC_WEIGHT_FLOOR, 1]`.
+fn semantic_weight(sim: f64) -> f64 {
+    let t = (sim - SEMANTIC_LINK_THRESHOLD) / (1.0 - SEMANTIC_LINK_THRESHOLD);
+    (SEMANTIC_WEIGHT_FLOOR + t * (1.0 - SEMANTIC_WEIGHT_FLOOR)).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -287,13 +305,24 @@ mod tests {
     }
 
     #[test]
-    fn semantic_links_threshold_is_inclusive_at_zero_point_seven() {
+    fn semantic_links_threshold_is_inclusive() {
         let t = types(&[(2, "world"), (3, "world"), (4, "world")]);
-        let links = semantic_links(1, "world", &[(2, 0.700_1), (3, 0.7), (4, 0.699_9)], &t);
+        let links = semantic_links(1, "world", &[(2, 0.870_1), (3, 0.87), (4, 0.869_9)], &t);
         let ids: Vec<i64> = links.iter().map(|l| l.to_node_id).collect();
-        assert_eq!(ids, vec![2, 3], "0.7 links, just under 0.7 does not");
-        assert_eq!(links[1].weight, 0.7);
+        assert_eq!(
+            ids,
+            vec![2, 3],
+            "the threshold links, just under it does not"
+        );
         assert!(links.iter().all(|l| l.link_type == "semantic"));
+    }
+
+    #[test]
+    fn semantic_weight_keeps_the_pre_e5_range() {
+        // The weakest edge weighs what bge's weakest did; an identical pair 1.
+        assert!((semantic_weight(SEMANTIC_LINK_THRESHOLD) - 0.7).abs() < 1e-12);
+        assert!((semantic_weight(1.0) - 1.0).abs() < 1e-12);
+        assert!(semantic_weight(0.9) > semantic_weight(0.88));
     }
 
     #[test]

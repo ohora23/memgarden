@@ -240,7 +240,7 @@ pub async fn list_mental_models(
         // is not ready: a caller who asked for nearest-neighbour ordering and
         // got creation order would have no way to tell.
         Some(text) => {
-            let embedding = mental::embed_one(&state, text.to_string())
+            let embedding = mental::embed_query_one(&state, text.to_string())
                 .await
                 .ok_or_else(|| ApiError::unavailable("embedding model not ready"))?;
             let (db, bank) = (state.db.clone(), bank_id.clone());

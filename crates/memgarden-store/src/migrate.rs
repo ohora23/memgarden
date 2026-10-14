@@ -32,6 +32,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (12, include_str!("../migrations/0012_task_ledger.sql")),
     (13, include_str!("../migrations/0013_drop_ledger_done.sql")),
     (14, include_str!("../migrations/0014_retain_job_task.sql")),
+    (
+        15,
+        include_str!("../migrations/0015_reembed_multilingual.sql"),
+    ),
 ];
 
 /// The schema version this build expects, i.e. the highest entry in

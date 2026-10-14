@@ -46,7 +46,7 @@ use memgarden_core::config::ConsolidationConfig;
 use memgarden_core::error::{Error, Result};
 use memgarden_core::types::FactType;
 use memgarden_store::search::CandidateRow;
-use memgarden_store::{banks, consolidate as store, search};
+use memgarden_store::{banks, consolidate as store, nodes, search};
 
 use super::prompts;
 use crate::recall::{RecallParams, TagsMatch};
@@ -1239,6 +1239,22 @@ async fn tick_once(state: &AppState, interval_secs: u64) {
         if crate::retain::queued_bytes() > 0 {
             tracing::debug!("retain arrived mid-tick; deferring the remaining banks");
             return;
+        }
+        // **Not while a bank is being re-embedded.** After an embedder change
+        // (migration 0015) its observations are invisible to the dense arm
+        // until the backlog reaches them, so the round would pool too few,
+        // CREATE where it should UPDATE, and dedup against a fraction of the
+        // bank — duplicates that outlive the drain.
+        // ponytail: a 10% share, not "any": a fresh retain leaves a few
+        // unembedded rows for seconds, and a row that never embeds must not
+        // stop a bank's consolidation for good.
+        let id = bank.bank_id.clone();
+        let db = state.db.clone();
+        if let Ok((unembedded, total)) = blocking(move || nodes::embed_backlog(&db, &id)).await
+            && unembedded * 10 > total
+        {
+            tracing::info!(bank = %bank.bank_id, unembedded, total, "re-embed in progress; deferring this bank's round");
+            continue;
         }
         // **A per-round deadline.** One bounded call can burn the client's
         // whole `TOTAL_DEADLINE_CAP` (600s), times `max_attempts`, times the

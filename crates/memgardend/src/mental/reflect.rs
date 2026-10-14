@@ -268,7 +268,7 @@ async fn nearest_models(
     // 3 ms spread and was reverted. Threading the vector out of `recall` would
     // widen its return type for every caller to save an unmeasured
     // microsecond. Revisit with the instrumentation, not before.
-    let Some(embedding) = super::embed_one(state, query.to_string()).await else {
+    let Some(embedding) = super::embed_query_one(state, query.to_string()).await else {
         return Ok(vec![]);
     };
     let (db, bank) = (state.db.clone(), bank_id.to_string());

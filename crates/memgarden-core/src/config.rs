@@ -270,6 +270,11 @@ pub struct ConsolidationConfig {
     /// Cosine at or above which a newly created observation is adjudicated
     /// against its nearest existing twin by one focused LLM call
     /// (`DEFAULT_CONSOLIDATION_DEDUP_THRESHOLD`, `config.py:1157`).
+    ///
+    /// Legacy's 0.97 was a `bge-small-en-v1.5` number. Under
+    /// `multilingual-e5-small` the default is 0.98: over the live `memgarden`
+    /// bank it flags 1,066 pairs, 779 of the 850 that bge flagged at 0.97. It
+    /// only gates an LLM call, so the extra pairs cost a call, not a merge.
     /// **`>= 1.0` disables the whole dedup path** (`consolidator.py:180-182`).
     pub dedup_threshold: f64,
     /// Seconds between background consolidation ticks
@@ -551,7 +556,7 @@ impl Config {
                 refresh_interval_secs: 600,
             },
             consolidation: ConsolidationConfig {
-                dedup_threshold: 0.97,
+                dedup_threshold: 0.98,
                 interval_secs: 300,
                 batch_size: 50,
                 llm_batch_size: 8,
@@ -1449,7 +1454,7 @@ mod tests {
                 refresh_interval_secs: 600,
             },
             consolidation: ConsolidationConfig {
-                dedup_threshold: 0.97,
+                dedup_threshold: 0.98,
                 interval_secs: 300,
                 batch_size: 50,
                 llm_batch_size: 8,
@@ -1762,7 +1767,7 @@ mod tests {
     #[test]
     fn consolidation_dedup_threshold_is_range_checked() {
         let env = HashMap::new();
-        assert_eq!(defaults().consolidation.dedup_threshold, 0.97);
+        assert_eq!(defaults().consolidation.dedup_threshold, 0.98);
 
         for bad in [0.0, -1.0, 0.49, 1.01, f64::NAN] {
             let mut cfg = defaults();
