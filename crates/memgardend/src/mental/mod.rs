@@ -131,13 +131,31 @@ pub fn embedding_text(name: &str, content: &str) -> String {
 /// holding the single embedder across any of that would stall every
 /// concurrent query embed for the whole refresh.
 pub async fn embed_one(state: &AppState, text: String) -> Option<Vec<f32>> {
+    embed_with(state, move |e| {
+        e.embed_batch(&[text])?
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("no vector"))
+    })
+    .await
+}
+
+/// [`embed_one`] for a *question* compared against stored models — reflect's
+/// KNN and the `?q=` search — under E5's `query: ` role, as recall does.
+pub async fn embed_query_one(state: &AppState, text: String) -> Option<Vec<f32>> {
+    embed_with(state, move |e| e.embed_query(&text)).await
+}
+
+async fn embed_with(
+    state: &AppState,
+    f: impl FnOnce(&crate::embed::Embedder) -> anyhow::Result<Vec<f32>> + Send + 'static,
+) -> Option<Vec<f32>> {
     let embedder = state
         .embedder
         .read()
         .expect("embedder lock poisoned")
         .clone()?;
-    match tokio::task::spawn_blocking(move || embedder.embed_batch(&[text])).await {
-        Ok(Ok(vectors)) => vectors.into_iter().next(),
+    match tokio::task::spawn_blocking(move || f(&embedder)).await {
+        Ok(Ok(vector)) => Some(vector),
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "mental model embedding failed");
             None

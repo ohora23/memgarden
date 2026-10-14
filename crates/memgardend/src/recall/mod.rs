@@ -347,11 +347,11 @@ pub async fn recall(
     let query_embedding = match embedder {
         Some(e) => {
             let query = query.clone();
-            let vectors = tokio::task::spawn_blocking(move || e.embed_batch(&[query]))
+            let vector = tokio::task::spawn_blocking(move || e.embed_query(&query))
                 .await
                 .map_err(join_err)?
                 .map_err(|e| ApiError::internal(format!("query embedding failed: {e}")))?;
-            vectors.into_iter().next()
+            Some(vector)
         }
         None => None,
     };

@@ -685,7 +685,7 @@ async fn extract_chunk(
 /// roughly doubled retain wall-clock, on the path AC-1 already found to be
 /// throughput-bound.
 ///
-/// Known ceiling: bge-small sees the first ~512 tokens, so on a 3,000-character
+/// Known ceiling: the embedder (multilingual-e5-small) sees the first ~512 tokens, so on a 3,000-character
 /// chunk the candidates are drawn from its opening. That is the right end —
 /// chunks lead with the exchange that prompted them — but it is a limit, not a
 /// property.

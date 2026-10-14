@@ -321,6 +321,26 @@ pub fn list(db: &Db, bank_id: &str, limit: usize, offset: usize) -> Result<Vec<M
 }
 
 /// The `vec_mental_models` row goes with it via `mental_models_vec_ad`.
+/// `(bank_id, id, name, content)` of every model whose vector was not made by
+/// the running embedder — or has none. Mental models have no backlog worker,
+/// so after an embedder change (migration 0015) this is how the daemon finds
+/// the ones `knn` can no longer see.
+pub fn stale_embeddings(db: &Db) -> Result<Vec<(String, String, String, String)>> {
+    let conn = db.read()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT bank_id, id, name, content FROM mental_models
+              WHERE embedding_model IS NOT ?1 ORDER BY bank_id, id",
+        )
+        .map_err(store_err)?;
+    stmt.query_map([EMBEDDING_MODEL_ID], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })
+    .map_err(store_err)?
+    .collect::<rusqlite::Result<_>>()
+    .map_err(store_err)
+}
+
 pub fn delete(db: &Db, bank_id: &str, id: &str) -> Result<usize> {
     db.write(|tx| {
         tx.execute(
@@ -780,6 +800,13 @@ mod tests {
             vec!["mm-ours"],
             "a foreign vector and an untagged one are both outside our space"
         );
+        // ...and exactly those two are what the startup re-embed picks up.
+        let stale: Vec<String> = stale_embeddings(&db)
+            .unwrap()
+            .into_iter()
+            .map(|(_, id, ..)| id)
+            .collect();
+        assert_eq!(stale, vec!["mm-foreign", "mm-untagged"]);
         assert_eq!(
             list(&db, "b1", 10, 0).unwrap().len(),
             3,

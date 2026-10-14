@@ -3,10 +3,10 @@
 //!
 //! A new observation is stored, then probed against the bank's existing
 //! observations by cosine on its own embedding. Anything at or above
-//! `consolidation.dedup_threshold` (0.97, `config.py:1157`) gets one focused
-//! "merge or keep" LLM call — the model reads both texts, so a difference in
-//! a number, a negation or a named entity is respected where a similarity
-//! score alone would not be. `>= 1.0` disables the whole path
+//! `consolidation.dedup_threshold` (default 0.98; legacy's 0.97 at
+//! `config.py:1157` was a bge number) gets one focused "merge or keep" LLM
+//! call — the model reads both texts, so a difference in a number, a negation
+//! or a named entity is respected where a similarity score alone would not be. `>= 1.0` disables the whole path
 //! (`consolidator.py:180-182`).
 //!
 //! **Every failure mode defaults to `keep`** (`consolidator.py:129-147`).
@@ -46,7 +46,7 @@ use crate::retain::token_count;
 
 /// Existing observations probed by the new observation's own embedding
 /// (`consolidator.py:116`). Small on purpose: only the nearest few can
-/// possibly clear a 0.97 threshold.
+/// possibly clear a 0.98 threshold.
 pub const DEDUP_TOP_K: usize = 5;
 
 /// Hard ceiling on the assembled dedup prompt (system + user), in cl100k

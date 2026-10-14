@@ -742,7 +742,7 @@ fn migrate_upgrades_a_v2_database_in_place() {
         // into the new CHECK rather than failing the migration.
         conn.execute(
             "INSERT INTO links (from_node_id, to_node_id, link_type, weight, created_at)
-             VALUES (1, 2, 'semantic', 7.5, 0)",
+             VALUES (1, 2, 'temporal', 7.5, 0)",
             [],
         )
         .unwrap();
@@ -1374,15 +1374,16 @@ fn backfill_literal_matches_the_active_model_id() {
          literal. If EMBEDDING_MODEL_ID changed, add a new migration for the \
          transition and pin that one."
     );
-    // Today they are the same string; the day they diverge, the line above
-    // must not move and this one must.
-    assert_eq!(ID_AT_0005, EMBEDDING_MODEL_ID);
+    // They diverged at 0015 (multilingual-e5-small): the line above did not
+    // move, and 0015's own test pins the new literal.
+    assert_ne!(ID_AT_0005, EMBEDDING_MODEL_ID);
 }
 
 /// The v4-upgrade mirror of the v1/v2/v3 tests. A populated v4 database must
 /// come out at v5 with rows intact and **every already-embedded row
 /// backfilled** — see 0005's comment: leaving them NULL would drop them out
-/// of the dense arm on upgrade.
+/// of the dense arm on upgrade. Upgraded all the way, 0015 then finds that
+/// tag is a bge one and queues the row for re-embedding.
 #[test]
 fn migrate_upgrades_a_v4_database_in_place() {
     let dir = tempfile::tempdir().unwrap();
@@ -1452,17 +1453,22 @@ fn migrate_upgrades_a_v4_database_in_place() {
         assert_eq!(n, 2, "pre-existing rows survive");
     }
 
-    assert_eq!(
-        model_of(&db, 1).as_deref(),
-        Some(EMBEDDING_MODEL_ID),
-        "an existing vector was produced by this code path, so it is tagged as such"
-    );
+    // 0005 tags the existing vector with the producer of its day; 0015 then
+    // sees a bge vector and puts the row back on the embed backlog.
+    assert_eq!(model_of(&db, 1).as_deref(), Some(ID_AT_0005));
     assert_eq!(model_of(&db, 2), None, "no vector, no producer");
-
-    // The backfill is what keeps the upgraded row in the dense arm.
+    let conn = db.read().unwrap();
+    let unembedded: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM memory_nodes WHERE embedding IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unembedded, 2, "both rows wait for the current model");
+    drop(conn);
     let hits = search::knn(&db, "legacy", &vec![0.5f32; EMBEDDING_DIM], 10).unwrap();
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].0, 1);
+    assert!(hits.is_empty(), "no current-model vector exists yet");
 }
 
 /// **The AX-1 promise, end to end**: a vector from another producer is
@@ -2084,11 +2090,11 @@ fn fresh_database_has_the_0012_task_ledger() {
     let db = Db::open_memory().unwrap();
     let conn = db.read().unwrap();
 
-    assert_eq!(memgarden_store::LATEST_VERSION, 14);
+    assert_eq!(memgarden_store::LATEST_VERSION, 15);
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 14);
+    assert_eq!(version, 15);
 
     let mut stmt = conn.prepare("PRAGMA table_info(task_ledger)").unwrap();
     let cols: Vec<(String, i64, Option<String>)> = stmt
@@ -2158,7 +2164,7 @@ fn upgrading_from_v12_drops_done_and_keeps_the_ledger_row() {
         db.write(|tx| {
             tx.execute_batch(
                 "ALTER TABLE retain_jobs DROP COLUMN task;
-                 DELETE FROM schema_migrations WHERE version = 14;
+                 DELETE FROM schema_migrations WHERE version IN (14, 15);
                  ALTER TABLE task_ledger ADD COLUMN done TEXT NOT NULL DEFAULT '';
                  DELETE FROM schema_migrations WHERE version = 13;
                  PRAGMA user_version = 12;
@@ -2212,7 +2218,7 @@ fn upgrading_from_v13_adds_a_null_task_to_existing_jobs() {
         db.write(|tx| {
             tx.execute_batch(
                 "ALTER TABLE retain_jobs DROP COLUMN task;
-                 DELETE FROM schema_migrations WHERE version = 14;
+                 DELETE FROM schema_migrations WHERE version IN (14, 15);
                  PRAGMA user_version = 13;
                  INSERT INTO banks (bank_id, created_at, updated_at) VALUES ('b', 0, 0);
                  INSERT INTO retain_jobs (job_id, bank_id, status, created_at, updated_at)
@@ -2249,4 +2255,80 @@ fn upgrading_from_v13_adds_a_null_task_to_existing_jobs() {
         1,
         "a pre-v14 job is closed out exactly as before"
     );
+}
+
+/// v15 re-embeds everything the multilingual model did not make: a bge vector
+/// and an untagged one go back on the backlog, a vector already tagged with
+/// the running model stays, and only `semantic` edges — the ones drawn from
+/// the old cosines — are dropped. The migration spells the model id as a SQL
+/// literal, so this is also the test that keeps it equal to the const.
+#[test]
+fn upgrading_from_v14_puts_every_foreign_vector_back_on_the_backlog() {
+    let sql = include_str!("../migrations/0015_reembed_multilingual.sql");
+    assert!(
+        sql.contains(&format!("'{EMBEDDING_MODEL_ID}'")),
+        "0015 must name the running model id, {EMBEDDING_MODEL_ID}"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v14.db");
+    let blob = vecblob::encode(&vec![0.5f32; EMBEDDING_DIM]).unwrap();
+    {
+        let db = Db::open(&path).unwrap();
+        db.write(|tx| {
+            tx.execute_batch(
+                "DELETE FROM schema_migrations WHERE version = 15;
+                 PRAGMA user_version = 14;
+                 INSERT INTO banks (bank_id, created_at, updated_at) VALUES ('b', 0, 0);",
+            )
+            .map_err(store_err)?;
+            for (id, model) in [
+                (1, Some("fastembed:BAAI/bge-small-en-v1.5")),
+                (2, None),
+                (3, Some(EMBEDDING_MODEL_ID)),
+            ] {
+                tx.execute(
+                    "INSERT INTO memory_nodes
+                       (id, uuid, bank_id, fact_type, text, embedding, embedding_model, created_at, updated_at)
+                     VALUES (?1, ?1, 'b', 'world', 'a fact', ?2, ?3, 0, 0)",
+                    rusqlite::params![id, blob, model],
+                )
+                .map_err(store_err)?;
+            }
+            tx.execute_batch(
+                "INSERT INTO links (from_node_id, to_node_id, link_type, created_at)
+                 VALUES (1, 2, 'semantic', 0), (1, 2, 'temporal', 0), (2, 3, 'caused_by', 0);",
+            )
+            .map_err(store_err)?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    let db = Db::open(&path).unwrap();
+    let conn = db.read().unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, memgarden_store::LATEST_VERSION);
+    let embedded: Vec<i64> = conn
+        .prepare("SELECT id FROM memory_nodes WHERE embedding IS NOT NULL ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        embedded,
+        vec![3],
+        "only the current model's vector survives"
+    );
+    let links: Vec<String> = conn
+        .prepare("SELECT link_type FROM links ORDER BY link_type")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(links, vec!["caused_by", "temporal"]);
 }

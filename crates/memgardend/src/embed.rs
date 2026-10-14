@@ -1,6 +1,15 @@
-//! In-binary CPU embeddings: `bge-small-en-v1.5` via fastembed/ONNX,
-//! bit-identical (measured to 7 decimals) to the legacy Python
-//! sentence-transformers stack — see the plan's Verified Environment Facts.
+//! In-binary CPU embeddings: `multilingual-e5-small` via fastembed/ONNX.
+//!
+//! Until 2026-10 this was `bge-small-en-v1.5`, bit-identical to the legacy
+//! Python stack. That model is English-only, and 90% of real prompts here are
+//! Korean: on 1,208 recalled items labelled for usefulness its cosine scored
+//! AUC 0.507 — a coin flip — against 0.715 for this model, at the same 384
+//! dimensions (`docs/evidence/multilingual-embeddings.md`).
+//!
+//! E5 is trained with role prefixes, so the two entry points differ only in
+//! the prefix: [`Embedder::embed_batch`] for anything stored or compared
+//! against stored text (`passage: `), [`Embedder::embed_query`] for a recall
+//! query (`query: `).
 //!
 //! Every vector this module produces is stamped on disk with
 //! [`memgarden_core::EMBEDDING_MODEL_ID`] (AX-1), which is what makes the
@@ -29,7 +38,7 @@ impl Embedder {
     /// run if missing — offline-friendly once cached). Blocking: callers
     /// must run this in `spawn_blocking`.
     pub fn load(cfg: &EmbeddingConfig) -> anyhow::Result<Self> {
-        let options = TextInitOptions::new(EmbeddingModel::BGESmallENV15)
+        let options = TextInitOptions::new(EmbeddingModel::MultilingualE5Small)
             .with_cache_dir(cfg.model_dir.clone())
             .with_intra_threads(cfg.intra_threads)
             // The default download progress bar writes to stderr, which is
@@ -44,12 +53,24 @@ impl Embedder {
     /// Embeds a batch of already-augmented strings (see
     /// `augment_for_embedding`), L2-normalizing every output vector
     /// (decision #3: fastembed already returns unit vectors — measured
-    /// `‖v‖ = 1.000000` — but the 0.7/0.97 cosine thresholds used by B5/B7
+    /// `‖v‖ = 1.000000` — but the link and dedup cosine thresholds used by B5/B7
     /// are meaningless without a *guaranteed* unit vector). Blocking:
     /// callers must run this in `spawn_blocking`.
     pub fn embed_batch(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        self.embed_prefixed(PASSAGE_PREFIX, texts)
+    }
+
+    /// A recall query — the one input E5 wants under its `query: ` role.
+    pub fn embed_query(&self, query: &str) -> anyhow::Result<Vec<f32>> {
+        self.embed_prefixed(QUERY_PREFIX, &[query.to_string()])?
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("embedder returned no vector"))
+    }
+
+    fn embed_prefixed(&self, prefix: &str, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        let texts: Vec<String> = texts.iter().map(|t| format!("{prefix}{t}")).collect();
         let mut model = self.inner.lock().expect("embedder mutex poisoned");
-        let raw = model.embed(texts, None)?;
+        let raw = model.embed(&texts, None)?;
         raw.into_iter()
             .map(|v| {
                 anyhow::ensure!(
@@ -62,6 +83,11 @@ impl Embedder {
             .collect()
     }
 }
+
+/// Part of what [`memgarden_core::EMBEDDING_MODEL_ID`] names: a vector made
+/// without these is not the same vector, so changing either is a model change.
+const PASSAGE_PREFIX: &str = "passage: ";
+const QUERY_PREFIX: &str = "query: ";
 
 fn normalize_l2(mut v: Vec<f32>) -> Vec<f32> {
     let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -268,11 +294,11 @@ mod tests {
     /// asserting that fastembed equals itself. The output is the artifact:
     /// paste it into the MG-1 PR next to the legacy side's numbers.
     ///
-    /// The sentence is ASCII, punctuation-free, and passed **raw** — no
-    /// `augment_for_embedding`, no BGE query/passage prefix (neither side uses
-    /// one; the prefixes live only in legacy's unused `OnnxEmbeddings`) — so
-    /// the two stacks are fed byte-identical input and the only variables left
-    /// are pooling and normalization.
+    /// The sentence is ASCII, punctuation-free, and passed without
+    /// `augment_for_embedding`. Since the switch to multilingual-e5-small it
+    /// goes through `embed_batch` and so carries the `passage: ` prefix; MG-1
+    /// itself compared bge against bge and is history. What remains useful is
+    /// the fastembed-upgrade check `EMBEDDING_MODEL_ID`'s doc points here for.
     ///
     /// Requires the 133MB model download — run manually:
     ///   cargo test -p memgardend -- --ignored --nocapture mg1_reference_vector
