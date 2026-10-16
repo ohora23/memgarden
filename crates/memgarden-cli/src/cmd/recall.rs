@@ -152,6 +152,10 @@ struct Counts {
     returned: usize,
     #[serde(default)]
     tokens: usize,
+    /// Withheld by the daemon's `[recall] min_semantic` floor; tells an
+    /// `empty` caused by the gate apart from one where nothing matched.
+    #[serde(default)]
+    below_floor: usize,
 }
 
 /// What the round trip produced, split by what each outcome is allowed to move.
@@ -464,11 +468,13 @@ fn emit(
     let mut status = outcome.label();
     let mut returned = 0;
     let mut tokens = 0;
+    let mut below_floor = 0;
     let mut injected: Option<&str> = None;
 
     if let Outcome::Recalled(reply) = outcome {
         returned = reply.counts.returned;
         tokens = reply.counts.tokens;
+        below_floor = reply.counts.below_floor;
         if reply.injected_text.is_empty() {
             status = "empty";
         } else if reply.injected_text.len() > cfg.hooks.max_inject_bytes {
@@ -557,6 +563,7 @@ fn emit(
         "prompt_chars": query.chars().count(),
         "returned": returned,
         "tokens": tokens,
+        "below_floor": below_floor,
         "injected_bytes": injected.map_or(0, str::len),
         "injected_text": injected,
         // The two numbers that answer "why is it injecting nothing *now*",

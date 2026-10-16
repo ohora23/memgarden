@@ -94,12 +94,47 @@ consolidation round waits while more than 10% of its nodes are unembedded — a
 round run mid-drain would pool and dedup against a fraction of its
 observations and create duplicates that outlive the drain.
 
-The abstain gate itself is the next step, calibrated on e5 scores from the
-re-embedded store — this table is offline and on truncated text, so it is a
-preview, not the calibration:
+The offline preview below came first; the calibration that set the gate is the
+next section.
 
 | e5 floor | items kept | useful kept | precision | prompts that abstain (of 14 truly empty) |
 |---|---|---|---|---|
 | 0.82 | 60% | 82% | 35.0% | 3 (0) |
 | 0.83 | 45% | 67% | 38.0% | 5 (2) |
 | 0.84 | 33% | 56% | 43.7% | 12 (5) |
+
+## After the switch (2026-10-15)
+
+15,882 nodes re-embedded in 121 s; four mental models re-embedded at start;
+every bank relinked.
+
+**Edge density.** Counted the same way on the stored vectors (top-20
+same-type neighbours, date suffix included): bge at 0.70 gives 60,189 edges in
+the `memgarden` bank, e5 at 0.87 gives 73,866 (+23%; 0.88 would give 64,359).
+The suffix was the gap named above. Left at 0.87: a +58% density change scored
+exactly 0 on the gold set before (CE-7).
+
+**The gate, calibrated live.** The same 80 prompts against the re-embedded
+store: 1,112 items, 353 carried their earlier label, 759 new ones labelled the
+same way.
+
+- Precision with no gate: **25.6% → 32.2%**, from the model swap alone.
+- Cosine AUC on live results: 0.636 — below the offline 0.715, because e5 now
+  chooses the candidates, so the negatives are harder.
+- Only 6 of 80 prompts had nothing useful. Abstaining on a whole prompt
+  catches almost none of them (at 0.84: 7 abstentions, 1 of them empty), so
+  the gate is a **per-item floor**, not a per-prompt abstention.
+
+| floor | items kept | useful kept | precision |
+|---|---|---|---|
+| none | 100% | 100% | 32.2% |
+| 0.82 | 72% | 78% | 35.0% |
+| **0.83** | 62% | 72% | 37.0% |
+| 0.84 | 51% | 64% | 39.9% |
+| 0.85 | 38% | 52% | 44.0% |
+| 0.86 | 23% | 37% | 52.6% |
+
+Shipped at 0.83 (`[recall] min_semantic`), on the HTTP route only. Items with
+no semantic score (keyword or graph only: 154, 34 of them useful) fall below
+any floor, as they did in this table. The labeller is generous on the useful
+side, so the useful items lost are mostly the weakly useful ones.

@@ -583,6 +583,7 @@ async fn supporting_facts(
         // reflection, not the injection, and re-ranking it is a separate
         // question from the one `semantic_alpha` was measured against.
         semantic_alpha: 0.0,
+        min_semantic: 0.0,
         proof_alpha: crate::recall::scoring::PROOF_COUNT_ALPHA,
         exclude_uuids: vec![],
         preamble: String::new(),

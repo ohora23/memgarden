@@ -337,6 +337,15 @@ pub struct RecallConfig {
     /// `recall::scoring::combined_with_semantic` for why it exists and what
     /// it was measured against.
     pub semantic_alpha: f64,
+    /// Per-item floor on the semantic (cosine) score, applied only to the HTTP
+    /// recall route — the hook's injection. An item whose `scores.semantic` is
+    /// below it, or absent (found by keyword/graph only), is withheld after
+    /// the budget fit. `0.0` disables. 0.83 was calibrated on multilingual-e5-small:
+    /// 80 real prompts, 1,112 recalled items labelled useful/not — it keeps
+    /// 62% of items and 72% of the useful ones, precision 32% → 37%
+    /// (`docs/evidence/multilingual-embeddings.md`). Internal callers
+    /// (consolidation, reflection, mental models, bench) never apply it.
+    pub min_semantic: f64,
     /// Per-arm truncation applied *before* fusion (`engine/search/fusion.py:8`)
     /// so one over-expanding arm cannot crowd out the others. `0` disables,
     /// matching legacy's default (`config.py:940`).
@@ -542,6 +551,9 @@ impl Config {
                 // that is not legacy's — see
                 // `recall::scoring::combined_with_semantic`.
                 semantic_alpha: 0.1,
+                // The HTTP route's per-item floor; calibrated on e5 scores,
+                // see the field's doc.
+                min_semantic: 0.83,
                 cap_per_source: 0,
                 preamble: String::new(),
             },
@@ -774,6 +786,9 @@ pub fn from_parts(
             }
             if let Some(v) = recall.semantic_alpha {
                 cfg.recall.semantic_alpha = v;
+            }
+            if let Some(v) = recall.min_semantic {
+                cfg.recall.min_semantic = v;
             }
             if let Some(v) = recall.cap_per_source {
                 cfg.recall.cap_per_source = v;
@@ -1016,6 +1031,12 @@ pub fn from_parts(
         return Err(Error::Config(format!(
             "recall.max_tokens must be 1..={MAX_RECALL_TOKENS}: {}",
             cfg.recall.max_tokens
+        )));
+    }
+    if !(0.0..=1.0).contains(&cfg.recall.min_semantic) {
+        return Err(Error::Config(format!(
+            "recall.min_semantic must be 0.0..=1.0: {}",
+            cfg.recall.min_semantic
         )));
     }
     // A zero here is not "off" — `enabled` is off. `top_k = 0` would rerank
@@ -1339,6 +1360,7 @@ struct TomlRecall {
     limit: Option<usize>,
     max_tokens: Option<usize>,
     semantic_alpha: Option<f64>,
+    min_semantic: Option<f64>,
     cap_per_source: Option<usize>,
     preamble: Option<String>,
 }
@@ -1440,6 +1462,7 @@ mod tests {
                 limit: 20,
                 max_tokens: 1024,
                 semantic_alpha: 0.0,
+                min_semantic: 0.0,
                 cap_per_source: 0,
                 preamble: String::new(),
             },
@@ -2007,5 +2030,26 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn recall_min_semantic_defaults_and_validation() {
+        assert_eq!(Config::defaults().unwrap().recall.min_semantic, 0.83);
+
+        let cfg = from_parts(
+            defaults(),
+            Some("[recall]\nmin_semantic = 0.5"),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(cfg.recall.min_semantic, 0.5);
+
+        for bad in ["1.5", "-0.1", "nan"] {
+            let toml = format!("[recall]\nmin_semantic = {bad}");
+            assert!(
+                from_parts(defaults(), Some(&toml), &HashMap::new()).is_err(),
+                "{bad}"
+            );
+        }
     }
 }

@@ -100,6 +100,10 @@ pub struct RecallParams {
     pub cap_per_source: usize,
     /// `[recall] semantic_alpha`; `0.0` is legacy scoring exactly.
     pub semantic_alpha: f64,
+    /// Floor on `scores.semantic`; items below it or without a semantic score
+    /// are dropped after the budget fit and the `exclude_uuids` filter.
+    /// `0.0` disables. See `[recall] min_semantic`.
+    pub min_semantic: f64,
     /// Weight of the `proof_count` boost — `scoring::PROOF_COUNT_ALPHA` for
     /// the injection, `0.0` where the caller's result feeds an UPDATE that
     /// grows `proof_count` (consolidation pooling). See `scoring::combined`.
@@ -159,6 +163,10 @@ pub struct RecallCounts {
     /// Items that made the cut and were then withheld because the client
     /// said it already had them (`RecallParams::exclude_uuids`).
     pub excluded: usize,
+    /// Items that made the cut and were then withheld because their
+    /// `scores.semantic` fell below the HTTP route's `min_semantic` floor,
+    /// or they had no semantic score at all.
+    pub below_floor: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -195,6 +203,7 @@ impl RecallOutcome {
                 returned: 0,
                 tokens: 0,
                 excluded: 0,
+                below_floor: 0,
             },
         }
     }
@@ -344,6 +353,7 @@ pub async fn recall(
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
+    let embedded = embedder.is_some();
     let query_embedding = match embedder {
         Some(e) => {
             let query = query.clone();
@@ -688,6 +698,25 @@ pub async fn recall(
         results.iter().map(|r| token_count(&r.text)).sum()
     };
 
+    // Abstain gate: per-item semantic floor, applied only to the HTTP route's
+    // injection. Internal callers (consolidation, reflection, mental models,
+    // bench) pass `min_semantic: 0.0` and skip this filter. After the fit on
+    // purpose, like `exclude_uuids`: withheld slots are not refilled, which
+    // is the shape the 0.83 calibration was measured on. Skipped when the
+    // query has no embedding at all (embedder loading, disabled or failed):
+    // every item would lack a score and the keyword-only fallback promised
+    // above would become an empty injection.
+    let below_floor = if embedded {
+        withhold_below_floor(&mut results, p.min_semantic)
+    } else {
+        0
+    };
+    let tokens = if below_floor == 0 {
+        tokens
+    } else {
+        results.iter().map(|r| token_count(&r.text)).sum()
+    };
+
     let injected_text = build_injection(&results, &p.preamble, p.now_ms);
 
     // **The injection meter is not incremented here.** It used to be, and the
@@ -709,10 +738,23 @@ pub async fn recall(
             returned: results.len(),
             tokens,
             excluded,
+            below_floor,
         },
         injected_text,
         results,
     })
+}
+
+/// The abstain gate: drops items whose semantic score is below `floor` and
+/// returns how many went. No semantic score (keyword or graph only) never
+/// clears a non-zero floor: the calibration counted those items as below it.
+fn withhold_below_floor(results: &mut Vec<RecallItem>, floor: f64) -> usize {
+    if floor <= 0.0 {
+        return 0;
+    }
+    let before = results.len();
+    results.retain(|r| r.scores.semantic.is_some_and(|s| s >= floor));
+    before - results.len()
 }
 
 /// `"%Y-%m-%d %H:%M UTC"` — `scripts/lib/content.py:231`. Falls back to the
@@ -837,6 +879,30 @@ fn build_injection(results: &[RecallItem], preamble: &str, now_ms: i64) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floor_is_inclusive_keeps_order_and_a_missing_score_never_clears_it() {
+        let scored = |text: &str, sem: Option<f64>| {
+            let mut it = item(text, FactType::World, None);
+            it.scores.semantic = sem;
+            it
+        };
+        let all = vec![
+            scored("a", Some(0.9)),
+            scored("b", Some(0.8299)),
+            scored("c", None),
+            scored("d", Some(0.83)),
+        ];
+
+        let mut results = all.clone();
+        assert_eq!(withhold_below_floor(&mut results, 0.83), 2);
+        let kept: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(kept, ["a", "d"]);
+
+        let mut results = all.clone();
+        assert_eq!(withhold_below_floor(&mut results, 0.0), 0, "0 disables");
+        assert_eq!(results.len(), 4);
+    }
 
     fn tags(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()

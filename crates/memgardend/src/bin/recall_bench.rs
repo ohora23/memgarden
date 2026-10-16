@@ -599,6 +599,7 @@ async fn bench(
             tags_match: TagsMatch::Any,
             cap_per_source: 0,
             semantic_alpha,
+            min_semantic: 0.0,
             proof_alpha,
             exclude_uuids: vec![],
             preamble: String::new(),
