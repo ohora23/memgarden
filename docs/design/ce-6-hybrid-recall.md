@@ -93,6 +93,10 @@ query --(<5 chars? -> empty)--> [embed] --> KNN(over-fetch)  --\
   *negative*), so porting the legacy thresholds numerically would prune the
   wrong things. RRF is rank-based and therefore indifferent to the absolute
   scale; a weak candidate simply ranks last and the token budget drops it.
+  *2026-10-16:* a `min_semantic` floor now exists, but not as a port — it is
+  a per-item floor on the injection after the budget fit, calibrated on this
+  store's own e5 cosine (`[recall] min_semantic`, default 0.83;
+  `docs/evidence/multilingual-embeddings.md`). The arms still do not prune.
   Add real floors only with MemGarden-calibrated numbers.
 - **No `knn_filtered` wrapper.** The plan specified one as "a thin wrapper on
   `knn` with the over-fetch `k` computed by the caller" — that is `knn`. The

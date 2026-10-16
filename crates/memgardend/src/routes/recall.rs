@@ -54,6 +54,10 @@ pub struct RecallRequest {
     /// Overrides `[recall] preamble` for this request.
     #[serde(default)]
     pub preamble: Option<String>,
+    /// Overrides `[recall] min_semantic` for this request; `0` disables the
+    /// floor.
+    #[serde(default, rename = "minSemantic")]
+    pub min_semantic: Option<f64>,
     /// Node uuids the client already injected this session; withheld from
     /// the result after the budget fit. Bounded so a client cannot make the
     /// daemon scan an unbounded list on every prompt.
@@ -143,6 +147,14 @@ async fn recall_inner(
         ))
         .into());
     }
+    let min_semantic = body.min_semantic.unwrap_or(state.cfg.recall.min_semantic);
+    if min_semantic.is_nan() || !(0.0..=1.0).contains(&min_semantic) {
+        return Err(memgarden_core::Error::Invalid(format!(
+            "minSemantic must be 0.0..=1.0: {}",
+            body.min_semantic.unwrap_or(f64::NAN)
+        ))
+        .into());
+    }
 
     let db = state.db.clone();
     let id = bank_id.clone();
@@ -163,6 +175,7 @@ async fn recall_inner(
         tags_match: body.tags_match,
         cap_per_source: state.cfg.recall.cap_per_source,
         semantic_alpha: state.cfg.recall.semantic_alpha,
+        min_semantic,
         proof_alpha: recall::scoring::PROOF_COUNT_ALPHA,
         exclude_uuids: {
             let mut ex = body.exclude;

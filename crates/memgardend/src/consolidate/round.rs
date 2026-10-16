@@ -747,6 +747,7 @@ async fn pool_observations(
             // rank higher, get pooled more, get updated more, gain sources.
             // Relatedness alone decides the pool; the count stays a
             // read-only signal for the injection. See `scoring::combined`.
+            min_semantic: 0.0,
             proof_alpha: 0.0,
             exclude_uuids: vec![],
             preamble: String::new(),

@@ -73,6 +73,9 @@ fn build(
     cfg.ollama.base_url = ollama_url.to_string();
     cfg.ollama.request_timeout_secs = 5;
     cfg.ollama.max_retries = 0;
+    // The embedder is off, so no item has a semantic score and the
+    // abstain gate's default floor would withhold every one.
+    cfg.recall.min_semantic = 0.0;
 
     let ollama = Arc::new(memgardend::ollama::OllamaClient::new(cfg.ollama.clone()).unwrap());
     let (retain_tx, retain_rx) = tokio::sync::mpsc::channel(cfg.retain.queue_capacity);

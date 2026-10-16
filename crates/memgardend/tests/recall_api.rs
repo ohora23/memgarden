@@ -47,6 +47,9 @@ fn test_app_on(
     cfg.ollama.base_url = "http://127.0.0.1:1".to_string();
     cfg.ollama.request_timeout_secs = 1;
     cfg.ollama.max_retries = 0;
+    // Disable the abstain gate for existing tests: the embedder is off so
+    // no item has a semantic score, and the 0.83 default would return 0.
+    cfg.recall.min_semantic = 0.0;
     tweak(&mut cfg);
 
     let ollama = Arc::new(memgardend::ollama::OllamaClient::new(cfg.ollama.clone()).unwrap());
@@ -684,6 +687,7 @@ async fn reranker_disabled_is_a_pure_passthrough() {
             tags_match: memgardend::recall::TagsMatch::Any,
             cap_per_source: 0,
             semantic_alpha: 0.0,
+            min_semantic: 0.0,
             proof_alpha: memgardend::recall::scoring::PROOF_COUNT_ALPHA,
             exclude_uuids: vec![],
             preamble: state.cfg.recall.preamble.clone(),
@@ -850,6 +854,41 @@ async fn unknown_bank_is_404_and_bad_input_is_400() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
+// Abstain gate: per-item semantic floor
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn abstain_gate_stands_aside_without_an_embedder_and_validates_its_override() {
+    // The floor ON, as it ships; the harness turns it off for other tests.
+    let (app, db) = test_app(|c| c.recall.min_semantic = 0.83);
+    banks::create(&db, "b1", None, None).unwrap();
+    for i in 0..5 {
+        seed(&db, FactType::World, &format!("abstain word {i}"), &[]);
+    }
+
+    // The embedder is off, so the query has no embedding and no item has a
+    // semantic score. The gate is skipped rather than empty the keyword-only
+    // fallback — at the configured floor and at the strictest override.
+    for body in [
+        json!({ "query": "abstain" }),
+        json!({ "query": "abstain", "minSemantic": 1.0 }),
+    ] {
+        let out = recall(&app, body).await;
+        assert_eq!(out["counts"]["returned"], 5, "{out}");
+        assert_eq!(out["counts"]["below_floor"], 0, "{out}");
+    }
+
+    let (status, body) = post(
+        &app,
+        "/v1/banks/b1/recall",
+        json!({ "query": "abstain", "minSemantic": 2 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid");
 }
 
 #[tokio::test]
