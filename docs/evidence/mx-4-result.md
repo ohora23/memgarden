@@ -54,6 +54,11 @@ memory **21**.
 The one `neither answered` is t22 — *"which session opened the PR on <a project>?"* —
 the most memory-shaped question in the sample. The abstain gate dropped all
 10 candidates below 0.83 and injected nothing, so both arms had nothing.
+*Corrected after the re-run:* the gate was right. The prompt was typed in one
+project and asks about a session in another; before the prompt, the typing
+project's bank held **0** nodes naming that project and the other project's
+bank held 37. Recall is per-project, so there was nothing to find — every
+candidate was an unrelated "PR" memory. See "t22, re-attributed" below.
 
 Cost, read after the verdicts: output tokens 78.6k vs 87.3k (+11%), input
 4.01M vs 3.57M (−11%), wall clock 1,095 s vs 1,145 s, $3.05 vs $3.01.
@@ -128,8 +133,8 @@ table keeps them and this line reports the other reading.
    transcripts, the memgarden DB, and repo notes.
 2. Reconstruct the working tree, not only the last commit, where a transcript
    allows it — or drop tasks whose repository was empty at the time.
-3. Report t22-style abstentions as their own count; a gate that abstains on
-   the most memory-shaped prompt is a finding about the gate.
+3. Report abstentions as their own count. (t22's turned out to be correct —
+   see "t22, re-attributed".)
 
 Raw data: `~/.local/share/memgarden/mx4-run-20261018/` (tasks, injections,
 workspaces, transcripts, judge outputs). Not committed: it holds personal
@@ -177,8 +182,8 @@ on this sample.
 * **t02 lost unanimously in both runs**: the stale *"no systemd unit"*
   memory, repeated as fact both times. The one loss that reproduces is a
   memory defect.
-* **t22 abstained in both runs**: the gate drops every candidate for the most
-  memory-shaped prompt in the sample.
+* **t22 abstained in both runs**, correctly: the answer lived in another
+  project's bank (see below).
 
 ### Defects of this harness, still present in v2
 
@@ -196,8 +201,25 @@ on this sample.
 
 * Not supported: a net benefit for notes-less users. Two runs, opposite
   memory-only results, both inside the noise.
-* Supported, reproducibly: stale memories mislead (t02), and the abstain
-  gate can silence exactly the question memory exists for (t22).
+* Supported, reproducibly: stale memories mislead (t02).
+* Found: recall cannot answer a question about another project's sessions
+  (t22) — a scope limit of per-project banks, not a gate defect.
 * Learned about measurement: a with/without comparison here needs several
   runs per arm per task, and a sandbox that removes memory without removing
   the things a memory system's own install leaves on disk.
+
+### t22, re-attributed
+
+Checked after both runs, on the live database restricted to nodes created
+before the prompt:
+
+| bank | nodes naming the asked-about project | nodes mentioning "PR" |
+|---|---|---|
+| the project the prompt was typed in | **0** | 100 |
+| the project where that work happened | 37 | 217 |
+
+The gate dropped ten unrelated "PR" memories, which is what it is for. What
+failed is scope: the hook recalls from the bank of the directory the prompt
+was typed in, and the question was about work done from another directory.
+Answering it needs cross-bank recall — a design decision (noise, privacy
+between projects), not a threshold change, and left open here.
