@@ -183,8 +183,10 @@ on this sample.
   plugin was installed — it is only cloned in the marketplace.
 * **t02 lost unanimously in both runs, for different reasons.** In v1 the
   memory arm repeated the stale *"no systemd unit"* memory; in v2 all three
-  judges cleared it of that (`error_B: false`) and preferred the other answer
-  for its status summary. See "t02, replayed".
+  judges cleared it of that (`error_B: false`). The v2 memory-arm answer was an
+  off-topic note about a background job; the preferred answer had its own
+  error (it said `docs/` was absent) but answered the question. See "t02,
+  replayed".
 * **t22 abstained in both runs**, correctly: the answer lived in another
   project's bank (see below).
 
@@ -204,9 +206,10 @@ on this sample.
 
 * Not supported: a net benefit for notes-less users. Two runs, opposite
   memory-only results, both inside the noise.
-* Supported, weakly: a stale state memory is repeated as fact when the
-  state cannot be checked (t02: 1 of 6 such runs), and not when it can
-  (0 of 20).
+* Not established: whether stale state memories mislead. On t02 the stale
+  claim appeared in 2 of 6 runs where the state could not be checked (v1's
+  original and 1 of 5 replays) and in 0 of 20 where it could. Five-run cells
+  cannot separate those, and the two sandboxes differ in more than this.
 * Found: recall cannot answer a question about another project's sessions
   (t22) — a scope limit of per-project banks, not a gate defect.
 * Learned about measurement: a with/without comparison here needs several
@@ -246,9 +249,11 @@ fact about what runs, is installed or is configured may have changed since
 its date — check before stating it as current."* The age suffix:
 `(2026-08-09, 69 days ago)`.
 
-When the agent can look, it looks, and the stale memory does no harm. When
-it cannot, it repeats the memory about one time in five; 1/5 against 0/5 is
-not evidence that either rendering change helps, so **neither ships**. The
+When the agent could look, the stale memory did no harm in 20 of 20 runs.
+When it could not, the stale claim appeared in 1 of 5 replays (2 of 6 with
+v1's original run). 1/5 against 0/5 is not evidence that either rendering
+change helps, and five-run cells are not evidence that checkability is the
+cause, so **neither ships** and the cause stays a hypothesis. The
 newer contradicting fact (created 08-25, *"a systemd user service now"*) was
 in the bank and was not recalled — that is the retrieval side of the open
 supersession problem, not something a rendering change reaches.
