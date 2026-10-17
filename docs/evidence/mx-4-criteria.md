@@ -32,6 +32,21 @@ From real user prompts in this machine's Claude Code transcripts dated
 
 Then a **random sample of 30, `seed = 11`**, or all survivors if fewer.
 
+### Amendment, 2026-10-18 — the transcripts do not reach back far enough
+
+**Found after rules 1–3, 5 and 6 ran, before rule 4 and before any arm.** Claude
+Code deletes transcripts after 30 days; the oldest left is from 2026-09-26, and
+rules 1–3, 5, 6 over them leave **27** candidates. `~/.claude/history.jsonl`
+keeps every prompt — text, time, project, session — but not the answers.
+
+So the pool becomes: transcripts as above, **plus** prompts from
+`history.jsonl` dated 2026-08-15 to 2026-09-25 whose transcript no longer
+exists, through the same rules. For those tasks there is **no reference
+answer**: the stratifier and the judges work from the machine alone, as MX-3's
+judges did. Each task records whether it had a reference.
+
+This cannot favour either arm: the arms never see the reference.
+
 ## The bank, frozen per task
 
 Each task sees the bank **as it stood when the prompt was typed** — MX-3 used
@@ -68,6 +83,16 @@ an empty tmpfs into which only toolchains and the Claude credentials file are
 bound — so the vault, every `MEMORY.md`, all transcripts, `CLAUDE.md`, and
 the memgarden database are absent; `/run/user/1000` hidden, so no service can
 be restarted. The network is shared, because the agent needs the API.
+
+*Amendment, 2026-10-18, before any arm ran:* the live daemon answers recall
+on loopback without a token, so a sandboxed agent could have queried today's
+bank with `curl` — arm A would have become a memory arm. The sandbox
+therefore preloads a `connect()` shim that refuses loopback ports 9100, 9114
+and 9077 (verified from inside: `curl` exit 7, Python `ConnectionRefused`,
+the API still reachable). Statically linked binaries bypass it; the
+transcript check below is the second line. The workspace's git history is
+also rewritten so that no commit holds any removed note — otherwise
+`git show <old>:docs/…` would have handed the notes back.
 
 **Every run asserts its arm and its isolation.** A's transcript must contain
 no `<memgarden_memories>` block and B's must contain the expected one. A run
