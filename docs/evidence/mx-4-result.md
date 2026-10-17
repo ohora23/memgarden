@@ -54,11 +54,8 @@ memory **21**.
 The one `neither answered` is t22 — *"which session opened the PR on <a project>?"* —
 the most memory-shaped question in the sample. The abstain gate dropped all
 10 candidates below 0.83 and injected nothing, so both arms had nothing.
-*Corrected after the re-run:* the gate was right. The prompt was typed in one
-project and asks about a session in another; before the prompt, the typing
-project's bank held **0** nodes naming that project and the other project's
-bank held 37. Recall is per-project, so there was nothing to find — every
-candidate was an unrelated "PR" memory. See "t22, re-attributed" below.
+*Corrected after the re-run:* the gate was right — the answer lived in
+another project's bank. See "t22, re-attributed" below.
 
 Cost, read after the verdicts: output tokens 78.6k vs 87.3k (+11%), input
 4.01M vs 3.57M (−11%), wall clock 1,095 s vs 1,145 s, $3.05 vs $3.01.
@@ -135,8 +132,7 @@ table keeps them and this line reports the other reading.
    transcripts, the memgarden DB, and repo notes.
 2. Reconstruct the working tree, not only the last commit, where a transcript
    allows it — or drop tasks whose repository was empty at the time.
-3. Report abstentions as their own count. (t22's turned out to be correct —
-   see "t22, re-attributed".)
+3. Report abstentions as their own count.
 
 Raw data: `~/.local/share/memgarden/mx4-run-20261018/` (tasks, injections,
 workspaces, transcripts, judge outputs). Not committed: it holds personal
