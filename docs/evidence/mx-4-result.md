@@ -1,4 +1,10 @@
-# MX-4 — the result: memory wins where only memory knows, and the harness hid more than notes
+# MX-4 — the result: no effect larger than the noise
+
+**Read the re-run first** (end of this file). The first run's sandbox hid the
+whole home directory; its apparent memory-only win (3–0) was mostly that
+artifact, and it disappeared once only the notes were hidden.
+
+## First run (v1) — kept as recorded
 
 Run 2026-10-18 under the rules in [`mx-4-criteria.md`](mx-4-criteria.md),
 committed (e736874) before any task was drawn. Two amendments, both recorded
@@ -128,3 +134,70 @@ table keeps them and this line reports the other reading.
 Raw data: `~/.local/share/memgarden/mx4-run-20261018/` (tasks, injections,
 workspaces, transcripts, judge outputs). Not committed: it holds personal
 prompts.
+
+---
+
+## Re-run (v2) — notes hidden, home visible
+
+Registered in the criteria (5a3a620) before it ran. Same tasks, frozen
+injections, workspaces, instruction, model and judges; only the sandbox
+changed. Arm assertions 22/22 per arm, 0 daemon responses in any transcript;
+7 tasks with a refused port-9100 attempt.
+
+Stratified again in the new sandbox: findable 13, memory-only **6**, neither 3.
+
+| | no memory better | memory better | equivalent | neither |
+|---|---|---|---|---|
+| **all 22** | 6 | **8** | 7 | 1 |
+| findable (13) | 3 | 6 | 4 | — |
+| memory-only (6) | **2** | **1** | 2 | 1 |
+| neither (3) | 1 | 1 | 1 | — |
+
+| condition, fixed in advance | | |
+|---|---|---|
+| 1. memory better ≥ no-memory better + 3 | 8 < 9 | **fails** |
+| 2. memory-only: memory better > no-memory better | 1 < 2 | **fails** |
+| 3. memory arm's error flags ≤ no-memory arm's | 23 ≤ 26 | holds |
+
+Stall flags 20 vs 22. Cost $2.81 vs $2.88; output tokens 79.8k vs 76.7k.
+
+**Headline: not shown.** MemGarden did not measurably help a notes-less user
+on this sample.
+
+### What changed between the runs, and what that says
+
+* **9 of 22 majority verdicts changed** between v1 and v2. One run per arm
+  per task is too noisy for 22 tasks to resolve an effect of this size; the
+  overall margin in both runs (+3, +2) is inside that noise.
+* **The v1 memory-only wins were the sandbox.** t11/t12 (*"how do I run
+  ralph?"*) went B, B in v1 and A, A in v2: with `~/.claude/plugins` visible,
+  the no-memory arm read the installed oh-my-claudecode ralph skill itself.
+  In v2 the memory arm lost them by asserting that the official `ralph-loop`
+  plugin was installed — it is only cloned in the marketplace.
+* **t02 lost unanimously in both runs**: the stale *"no systemd unit"*
+  memory, repeated as fact both times. The one loss that reproduces is a
+  memory defect.
+* **t22 abstained in both runs**: the gate drops every candidate for the most
+  memory-shaped prompt in the sample.
+
+### Defects of this harness, still present in v2
+
+* Hiding the memgarden data directory is itself visible: both arms reported
+  *"the data dir holds only models/"* on t09 and judges flagged it. A
+  notes-less user still has a database; there is no way to give arm A one
+  without giving it memory.
+* **Blinding leak.** Judges read the whole home directory, which includes the
+  run directory whose paths name the arm. 5 of 66 v1 judges and 1 of 66 v2
+  judges opened it; one in each run listed both arms' workspaces. No verdict
+  changes if those judges are dropped (t04 v2: the other two say no-memory
+  better). A re-run must hide the run directory from judges.
+
+### What this supports
+
+* Not supported: a net benefit for notes-less users. Two runs, opposite
+  memory-only results, both inside the noise.
+* Supported, reproducibly: stale memories mislead (t02), and the abstain
+  gate can silence exactly the question memory exists for (t22).
+* Learned about measurement: a with/without comparison here needs several
+  runs per arm per task, and a sandbox that removes memory without removing
+  the things a memory system's own install leaves on disk.
