@@ -88,8 +88,10 @@ code was untracked. A clone cannot recover an untracked working tree.
 * **t02** (unanimous for no memory) — the memory arm said the daemon was
   *"started by hand, no systemd unit"*. That came from a memory of
   2026-08-09; the cutover on 08-21 gave it a unit. **A stale memory, repeated
-  as fact.** This is the failure MX-3's t02 named, met again, and it is a real
-  defect of the system, not of the harness.
+  as fact.** This is the failure MX-3's t02 named, met again. *Corrected
+  after the re-run:* it happened here because this sandbox hid
+  `~/.config/systemd/user`, so the unit could not be checked — see "t02,
+  replayed" below.
 * **t09, t14, t15** — the memory arm recognised it was sandboxed and declined
   to conclude; the no-memory arm reported what it saw. On t14 the no-memory
   arm was right (a real GPU fault); on t09 the judges preferred the arm that
@@ -120,8 +122,8 @@ table keeps them and this line reports the other reading.
 * **Supported:** where the answer exists only in past conversation, the bank
   recovers it — 3 wins, 0 losses, unanimous, and the stall gap (33 vs 21)
   points the same way.
-* **Supported:** stale memories still mislead (t02). Retraction detection
-  remains the open problem ([CE-12](supersession-detection.md)).
+* ~~Supported: stale memories still mislead (t02).~~ Only where the state
+  cannot be checked — see "t02, replayed".
 * **Not supported:** a net claim that MemGarden helps a notes-less user.
   The pre-registered gate fails on errors, and the error count is confounded
   by the harness.
@@ -179,9 +181,10 @@ on this sample.
   the no-memory arm read the installed oh-my-claudecode ralph skill itself.
   In v2 the memory arm lost them by asserting that the official `ralph-loop`
   plugin was installed — it is only cloned in the marketplace.
-* **t02 lost unanimously in both runs**: the stale *"no systemd unit"*
-  memory, repeated as fact both times. The one loss that reproduces is a
-  memory defect.
+* **t02 lost unanimously in both runs, for different reasons.** In v1 the
+  memory arm repeated the stale *"no systemd unit"* memory; in v2 all three
+  judges cleared it of that (`error_B: false`) and preferred the other answer
+  for its status summary. See "t02, replayed".
 * **t22 abstained in both runs**, correctly: the answer lived in another
   project's bank (see below).
 
@@ -201,7 +204,9 @@ on this sample.
 
 * Not supported: a net benefit for notes-less users. Two runs, opposite
   memory-only results, both inside the noise.
-* Supported, reproducibly: stale memories mislead (t02).
+* Supported, weakly: a stale state memory is repeated as fact when the
+  state cannot be checked (t02: 1 of 6 such runs), and not when it can
+  (0 of 20).
 * Found: recall cannot answer a question about another project's sessions
   (t22) — a scope limit of per-project banks, not a gate defect.
 * Learned about measurement: a with/without comparison here needs several
@@ -223,3 +228,27 @@ failed is scope: the hook recalls from the bank of the directory the prompt
 was typed in, and the question was about work done from another directory.
 Answering it needs cross-bank recall — a design decision (noise, privacy
 between projects), not a threshold change, and left open here.
+
+### t02, replayed
+
+The memory arm of t02 re-run with its frozen injection, one variable at a
+time, answers labelled by three blind no-tool classifiers (majority) for
+*"states as current that memgardend has no unit / is started by hand"*. The
+classifier says yes 3/3 on v1's original answer and no 3/3 on v2's.
+
+| sandbox | shipped rendering | + preamble | + age suffix | + both |
+|---|---|---|---|---|
+| notes hidden, state checkable (v2) | 0 / 5 | 0 / 5 | 0 / 5 | 0 / 5 |
+| home hidden, state uncheckable (v1) | 1 / 5 | — | — | 0 / 5 |
+
+The preamble tried: *"Dated notes from past sessions, not a live view: a
+fact about what runs, is installed or is configured may have changed since
+its date — check before stating it as current."* The age suffix:
+`(2026-08-09, 69 days ago)`.
+
+When the agent can look, it looks, and the stale memory does no harm. When
+it cannot, it repeats the memory about one time in five; 1/5 against 0/5 is
+not evidence that either rendering change helps, so **neither ships**. The
+newer contradicting fact (created 08-25, *"a systemd user service now"*) was
+in the bank and was not recalled — that is the retrieval side of the open
+supersession problem, not something a rendering change reaches.
