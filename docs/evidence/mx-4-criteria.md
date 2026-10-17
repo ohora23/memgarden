@@ -146,3 +146,26 @@ Anything else is reported as it is, with the losses quoted.
 5. 30 tasks at most, fewer per stratum.
 6. The author built the system. Mitigation: mechanical selection, blind
    independent judges, rules committed first. Not a proof of neutrality.
+
+## Re-run (v2), 2026-10-18 — written after the first result, before the re-run
+
+The first run's sandbox emptied the whole home directory, not only the notes,
+and its error flags measured that (see the result). The re-run changes **only
+the sandbox**; tasks, frozen injections, workspaces, instruction, model, judges
+and the three conditions above are unchanged.
+
+* The home directory is visible read-only: `~/.claude/plugins`, the real
+  `~/.claude/settings.json`, `~/.config` (systemd unit files included), other
+  repositories, toolchains, the memgarden embedding models.
+* Hidden: the vault; `~/.claude/CLAUDE.md`, `projects/` (transcripts and every
+  `MEMORY.md`), `history.jsonl`, `file-history/`, `paste-cache/`, session and
+  backup directories; other agents' homes (`.codex`, `.gemini`, `.opencode`,
+  …); `~/.omc`; the memgarden data directory except its models; every other
+  checkout of the task repositories.
+* User settings are not loaded (`--setting-sources project`); the arm's hook
+  arrives through `--settings`, so the settings file the agent can read is the
+  real one.
+* The stratifier is re-run in the new sandbox, before the arms.
+
+Both runs are reported. The re-run's table is the one the conditions are read
+from, because it is the one whose sandbox matches the question.
