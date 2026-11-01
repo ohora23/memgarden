@@ -813,6 +813,7 @@ mod tests {
                 temporal: 0.5,
                 proof: 0.5,
             },
+            source_bank: None,
         }
     }
 

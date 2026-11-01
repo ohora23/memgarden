@@ -355,6 +355,23 @@ pub struct RecallConfig {
     /// `recallPromptPreamble`, moved server-side because MemGarden builds
     /// the injection (plan §Workspace decision keeps the Phase C hook thin).
     pub preamble: String,
+    /// Opt-in cross-bank fallback: when the requested bank returns zero
+    /// results and nothing was withheld as already injected, recall from
+    /// each of these banks (in order) and merge the results into the reply.
+    /// Skip the requested bank itself and any bank that does not exist; an
+    /// error in one fallback bank skips that bank only. See
+    /// `docs/evidence/cross-bank-fallback.md` for the measurement that
+    /// motivated this. Never list a bank whose contents must not reach other
+    /// projects' sessions.
+    pub fallback_banks: Vec<String>,
+    /// The semantic floor applied when the route falls back to other banks.
+    /// 0.88 is where the measurement's precision rose to 22% while still
+    /// helping 5 of 121 prompts; other banks' items are older and noisier than
+    /// the requested bank's. `0.0` disables the floor (not the fallback).
+    pub fallback_min_semantic: f64,
+    /// The cap on how many fallback items the route returns. `1..=20`; 3 because a
+    /// prompt the requested bank had nothing for rarely needs more.
+    pub fallback_limit: usize,
 }
 
 /// `[retain]` — transcript ingest (CE-5b, B3). Every cap here lives
@@ -556,6 +573,9 @@ impl Config {
                 min_semantic: 0.83,
                 cap_per_source: 0,
                 preamble: String::new(),
+                fallback_banks: Vec::new(),
+                fallback_min_semantic: 0.88,
+                fallback_limit: 3,
             },
             reranker: RerankerConfig {
                 enabled: false,
@@ -795,6 +815,15 @@ pub fn from_parts(
             }
             if let Some(v) = recall.preamble {
                 cfg.recall.preamble = v;
+            }
+            if let Some(v) = recall.fallback_banks {
+                cfg.recall.fallback_banks = v;
+            }
+            if let Some(v) = recall.fallback_min_semantic {
+                cfg.recall.fallback_min_semantic = v;
+            }
+            if let Some(v) = recall.fallback_limit {
+                cfg.recall.fallback_limit = v;
             }
         }
         if let Some(r) = parsed.reranker {
@@ -1037,6 +1066,20 @@ pub fn from_parts(
         return Err(Error::Config(format!(
             "recall.min_semantic must be 0.0..=1.0: {}",
             cfg.recall.min_semantic
+        )));
+    }
+    if cfg.recall.fallback_min_semantic.is_nan()
+        || !(0.0..=1.0).contains(&cfg.recall.fallback_min_semantic)
+    {
+        return Err(Error::Config(format!(
+            "recall.fallback_min_semantic must be 0.0..=1.0: {}",
+            cfg.recall.fallback_min_semantic
+        )));
+    }
+    if cfg.recall.fallback_limit == 0 || cfg.recall.fallback_limit > 20 {
+        return Err(Error::Config(format!(
+            "recall.fallback_limit must be 1..=20: {}",
+            cfg.recall.fallback_limit
         )));
     }
     // A zero here is not "off" — `enabled` is off. `top_k = 0` would rerank
@@ -1363,6 +1406,9 @@ struct TomlRecall {
     min_semantic: Option<f64>,
     cap_per_source: Option<usize>,
     preamble: Option<String>,
+    fallback_banks: Option<Vec<String>>,
+    fallback_min_semantic: Option<f64>,
+    fallback_limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1465,6 +1511,9 @@ mod tests {
                 min_semantic: 0.0,
                 cap_per_source: 0,
                 preamble: String::new(),
+                fallback_banks: Vec::new(),
+                fallback_min_semantic: 0.88,
+                fallback_limit: 3,
             },
             reranker: RerankerConfig {
                 enabled: false,
@@ -2050,6 +2099,52 @@ mod tests {
                 from_parts(defaults(), Some(&toml), &HashMap::new()).is_err(),
                 "{bad}"
             );
+        }
+    }
+
+    #[test]
+    fn recall_fallback_defaults_and_validation() {
+        let cfg = Config::defaults().unwrap();
+        assert!(cfg.recall.fallback_banks.is_empty());
+        assert_eq!(cfg.recall.fallback_min_semantic, 0.88);
+        assert_eq!(cfg.recall.fallback_limit, 3);
+
+        let toml = "[recall]\nfallback_banks = [\"a\", \"b\"]\nfallback_min_semantic = 0.9\nfallback_limit = 5";
+        let cfg = from_parts(defaults(), Some(toml), &HashMap::new()).unwrap();
+        assert_eq!(cfg.recall.fallback_banks, vec!["a", "b"]);
+        assert_eq!(cfg.recall.fallback_min_semantic, 0.9);
+        assert_eq!(cfg.recall.fallback_limit, 5);
+
+        // Invalid min_semantic.
+        for bad in ["1.5", "-0.1", "nan"] {
+            let toml = format!("[recall]\nfallback_min_semantic = {bad}");
+            assert!(
+                from_parts(defaults(), Some(&toml), &HashMap::new()).is_err(),
+                "fallback_min_semantic {bad}"
+            );
+        }
+
+        // Invalid limit: 0 and 21.
+        for bad in [
+            "[recall]\nfallback_limit = 0",
+            "[recall]\nfallback_limit = 21",
+        ] {
+            assert!(
+                from_parts(defaults(), Some(bad), &HashMap::new()).is_err(),
+                "fallback_limit {bad}"
+            );
+        }
+
+        // Boundary values: 1 and 20 are ok.
+        for (toml, limit) in [
+            "[recall]\nfallback_limit = 1",
+            "[recall]\nfallback_limit = 20",
+        ]
+        .into_iter()
+        .zip([1usize, 20])
+        {
+            let cfg = from_parts(defaults(), Some(toml), &HashMap::new()).unwrap();
+            assert_eq!(cfg.recall.fallback_limit, limit, "fallback_limit {toml}");
         }
     }
 }

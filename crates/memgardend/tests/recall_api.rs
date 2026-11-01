@@ -102,7 +102,11 @@ fn texts(v: &Value) -> Vec<String> {
 }
 
 fn seed(db: &Db, fact_type: FactType, text: &str, tags: &[&str]) -> i64 {
-    let mut node = NewNode::new("b1", fact_type, text);
+    seed_on(db, "b1", fact_type, text, tags)
+}
+
+fn seed_on(db: &Db, bank: &str, fact_type: FactType, text: &str, tags: &[&str]) -> i64 {
+    let mut node = NewNode::new(bank, fact_type, text);
     node.mentioned_at = Some(1_782_898_200_000); // 2026-07-01T09:30:00Z
     let id = nodes::insert(db, node).unwrap();
     if !tags.is_empty() {
@@ -1701,4 +1705,145 @@ async fn an_observation_and_the_fact_it_restates_are_never_both_injected() {
         ids.contains(&other),
         "the slot freed by the dedupe should be filled by the next candidate"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Opt-in cross-bank fallback
+// ---------------------------------------------------------------------------
+
+/// Basic fallback: b1 is empty for the query, b2 has matching items.
+/// The reply should contain merged results from b2 with `source_bank` set,
+/// `[from b2]` in the injection, and correct counts.
+#[tokio::test]
+async fn cross_bank_fallback_merges_from_fallback_bank() {
+    let (app, db) = test_app(|c| {
+        c.recall.fallback_banks = vec!["b2".into()];
+        c.recall.fallback_limit = 3;
+    });
+    banks::create(&db, "b1", None, None).unwrap();
+    banks::create(&db, "b2", None, None).unwrap();
+    // b1 has no matching item for the query.
+    seed(&db, FactType::World, "completely different text on b1", &[]);
+    // b2 has matching items.
+    seed_on(&db, "b2", FactType::World, "fallbackword one", &[]);
+    seed_on(&db, "b2", FactType::World, "fallbackword two", &[]);
+    seed_on(&db, "b2", FactType::World, "fallbackword three", &[]);
+    // One more than the limit, so the cap is what is being tested.
+    seed_on(&db, "b2", FactType::World, "fallbackword four", &[]);
+
+    let out = recall(&app, json!({ "query": "fallbackword" })).await;
+    assert_eq!(out["counts"]["fallback"], 3, "{out}");
+    assert_eq!(out["counts"]["returned"], 3, "{out}");
+    assert_eq!(out["counts"]["excluded"], 0, "{out}");
+    for item in out["results"].as_array().unwrap() {
+        assert_eq!(
+            item["source_bank"].as_str().unwrap(),
+            "b2",
+            "every result should be from b2: {out}"
+        );
+    }
+    let injected = out["injected_text"].as_str().unwrap();
+    assert!(
+        injected.contains("[from b2]"),
+        "injection should mark source bank: {injected}"
+    );
+}
+
+/// When the home bank returns results, fallback must not trigger.
+#[tokio::test]
+async fn cross_bank_fallback_does_not_trigger_on_home_hits() {
+    let (app, db) = test_app(|c| {
+        c.recall.fallback_banks = vec!["b2".into()];
+    });
+    banks::create(&db, "b1", None, None).unwrap();
+    banks::create(&db, "b2", None, None).unwrap();
+    seed(&db, FactType::World, "fallbackword present in home", &[]);
+    seed_on(&db, "b2", FactType::World, "fallbackword also on b2", &[]);
+
+    let out = recall(&app, json!({ "query": "fallbackword" })).await;
+    assert_eq!(out["counts"]["fallback"], 0, "{out}");
+    // Only the home bank (b1) is recalled — b2 is not consulted.
+    assert_eq!(out["counts"]["returned"], 1, "{out}");
+    // No results should carry a source_bank marker.
+    for item in out["results"].as_array().unwrap() {
+        assert!(
+            item["source_bank"].is_null(),
+            "home results must not carry source_bank: {item}"
+        );
+    }
+}
+
+/// `"fallback": false` disables the cross-bank path even when b1 is empty.
+#[tokio::test]
+async fn cross_bank_fallback_disabled_by_request() {
+    let (app, db) = test_app(|c| {
+        c.recall.fallback_banks = vec!["b2".into()];
+    });
+    banks::create(&db, "b1", None, None).unwrap();
+    banks::create(&db, "b2", None, None).unwrap();
+    seed(&db, FactType::World, "only on b1 for matching query", &[]);
+    seed_on(&db, "b2", FactType::World, "fallbackword", &[]);
+
+    let out = recall(&app, json!({ "query": "fallbackword", "fallback": false })).await;
+    assert_eq!(out["counts"]["returned"], 0, "{out}");
+    assert_eq!(out["counts"]["fallback"], 0, "{out}");
+}
+
+/// Default config (empty `fallback_banks`) does not trigger fallback.
+#[tokio::test]
+async fn cross_bank_fallback_off_by_default() {
+    let (app, db) = test_app(|_| {});
+    banks::create(&db, "b1", None, None).unwrap();
+    banks::create(&db, "b2", None, None).unwrap();
+    seed(&db, FactType::World, "home bank empty for query", &[]);
+    seed_on(&db, "b2", FactType::World, "fallbackword", &[]);
+
+    let out = recall(&app, json!({ "query": "fallbackword" })).await;
+    assert_eq!(out["counts"]["returned"], 0, "{out}");
+    assert_eq!(out["counts"]["fallback"], 0, "{out}");
+}
+
+/// When the home bank's matches are all excluded via `exclude`,
+/// fallback must not trigger (`counts.excluded > 0`).
+#[tokio::test]
+async fn cross_bank_fallback_blocked_by_excluded_items() {
+    let (app, db) = test_app(|c| {
+        c.recall.fallback_banks = vec!["b2".into()];
+    });
+    banks::create(&db, "b1", None, None).unwrap();
+    banks::create(&db, "b2", None, None).unwrap();
+    seed(&db, FactType::World, "fallbackword home match", &[]);
+    seed_on(&db, "b2", FactType::World, "fallbackword on b2", &[]);
+
+    let first = recall(&app, json!({ "query": "fallbackword", "limit": 3 })).await;
+    let uuids: Vec<String> = first["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["uuid"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(uuids.len(), 1);
+
+    let out = recall(&app, json!({ "query": "fallbackword", "exclude": uuids })).await;
+    assert_eq!(out["counts"]["excluded"], 1, "{out}");
+    assert_eq!(out["counts"]["fallback"], 0, "{out}");
+    assert_eq!(out["counts"]["returned"], 0, "{out}");
+}
+
+/// A listed fallback bank that does not exist is silently skipped; no error.
+#[tokio::test]
+async fn cross_bank_fallback_skips_nonexistent_bank() {
+    let (app, db) = test_app(|c| {
+        c.recall.fallback_banks = vec!["b2".into(), "b99".into()];
+        c.recall.fallback_limit = 3;
+    });
+    banks::create(&db, "b1", None, None).unwrap();
+    banks::create(&db, "b2", None, None).unwrap();
+    seed(&db, FactType::World, "home bank empty for query", &[]);
+    seed_on(&db, "b2", FactType::World, "fallbackword", &[]);
+
+    let out = recall(&app, json!({ "query": "fallbackword" })).await;
+    assert_eq!(out["counts"]["fallback"], 1, "{out}");
+    assert_eq!(out["counts"]["returned"], 1, "{out}");
+    // b99 was silently skipped — no 404.
 }

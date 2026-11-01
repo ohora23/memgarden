@@ -14,7 +14,7 @@ use memgarden_store::banks;
 
 use crate::error::{ApiError, join_err};
 use crate::json::ApiJson;
-use crate::recall::{self, RecallParams, TagsMatch};
+use crate::recall::{self, RecallParams, TagsMatch, recall_fallback};
 use crate::state::AppState;
 
 /// A query longer than this is a bug in the caller, not a prompt. The FTS
@@ -63,6 +63,10 @@ pub struct RecallRequest {
     /// daemon scan an unbounded list on every prompt.
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// `false` turns off `[recall] fallback_banks` for this request. Absent
+    /// means on, which does nothing while that list is empty (the default).
+    #[serde(default)]
+    pub fallback: Option<bool>,
 }
 
 /// More than this and the client is not tracking a session, it is sending
@@ -188,7 +192,38 @@ async fn recall_inner(
         now_ms: memgarden_core::now_ms(),
     };
 
-    let outcome = recall::recall(&state, bank_id, params).await?;
+    let home = recall::recall(&state, bank_id.clone(), params.clone()).await?;
+
+    // Only when the requested bank had nothing: not when it had items the
+    // session already holds (`excluded`), because then nothing is missing.
+    let should_fallback = home.counts.returned == 0
+        && home.counts.excluded == 0
+        && !state.cfg.recall.fallback_banks.is_empty()
+        && body.fallback.unwrap_or(true);
+
+    let outcome = if should_fallback {
+        match recall_fallback(
+            &state,
+            &bank_id,
+            &params,
+            &state.cfg.recall.fallback_banks,
+            state.cfg.recall.fallback_min_semantic,
+            state.cfg.recall.fallback_limit,
+        )
+        .await
+        {
+            Some(mut fb) => {
+                // What the requested bank saw stays in the diagnostics.
+                fb.counts.candidates = home.counts.candidates;
+                fb.counts.below_floor = home.counts.below_floor;
+                fb
+            }
+            None => home,
+        }
+    } else {
+        home
+    };
+
     // Metered here rather than inside `recall::recall`: this is the only
     // caller whose result reaches a client, so this is the only call that is
     // an injection.
