@@ -103,8 +103,12 @@ query --(<5 chars? -> empty)--> [embed] --> KNN(over-fetch)  --\
   returns nothing — and nothing was withheld as already injected — the route
   recalls from the banks listed in `[recall] fallback_banks` (empty by
   default) at `fallback_min_semantic = 0.88`, keeps the best
-  `fallback_limit = 3` by semantic score, and marks each line
-  `[from <project>]`. Measured, with its risks (stale infrastructure state,
+  `fallback_limit = 3` by semantic score (deduplicated across banks and fitted
+  to `max_tokens` again), and marks each line `[from <project>]`. Unlike the
+  abstain gate, the fallback floor never stands aside: with no query
+  embedding nothing crosses banks. The floor may not be set below
+  `min_semantic`. Each listed bank costs one more recall (query embedding
+  included) on prompts their own bank had nothing for. Measured, with its risks (stale infrastructure state,
   private content crossing projects), in
   `docs/evidence/cross-bank-fallback.md`.
 - **No `knn_filtered` wrapper.** The plan specified one as "a thin wrapper on

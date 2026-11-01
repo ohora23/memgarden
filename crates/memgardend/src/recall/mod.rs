@@ -793,21 +793,16 @@ pub(crate) async fn recall_fallback(
         if bank_id == home {
             continue;
         }
-        let db = state.db.clone();
-        let id = bank_id.clone();
-        let found = {
-            let task = tokio::task::spawn_blocking(move || banks::get(&db, &id));
-            let result = task.await.map_err(join_err);
-            match result {
-                Ok(Ok(opt)) => opt,
-                Ok(Err(e)) => {
-                    tracing::warn!(bank = %bank_id, error = %e, "fallback bank lookup failed; skipped");
-                    continue;
-                }
-                Err(e) => {
-                    tracing::warn!(bank = %bank_id, error = ?e, "fallback bank lookup failed; skipped");
-                    continue;
-                }
+        let (db, id) = (state.db.clone(), bank_id.clone());
+        let found = match tokio::task::spawn_blocking(move || banks::get(&db, &id)).await {
+            Ok(Ok(found)) => found,
+            Ok(Err(e)) => {
+                tracing::warn!(bank = %bank_id, error = %e, "fallback bank lookup failed; skipped");
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(bank = %bank_id, error = %e, "fallback bank lookup failed; skipped");
+                continue;
             }
         };
         if found.is_none() {
@@ -816,6 +811,9 @@ pub(crate) async fn recall_fallback(
         let mut fallback_params = params.clone();
         fallback_params.min_semantic = min_semantic;
         fallback_params.limit = limit;
+        // Each call embeds the query again: the cost of a fallback is one
+        // recall per listed bank, paid only on prompts their own bank had
+        // nothing for.
         match recall(state, bank_id.clone(), fallback_params).await {
             Ok(outcome) => {
                 for mut item in outcome.results {
@@ -828,8 +826,12 @@ pub(crate) async fn recall_fallback(
             }
         }
     }
-    if merged.is_empty() {
-        return None;
+    // The floor is the reason this path is safe to turn on, so it holds even
+    // where the abstain gate stands aside: with no query embedding every item
+    // lacks a score, and keyword-only items from another project are exactly
+    // the low-precision, possibly private injection the measurement warned of.
+    if min_semantic > 0.0 {
+        merged.retain(|r| r.scores.semantic.is_some_and(|s| s >= min_semantic));
     }
     merged.sort_by(|a, b| {
         let a_sem = a.scores.semantic.unwrap_or(f64::NEG_INFINITY);
@@ -838,11 +840,18 @@ pub(crate) async fn recall_fallback(
             .partial_cmp(&a_sem)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    merged.truncate(limit);
-    let tokens: u64 = merged
-        .iter()
-        .map(|r| crate::retain::token_count(&r.text))
-        .sum();
+    // One bank's dedupe does not see another's: the same line can be stored
+    // in two projects.
+    let mut seen = std::collections::HashSet::new();
+    merged.retain(|r| seen.insert(r.uuid.clone()) && seen.insert(r.text.clone()));
+    // Each bank fitted its own list to the budget; the merge must fit again.
+    let texts: Vec<String> = merged.iter().map(|r| r.text.clone()).collect();
+    let (kept, _) = budget::fit_to_budget(&texts, params.max_tokens, token_count);
+    merged.truncate(kept.min(limit));
+    if merged.is_empty() {
+        return None;
+    }
+    let tokens = merged.iter().map(|r| token_count(&r.text)).sum();
     let injected_text = build_injection(&merged, &params.preamble, params.now_ms);
     let n = merged.len();
     Some(RecallOutcome {
@@ -1178,8 +1187,7 @@ mod tests {
 
     #[test]
     fn injection_marks_source_bank_items() {
-        let mut plain = item("home memory", FactType::World, Some(MENTIONED));
-        plain.source_bank = None;
+        let plain = item("home memory", FactType::World, Some(MENTIONED));
         let mut fallback = item("cross-bank memory", FactType::World, Some(MENTIONED));
         fallback.source_bank = Some("claude-code::local-llm".to_string());
         let results = vec![plain, fallback];
