@@ -67,7 +67,9 @@ whichever project happens to be open, so they end up scattered across banks.
 * **Only when the own bank returned nothing**, and nothing was withheld as
   already injected — if the session already holds what the bank had, there is
   nothing missing to look for.
-* **Floor 0.88, at most 3 items** — the knee of the table above.
+* **Floor 0.88, at most 3 items** — the knee of the table above. The floor
+  holds even with no query embedding (then nothing crosses), and it cannot be
+  configured below the requested bank's own floor.
 * **Marked**: each fallback line carries `[from <project>]`, so the reader
   knows it is another project's memory.
 

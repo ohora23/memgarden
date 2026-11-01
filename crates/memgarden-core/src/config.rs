@@ -367,7 +367,9 @@ pub struct RecallConfig {
     /// The semantic floor applied when the route falls back to other banks.
     /// 0.88 is where the measurement's precision rose to 22% while still
     /// helping 5 of 121 prompts; other banks' items are older and noisier than
-    /// the requested bank's. `0.0` disables the floor (not the fallback).
+    /// the requested bank's. Must be at least `min_semantic`. Items without a
+    /// semantic score (no query embedding) never clear a non-zero floor here,
+    /// unlike the abstain gate, which stands aside in that case.
     pub fallback_min_semantic: f64,
     /// The cap on how many fallback items the route returns. `1..=20`; 3 because a
     /// prompt the requested bank had nothing for rarely needs more.
@@ -1075,6 +1077,23 @@ pub fn from_parts(
             "recall.fallback_min_semantic must be 0.0..=1.0: {}",
             cfg.recall.fallback_min_semantic
         )));
+    }
+    if cfg.recall.fallback_min_semantic < cfg.recall.min_semantic {
+        return Err(Error::Config(format!(
+            "recall.fallback_min_semantic ({}) must not be below recall.min_semantic ({}): \
+             another project's memories get a stricter floor, never a looser one",
+            cfg.recall.fallback_min_semantic, cfg.recall.min_semantic
+        )));
+    }
+    {
+        let mut seen = std::collections::HashSet::new();
+        for b in &cfg.recall.fallback_banks {
+            if b.trim().is_empty() || !seen.insert(b.as_str()) {
+                return Err(Error::Config(format!(
+                    "recall.fallback_banks: empty or repeated bank id {b:?}"
+                )));
+            }
+        }
     }
     if cfg.recall.fallback_limit == 0 || cfg.recall.fallback_limit > 20 {
         return Err(Error::Config(format!(
@@ -2145,6 +2164,19 @@ mod tests {
         {
             let cfg = from_parts(defaults(), Some(toml), &HashMap::new()).unwrap();
             assert_eq!(cfg.recall.fallback_limit, limit, "fallback_limit {toml}");
+        }
+
+        // Never looser than the requested bank's own floor; no empty or
+        // repeated bank ids.
+        for bad in [
+            "[recall]\nmin_semantic = 0.9\nfallback_min_semantic = 0.88",
+            "[recall]\nfallback_banks = [\"a\", \"a\"]",
+            "[recall]\nfallback_banks = [\" \"]",
+        ] {
+            assert!(
+                from_parts(defaults(), Some(bad), &HashMap::new()).is_err(),
+                "{bad}"
+            );
         }
     }
 }

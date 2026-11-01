@@ -1717,6 +1717,9 @@ async fn an_observation_and_the_fact_it_restates_are_never_both_injected() {
 #[tokio::test]
 async fn cross_bank_fallback_merges_from_fallback_bank() {
     let (app, db) = test_app(|c| {
+        // The embedder is off here, so no item has a semantic score; a
+        // non-zero fallback floor would (correctly) admit nothing.
+        c.recall.fallback_min_semantic = 0.0;
         c.recall.fallback_banks = vec!["b2".into()];
         c.recall.fallback_limit = 3;
     });
@@ -1753,6 +1756,9 @@ async fn cross_bank_fallback_merges_from_fallback_bank() {
 #[tokio::test]
 async fn cross_bank_fallback_does_not_trigger_on_home_hits() {
     let (app, db) = test_app(|c| {
+        // The embedder is off here, so no item has a semantic score; a
+        // non-zero fallback floor would (correctly) admit nothing.
+        c.recall.fallback_min_semantic = 0.0;
         c.recall.fallback_banks = vec!["b2".into()];
     });
     banks::create(&db, "b1", None, None).unwrap();
@@ -1777,6 +1783,9 @@ async fn cross_bank_fallback_does_not_trigger_on_home_hits() {
 #[tokio::test]
 async fn cross_bank_fallback_disabled_by_request() {
     let (app, db) = test_app(|c| {
+        // The embedder is off here, so no item has a semantic score; a
+        // non-zero fallback floor would (correctly) admit nothing.
+        c.recall.fallback_min_semantic = 0.0;
         c.recall.fallback_banks = vec!["b2".into()];
     });
     banks::create(&db, "b1", None, None).unwrap();
@@ -1808,6 +1817,9 @@ async fn cross_bank_fallback_off_by_default() {
 #[tokio::test]
 async fn cross_bank_fallback_blocked_by_excluded_items() {
     let (app, db) = test_app(|c| {
+        // The embedder is off here, so no item has a semantic score; a
+        // non-zero fallback floor would (correctly) admit nothing.
+        c.recall.fallback_min_semantic = 0.0;
         c.recall.fallback_banks = vec!["b2".into()];
     });
     banks::create(&db, "b1", None, None).unwrap();
@@ -1834,6 +1846,9 @@ async fn cross_bank_fallback_blocked_by_excluded_items() {
 #[tokio::test]
 async fn cross_bank_fallback_skips_nonexistent_bank() {
     let (app, db) = test_app(|c| {
+        // The embedder is off here, so no item has a semantic score; a
+        // non-zero fallback floor would (correctly) admit nothing.
+        c.recall.fallback_min_semantic = 0.0;
         c.recall.fallback_banks = vec!["b2".into(), "b99".into()];
         c.recall.fallback_limit = 3;
     });
@@ -1846,4 +1861,38 @@ async fn cross_bank_fallback_skips_nonexistent_bank() {
     assert_eq!(out["counts"]["fallback"], 1, "{out}");
     assert_eq!(out["counts"]["returned"], 1, "{out}");
     // b99 was silently skipped — no 404.
+}
+
+/// With a non-zero fallback floor and no query embedding, nothing crosses
+/// banks: the floor holds even where the abstain gate stands aside.
+#[tokio::test]
+async fn cross_bank_fallback_floor_holds_without_an_embedder() {
+    let (app, db) = test_app(|c| {
+        c.recall.fallback_banks = vec!["b2".into()];
+        c.recall.fallback_min_semantic = 0.88;
+    });
+    banks::create(&db, "b1", None, None).unwrap();
+    banks::create(&db, "b2", None, None).unwrap();
+    seed_on(&db, "b2", FactType::World, "fallbackword keyword only", &[]);
+
+    let out = recall(&app, json!({ "query": "fallbackword" })).await;
+    assert_eq!(out["counts"]["returned"], 0, "{out}");
+    assert_eq!(out["counts"]["fallback"], 0, "{out}");
+}
+
+/// The same line stored in two fallback banks is injected once.
+#[tokio::test]
+async fn cross_bank_fallback_injects_a_line_held_by_two_banks_once() {
+    let (app, db) = test_app(|c| {
+        c.recall.fallback_min_semantic = 0.0;
+        c.recall.fallback_banks = vec!["b2".into(), "b3".into()];
+    });
+    for b in ["b1", "b2", "b3"] {
+        banks::create(&db, b, None, None).unwrap();
+    }
+    seed_on(&db, "b2", FactType::World, "fallbackword shared line", &[]);
+    seed_on(&db, "b3", FactType::World, "fallbackword shared line", &[]);
+
+    let out = recall(&app, json!({ "query": "fallbackword" })).await;
+    assert_eq!(out["counts"]["fallback"], 1, "{out}");
 }
