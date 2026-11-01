@@ -17,7 +17,10 @@ use serde::{Deserialize, Serialize};
 
 use memgarden_core::metrics::METRICS;
 use memgarden_core::types::FactType;
-use memgarden_store::search::{self, CandidateRow};
+use memgarden_store::{
+    banks,
+    search::{self, CandidateRow},
+};
 
 use crate::error::{ApiError, join_err};
 use crate::rerank;
@@ -151,6 +154,10 @@ pub struct RecallItem {
     pub occurred_end: Option<i64>,
     pub mentioned_at: Option<i64>,
     pub scores: Scores,
+    /// The bank an item came from when `[recall] fallback_banks` supplied it
+    /// (`docs/evidence/cross-bank-fallback.md`); absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_bank: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -167,6 +174,9 @@ pub struct RecallCounts {
     /// `scores.semantic` fell below the HTTP route's `min_semantic` floor,
     /// or they had no semantic score at all.
     pub below_floor: usize,
+    /// Items that came from `[recall] fallback_banks` because the requested
+    /// bank returned nothing.
+    pub fallback: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -204,6 +214,7 @@ impl RecallOutcome {
                 tokens: 0,
                 excluded: 0,
                 below_floor: 0,
+                fallback: 0,
             },
         }
     }
@@ -634,6 +645,7 @@ pub async fn recall(
                         temporal,
                         proof,
                     },
+                    source_bank: None,
                 },
             ))
         })
@@ -739,6 +751,7 @@ pub async fn recall(
             tokens,
             excluded,
             below_floor,
+            fallback: 0,
         },
         injected_text,
         results,
@@ -755,6 +768,101 @@ fn withhold_below_floor(results: &mut Vec<RecallItem>, floor: f64) -> usize {
     let before = results.len();
     results.retain(|r| r.scores.semantic.is_some_and(|s| s >= floor));
     before - results.len()
+}
+
+/// Opt-in cross-bank fallback, for when the requested bank returned nothing.
+///
+/// Recalls the same query from each of `banks` at a stricter floor, merges by
+/// semantic score (missing scores last), keeps `limit`, and marks each item
+/// with its bank. A listed bank that does not exist is skipped; one that
+/// errors is skipped and logged — the fallback must never fail a recall the
+/// requested bank already answered (with nothing). `None` when no bank had
+/// anything. Counts other than `returned`/`tokens`/`fallback` are the
+/// caller's: they describe the requested bank. Measured in
+/// `docs/evidence/cross-bank-fallback.md`.
+pub(crate) async fn recall_fallback(
+    state: &AppState,
+    home: &str,
+    params: &RecallParams,
+    banks: &[String],
+    min_semantic: f64,
+    limit: usize,
+) -> Option<RecallOutcome> {
+    let mut merged: Vec<RecallItem> = Vec::new();
+    for bank_id in banks {
+        if bank_id == home {
+            continue;
+        }
+        let db = state.db.clone();
+        let id = bank_id.clone();
+        let found = {
+            let task = tokio::task::spawn_blocking(move || banks::get(&db, &id));
+            let result = task.await.map_err(join_err);
+            match result {
+                Ok(Ok(opt)) => opt,
+                Ok(Err(e)) => {
+                    tracing::warn!(bank = %bank_id, error = %e, "fallback bank lookup failed; skipped");
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(bank = %bank_id, error = ?e, "fallback bank lookup failed; skipped");
+                    continue;
+                }
+            }
+        };
+        if found.is_none() {
+            continue;
+        }
+        let mut fallback_params = params.clone();
+        fallback_params.min_semantic = min_semantic;
+        fallback_params.limit = limit;
+        match recall(state, bank_id.clone(), fallback_params).await {
+            Ok(outcome) => {
+                for mut item in outcome.results {
+                    item.source_bank = Some(bank_id.clone());
+                    merged.push(item);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(bank = %bank_id, error = ?e, "fallback recall failed; skipped");
+            }
+        }
+    }
+    if merged.is_empty() {
+        return None;
+    }
+    merged.sort_by(|a, b| {
+        let a_sem = a.scores.semantic.unwrap_or(f64::NEG_INFINITY);
+        let b_sem = b.scores.semantic.unwrap_or(f64::NEG_INFINITY);
+        b_sem
+            .partial_cmp(&a_sem)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    merged.truncate(limit);
+    let tokens: u64 = merged
+        .iter()
+        .map(|r| crate::retain::token_count(&r.text))
+        .sum();
+    let injected_text = build_injection(&merged, &params.preamble, params.now_ms);
+    let n = merged.len();
+    Some(RecallOutcome {
+        results: merged,
+        injected_text,
+        counts: RecallCounts {
+            candidates: 0,
+            returned: n,
+            tokens,
+            excluded: 0,
+            below_floor: 0,
+            fallback: n,
+        },
+    })
+}
+
+/// Extract the short name from a bank id: everything after the last `::`,
+/// or the whole string when there is no `::`.
+fn short_bank(bank: &str) -> &str {
+    bank.rsplit_once("::").map_or(bank, |(_, tail)| tail)
 }
 
 /// `"%Y-%m-%d %H:%M UTC"` — `scripts/lib/content.py:231`. Falls back to the
@@ -842,9 +950,12 @@ fn compact_text(text: &str, mentioned_date: Option<&str>) -> String {
 /// [`compact_text`]. Only the tag name changes from legacy
 /// (`<memgarden_memories>`); B3's strip list covers both names.
 ///
+/// An item from another bank (`source_bank`) gets `[from {project}]` before
+/// its date, so the reader knows it is another project's memory.
+///
 /// Empty when there is nothing to inject — the hook prints nothing then, and
 /// an empty envelope would cost tokens for no content.
-fn build_injection(results: &[RecallItem], preamble: &str, now_ms: i64) -> String {
+pub(crate) fn build_injection(results: &[RecallItem], preamble: &str, now_ms: i64) -> String {
     if results.is_empty() {
         return String::new();
     }
@@ -861,11 +972,16 @@ fn build_injection(results: &[RecallItem], preamble: &str, now_ms: i64) -> Strin
                 (_, _, Some(d)) => format!(" ({d})"),
                 _ => String::new(),
             };
+            let source = r
+                .source_bank
+                .as_deref()
+                .map(short_bank)
+                .map(|s| format!(" [from {s}]"))
+                .unwrap_or_default();
             format!(
-                "- {} [{}]{}",
+                "- {} [{}]{source}{suffix}",
                 defang(&compact_text(&r.text, date)),
                 r.fact_type.as_str(),
-                suffix
             )
         })
         .collect();
@@ -967,6 +1083,7 @@ mod tests {
                 temporal: 0.5,
                 proof: 0.5,
             },
+            source_bank: None,
         }
     }
 
@@ -1059,6 +1176,26 @@ mod tests {
         assert_eq!(format_utc(i64::MAX), i64::MAX.to_string());
     }
 
+    #[test]
+    fn injection_marks_source_bank_items() {
+        let mut plain = item("home memory", FactType::World, Some(MENTIONED));
+        plain.source_bank = None;
+        let mut fallback = item("cross-bank memory", FactType::World, Some(MENTIONED));
+        fallback.source_bank = Some("claude-code::local-llm".to_string());
+        let results = vec![plain, fallback];
+        let text = build_injection(&results, "Relevant memories:", NOW);
+        assert_eq!(
+            text,
+            "<memgarden_memories>\n\
+             Relevant memories:\n\
+             Current time - 2026-08-02 04:55 UTC\n\
+             \n\
+             - home memory [world] (2026-07-01)\n\
+             - cross-bank memory [world] [from local-llm] (2026-07-01)\n\
+             </memgarden_memories>"
+        );
+    }
+
     // --- dedupe_restatements (AC-1) -------------------------------------
 
     fn ranked(id: i64) -> (f64, RecallItem) {
@@ -1083,6 +1220,7 @@ mod tests {
                     temporal: 0.0,
                     proof: 0.0,
                 },
+                source_bank: None,
             },
         )
     }
@@ -1108,6 +1246,13 @@ mod tests {
         let mut r = ranked(id);
         r.1.text = text.to_string();
         r
+    }
+
+    #[test]
+    fn short_bank_extracts_after_last_colon_colon() {
+        assert_eq!(short_bank("claude-code::local-llm"), "local-llm");
+        assert_eq!(short_bank("b1"), "b1");
+        assert_eq!(short_bank("a::b::c"), "c");
     }
 
     #[test]

@@ -98,6 +98,15 @@ query --(<5 chars? -> empty)--> [embed] --> KNN(over-fetch)  --\
   store's own e5 cosine (`[recall] min_semantic`, default 0.83;
   `docs/evidence/multilingual-embeddings.md`). The arms still do not prune.
   Add real floors only with MemGarden-calibrated numbers.
+- **Opt-in cross-bank fallback.** Recall is per project, so a question about
+  work done from another directory finds nothing. When the requested bank
+  returns nothing — and nothing was withheld as already injected — the route
+  recalls from the banks listed in `[recall] fallback_banks` (empty by
+  default) at `fallback_min_semantic = 0.88`, keeps the best
+  `fallback_limit = 3` by semantic score, and marks each line
+  `[from <project>]`. Measured, with its risks (stale infrastructure state,
+  private content crossing projects), in
+  `docs/evidence/cross-bank-fallback.md`.
 - **No `knn_filtered` wrapper.** The plan specified one as "a thin wrapper on
   `knn` with the over-fetch `k` computed by the caller" — that is `knn`. The
   caller computes `k`.
