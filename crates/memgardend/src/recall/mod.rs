@@ -842,8 +842,11 @@ pub(crate) async fn recall_fallback(
     });
     // One bank's dedupe does not see another's: the same line can be stored
     // in two projects.
-    let mut seen = std::collections::HashSet::new();
-    merged.retain(|r| seen.insert(r.uuid.clone()) && seen.insert(r.text.clone()));
+    let (mut uuids, mut texts) = (
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+    );
+    merged.retain(|r| uuids.insert(r.uuid.clone()) && texts.insert(r.text.clone()));
     // Each bank fitted its own list to the budget; the merge must fit again.
     let texts: Vec<String> = merged.iter().map(|r| r.text.clone()).collect();
     let (kept, _) = budget::fit_to_budget(&texts, params.max_tokens, token_count);

@@ -207,7 +207,13 @@ async fn recall_inner(
             &bank_id,
             &params,
             &state.cfg.recall.fallback_banks,
-            state.cfg.recall.fallback_min_semantic,
+            // A request stricter than the configured fallback floor stays
+            // strict for other banks too.
+            state
+                .cfg
+                .recall
+                .fallback_min_semantic
+                .max(params.min_semantic),
             state.cfg.recall.fallback_limit,
         )
         .await

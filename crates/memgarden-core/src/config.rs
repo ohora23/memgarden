@@ -1078,7 +1078,11 @@ pub fn from_parts(
             cfg.recall.fallback_min_semantic
         )));
     }
-    if cfg.recall.fallback_min_semantic < cfg.recall.min_semantic {
+    // Only when the fallback is on: a config that never lists a bank must not
+    // stop loading because its own floor is above the fallback default.
+    if !cfg.recall.fallback_banks.is_empty()
+        && cfg.recall.fallback_min_semantic < cfg.recall.min_semantic
+    {
         return Err(Error::Config(format!(
             "recall.fallback_min_semantic ({}) must not be below recall.min_semantic ({}): \
              another project's memories get a stricter floor, never a looser one",
@@ -2166,10 +2170,19 @@ mod tests {
             assert_eq!(cfg.recall.fallback_limit, limit, "fallback_limit {toml}");
         }
 
+        // With the fallback off, a high min_semantic still loads.
+        let cfg = from_parts(
+            defaults(),
+            Some("[recall]\nmin_semantic = 0.9"),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert!(cfg.recall.fallback_banks.is_empty());
+
         // Never looser than the requested bank's own floor; no empty or
         // repeated bank ids.
         for bad in [
-            "[recall]\nmin_semantic = 0.9\nfallback_min_semantic = 0.88",
+            "[recall]\nmin_semantic = 0.9\nfallback_banks = [\"a\"]",
             "[recall]\nfallback_banks = [\"a\", \"a\"]",
             "[recall]\nfallback_banks = [\" \"]",
         ] {
