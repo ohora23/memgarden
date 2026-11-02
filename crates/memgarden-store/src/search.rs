@@ -26,7 +26,8 @@ pub const MAX_QUERY_TERMS: usize = 12;
 /// Korean: AND 0). Ranking still favours documents matching more terms —
 /// that is what `bm25()` is for — so OR loses nothing but the empty result.
 ///
-/// Each alphanumeric run is split again where Hangul meets anything else, and
+/// Each alphanumeric run is split again where Hangul meets a non-Hangul
+/// letter or digit, and
 /// terms shorter than [`MIN_TERM_CHARS`] are dropped. Hangul is alphanumeric,
 /// so without the second split a Latin name with a Korean particle attached
 /// (`<name>에`, `<server>서버`) was one prefix term that matched nothing stored as
@@ -36,18 +37,19 @@ pub const MAX_QUERY_TERMS: usize = 12;
 /// that starts with a b — so they go, in every script.
 pub fn fts_query_string(raw: &str) -> String {
     let mut terms: Vec<&str> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for tok in raw.split(|c: char| !c.is_alphanumeric()) {
         let mut start = 0;
         let mut prev = None;
         for (i, c) in tok.char_indices() {
             let hangul = is_hangul(c);
             if prev.is_some_and(|p| p != hangul) {
-                push_term(&mut terms, &tok[start..i]);
+                push_term(&mut terms, &mut seen, &tok[start..i]);
                 start = i;
             }
             prev = Some(hangul);
         }
-        push_term(&mut terms, &tok[start..]);
+        push_term(&mut terms, &mut seen, &tok[start..]);
     }
 
     if terms.len() > MAX_QUERY_TERMS {
@@ -75,14 +77,25 @@ pub fn fts_query_string(raw: &str) -> String {
 pub const MIN_TERM_CHARS: usize = 2;
 
 fn is_hangul(c: char) -> bool {
-    matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}')
+    matches!(
+        c,
+        '\u{AC00}'..='\u{D7A3}'
+            | '\u{1100}'..='\u{11FF}'
+            | '\u{3130}'..='\u{318F}'
+            | '\u{A960}'..='\u{A97F}'
+            | '\u{D7B0}'..='\u{D7FF}'
+            | '\u{FFA0}'..='\u{FFDC}'
+    )
 }
 
-/// Appends `term` unless it is too short or already there (ASCII case aside:
-/// the index is case-folded, so `PR` and `pr` are one term).
-fn push_term<'a>(terms: &mut Vec<&'a str>, term: &'a str) {
-    if term.chars().count() >= MIN_TERM_CHARS && !terms.iter().any(|t| t.eq_ignore_ascii_case(term))
-    {
+/// Appends `term` unless it is too short or already there in any case: the
+/// index is case-folded, so `PR` and `pr` are one term.
+fn push_term<'a>(
+    terms: &mut Vec<&'a str>,
+    seen: &mut std::collections::HashSet<String>,
+    term: &'a str,
+) {
+    if term.chars().count() >= MIN_TERM_CHARS && seen.insert(term.to_lowercase()) {
         terms.push(term);
     }
 }
@@ -534,8 +547,12 @@ mod tests {
             fts_query_string("a 하고 B할 때까지"),
             "\"하고\"* OR \"때까지\"*"
         );
-        // Repeats collapse, ASCII case aside.
+        // Repeats collapse, in any case.
         assert_eq!(fts_query_string("PR의 pr을"), "\"PR\"*");
+        assert_eq!(fts_query_string("Émile émile"), "\"Émile\"*");
+        // Nothing left is the empty string, which callers read as "no
+        // keyword arm" rather than an FTS5 syntax error.
+        assert_eq!(fts_query_string("a 3 B 물"), "");
     }
 
     #[test]
