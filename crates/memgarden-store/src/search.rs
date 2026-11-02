@@ -25,11 +25,30 @@ pub const MAX_QUERY_TERMS: usize = 12;
 /// realistic multi-token prompt (16-token English: AND 0 / OR 100; 5-token
 /// Korean: AND 0). Ranking still favours documents matching more terms —
 /// that is what `bm25()` is for — so OR loses nothing but the empty result.
+///
+/// Each alphanumeric run is split again where Hangul meets anything else, and
+/// terms shorter than [`MIN_TERM_CHARS`] are dropped. Hangul is alphanumeric,
+/// so without the second split a Latin name with a Korean particle attached
+/// (`<name>에`, `<server>서버`) was one prefix term that matched nothing stored as
+/// the bare name: measured 0 vs 16 keyword hits for the same prompt with and
+/// without a space (`docs/evidence/fts-script-boundary.md`). The split leaves
+/// single-character fragments (`B할` → `B`), and `"B"*` matches every token
+/// that starts with a b — so they go, in every script.
 pub fn fts_query_string(raw: &str) -> String {
-    let mut terms: Vec<&str> = raw
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|tok| !tok.is_empty())
-        .collect();
+    let mut terms: Vec<&str> = Vec::new();
+    for tok in raw.split(|c: char| !c.is_alphanumeric()) {
+        let mut start = 0;
+        let mut prev = None;
+        for (i, c) in tok.char_indices() {
+            let hangul = is_hangul(c);
+            if prev.is_some_and(|p| p != hangul) {
+                push_term(&mut terms, &tok[start..i]);
+                start = i;
+            }
+            prev = Some(hangul);
+        }
+        push_term(&mut terms, &tok[start..]);
+    }
 
     if terms.len() > MAX_QUERY_TERMS {
         // Rank by length (stable, so equal-length terms keep query order),
@@ -50,6 +69,22 @@ pub fn fts_query_string(raw: &str) -> String {
         .map(|tok| format!("\"{tok}\"*"))
         .collect::<Vec<_>>()
         .join(" OR ")
+}
+
+/// Shorter query terms are dropped; see [`fts_query_string`].
+pub const MIN_TERM_CHARS: usize = 2;
+
+fn is_hangul(c: char) -> bool {
+    matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}')
+}
+
+/// Appends `term` unless it is too short or already there (ASCII case aside:
+/// the index is case-folded, so `PR` and `pr` are one term).
+fn push_term<'a>(terms: &mut Vec<&'a str>, term: &'a str) {
+    if term.chars().count() >= MIN_TERM_CHARS && !terms.iter().any(|t| t.eq_ignore_ascii_case(term))
+    {
+        terms.push(term);
+    }
 }
 
 /// Full-text candidate node ids for `bank_id`, ranked by BM25 (best first).
@@ -466,7 +501,9 @@ mod tests {
             fts_query_string("cats AND dogs"),
             "\"cats\"* OR \"AND\"* OR \"dogs\"*"
         );
-        assert_eq!(fts_query_string("a OR b"), "\"a\"* OR \"OR\"* OR \"b\"*");
+        // One-character terms are dropped (MIN_TERM_CHARS); the operator
+        // word survives as a quoted, harmless term.
+        assert_eq!(fts_query_string("a OR b"), "\"OR\"*");
         assert_eq!(
             fts_query_string("NOT NEAR cats"),
             "\"NOT\"* OR \"NEAR\"* OR \"cats\"*"
@@ -478,6 +515,27 @@ mod tests {
             fts_query_string("say \"hi\" now"),
             "\"say\"* OR \"hi\"* OR \"now\"*"
         );
+    }
+
+    #[test]
+    fn fts_query_string_splits_where_hangul_meets_latin_or_digits() {
+        // A particle glued to a Latin name, a Hangul noun glued to one.
+        assert_eq!(fts_query_string("redis에"), "\"redis\"*");
+        assert_eq!(fts_query_string("gpu서버를"), "\"gpu\"* OR \"서버를\"*");
+        assert_eq!(fts_query_string("v15로"), "\"v15\"*");
+        // Pure runs are untouched.
+        assert_eq!(
+            fts_query_string("데몬은 memgardend"),
+            "\"데몬은\"* OR \"memgardend\"*"
+        );
+        // Fragments under two characters go, in every script: `"B"*` would
+        // match every token starting with b.
+        assert_eq!(
+            fts_query_string("a 하고 B할 때까지"),
+            "\"하고\"* OR \"때까지\"*"
+        );
+        // Repeats collapse, ASCII case aside.
+        assert_eq!(fts_query_string("PR의 pr을"), "\"PR\"*");
     }
 
     #[test]
