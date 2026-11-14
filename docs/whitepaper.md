@@ -206,22 +206,37 @@ anonymised and frozen: **13 better / 5 worse / 1 equivalent**, 0 unjudgeable.
 Method and criteria committed before the run:
 [`evidence/ac-1-blind-panel.md`](evidence/ac-1-blind-panel.md).
 
-### 6.2 The frozen gold set — bench, with a caveat that decides how to read it
+### 6.2 The frozen gold set — bench
 
 20 graded queries (14 answerable) over a frozen 2,718-fact corpus, production
-weights (`semantic=0.1`). Labels on 19 of the 20 queries are still provisional:
+weights (`semantic=0.1`, `proof=0.1`; the old build predates the `proof`
+knob and runs the same value as its built-in default). Both embedders run through their own
+build of the same harness: bge-small-en through `1aa76c3`, which reproduces its
+recorded result exactly (0.403 / 0.710 / 0.373, identical top-10 on all 14
+queries), and multilingual-e5-small through `e2cf68f`.
 
-| embedder | recall@10 | MRR | nDCG@10 | top-10 results with no label |
-|---|---|---|---|---|
-| bge-small-en (recorded) | 0.403 | 0.710 | 0.375 | 18 / 140 (13%) |
-| multilingual-e5-small (now) | 0.371 | 0.583 | **0.395** | **54 / 140 (39%)** |
+**The original labels could not compare them.** They were pooled from the old
+embedder's results, and an unlabelled result scores as irrelevant: 39% of e5's
+top-10 (54 / 140) had no label, against 13% (18 / 140) for bge. Scored that way
+e5 looked worse — 0.371 / 0.583 / 0.394.
 
-**This table cannot rank the two embedders.** The labels were pooled from the
-old embedder's results, so an unlabelled result scores as irrelevant; the new
-embedder returns three times as many results no one has judged. nDCG rises
-while recall and MRR fall, which is what that bias looks like. Settling it means
-grading the 54 new results, which has not been done. The change was made on the
-live, mostly-Korean prompt stream, where the old embedder was at chance (§4).
+So the 70 unlabelled results from both arms were graded on the existing 0/1/2
+scale — a local model drafted, a second reader reviewed every item and changed
+7 of 70 — after which **every top-10 result in both arms is labelled**:
+
+| embedder | recall@10 | MRR | nDCG@10 |
+|---|---|---|---|
+| bge-small-en | 0.389 | **0.727** | 0.375 |
+| multilingual-e5-small | **0.412** | 0.696 | **0.438** |
+| e5 better / worse, per query | 6 / 3 (5 tied) | 5 / 3 (6 tied) | **11 / 3** |
+
+On a corpus that is mostly English, the multilingual embedder is **better on graded
+relevance and slightly worse on the first hit** (nDCG +0.063, 11 of 14 queries;
+sign test p ≈ 0.06), with a small loss in where the first hit lands (MRR −0.031).
+Three limits: 14 queries; the new grades were not blind to which arm returned
+each result; and labels on 19 of 20 queries are still provisional. The reason
+for the switch was the live, mostly-Korean prompt stream, where the old embedder
+was at chance (§4); this set shows it did not cost the English side.
 
 ### 6.3 Does it make the agent better at the job? — recorded, not shown
 
@@ -257,7 +272,7 @@ not been run.
 | injected context down ~77–88% at 214 tokens/prompt | **measured, live** | §4 |
 | ingest failure rate 0.1% over 30 days, 0 daemon errors | **measured, live** | §5.1 |
 | better recall than the system it replaced | **measured, 2026-08** | §6.1 |
-| new embedder better on the gold set | **not determinable** with current labels | §6.2 |
+| new embedder no worse on the gold set (nDCG +0.063, 11 of 14 queries) | **measured**, non-blind regrade, p ≈ 0.06 | §6.2 |
 | better task outcomes | **not shown** | §6.3 |
 
 ## 8. Reproducing this
