@@ -1,5 +1,8 @@
 # What MemGarden actually buys — every measurement in one place
 
+> **Newer:** [`whitepaper.md`](whitepaper.md) re-measures all of this on the
+> 2026-11 build (25k nodes, multilingual embeddings, abstain gate).
+
 Assembled 2026-08-27, after v1 closed. Each row links to the evidence it comes
 from, including the measurements that came out against the system.
 
