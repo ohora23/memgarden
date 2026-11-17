@@ -17,3 +17,4 @@
 
 # OMC session state, not repo content
 /.omc/
+__pycache__/

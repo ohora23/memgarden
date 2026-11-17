@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the MemGarden usage audit daily
+
+[Timer]
+OnCalendar=*-*-* 04:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
