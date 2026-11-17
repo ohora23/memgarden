@@ -1,0 +1,11 @@
+[Unit]
+Description=MemGarden usage audit — one line of injection metrics per day
+Documentation=https://github.com/ohora23/memgarden/blob/master/docs/evidence/usage-audit.md
+
+[Service]
+Type=oneshot
+# The repo path is this machine's checkout; the script is stdlib-only.
+# `llm` (the local judge) must be on PATH; without it judged_items stays 0.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 %h/repositories/memgarden/scripts/usage-audit.py --days 1
+Nice=10
