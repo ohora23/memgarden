@@ -132,6 +132,12 @@ pub struct HooksConfig {
     /// erase the user's prompt. That is not theoretical: the live
     /// `~/.hindsight/claude-code.json` had `debug: true` until 2026-08-03.
     pub debug: bool,
+    /// `hook recall` injects nothing for a prompt a machine sent — a
+    /// background-task notification, a peer session's report, a master
+    /// session's broadcast. Those were 40% of injected memories over a month
+    /// with no recorded use (`docs/evidence/usage-audit.md`). `false` restores
+    /// recall on every prompt.
+    pub skip_machine_prompts: bool,
 
     // --- bank derivation (plan §Binding decisions #4) ---
     //
@@ -626,6 +632,7 @@ impl Config {
                 shadow_log_max_bytes: 64 * 1024 * 1024,
                 state_dir: paths::hooks_state_dir()?,
                 debug: false,
+                skip_machine_prompts: true,
                 bank_id: String::new(),
                 // legacy: bank.py:26 DEFAULT_BANK_NAME / :124 agentName.
                 agent_name: "claude-code".to_string(),
@@ -945,6 +952,9 @@ pub fn from_parts(
             }
             if let Some(v) = hooks.debug {
                 cfg.hooks.debug = v;
+            }
+            if let Some(v) = hooks.skip_machine_prompts {
+                cfg.hooks.skip_machine_prompts = v;
             }
             if let Some(v) = hooks.bank_id {
                 cfg.hooks.bank_id = v;
@@ -1373,6 +1383,7 @@ struct TomlHooks {
     shadow_log_max_bytes: Option<u64>,
     state_dir: Option<String>,
     debug: Option<bool>,
+    skip_machine_prompts: Option<bool>,
     bank_id: Option<String>,
     agent_name: Option<String>,
     directory_bank_map: Option<HashMap<String, String>>,
@@ -1583,6 +1594,7 @@ mod tests {
                 shadow_log_max_bytes: 64 * 1024 * 1024,
                 state_dir: PathBuf::from("/data/hooks"),
                 debug: false,
+                skip_machine_prompts: true,
                 bank_id: String::new(),
                 agent_name: "claude-code".to_string(),
                 directory_bank_map: HashMap::new(),
@@ -1615,6 +1627,7 @@ mod tests {
         assert_eq!(h.max_inject_bytes, 64 * 1024);
         assert_eq!(h.shadow_log_max_bytes, 64 * 1024 * 1024);
         assert!(!h.debug);
+        assert!(h.skip_machine_prompts, "must default to true");
         assert_eq!(h.bank_id, "");
         assert_eq!(h.agent_name, "claude-code");
         assert!(h.directory_bank_map.is_empty());
@@ -1629,6 +1642,7 @@ mod tests {
             recall_timeout_ms = 250
             state_dir = "~/hookstate"
             debug = true
+            skip_machine_prompts = false
             bank_id = "pinned"
             agent_name = "codex"
             [hooks.directory_bank_map]
@@ -1642,6 +1656,10 @@ mod tests {
         assert_eq!(cfg.hooks.recall_timeout_ms, 250);
         assert_eq!(cfg.hooks.state_dir, PathBuf::from("/home/u/hookstate"));
         assert!(cfg.hooks.debug);
+        assert!(
+            !cfg.hooks.skip_machine_prompts,
+            "TOML should set it to false"
+        );
         assert_eq!(cfg.hooks.bank_id, "pinned");
         assert_eq!(cfg.hooks.agent_name, "codex");
         assert_eq!(

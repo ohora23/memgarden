@@ -66,3 +66,21 @@ Two levers follow directly. Four in ten memories were injected into a turn
 that a machine sent — a background-task notification, a peer session's
 report — answering a prompt no person asked. And at least one in seven
 repeated what the session had already said.
+
+## First lever: skip machine-sent prompts (2026-11-18)
+
+The recall hook does not receive `origin` (its input carries the prompt text,
+session, cwd and event name only), so it decides from the text: a prompt that
+starts with `<task-notification>`, `[MASTER]`, `Another Claude session` or
+`[SYSTEM` is skipped when `[hooks] skip_machine_prompts = true` (the default).
+
+Checked against Claude Code's own `origin.kind` on 1,121 non-empty prompts: the
+rule matches 489/489 `task-notification`, 63/63 `peer` and 1/569 `human`.
+
+Applied to the same month of injections: **1,389 of 3,535 injected memories
+(39.3%) would not have been injected**, against 40.3% by `origin`; 4 memories
+on prompts a person sent would have been skipped. In that month none of the
+machine-prompt memories in the hand-labelled sample was used, so the expected
+cost of the change is the 4, and the saving is four tenths of the injected
+tokens plus the slower half of recall latency
+([recall-latency-attribution](recall-latency-attribution.md)).

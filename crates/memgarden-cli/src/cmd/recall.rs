@@ -216,6 +216,10 @@ pub fn run() {
     let Some(cfg) = super::enabled_config() else {
         return;
     };
+    if cfg.hooks.skip_machine_prompts && is_machine_prompt(prompt) {
+        super::debug(&cfg.hooks, "recall: machine prompt, skipping");
+        return;
+    }
     if input.session_id.is_empty() || input.session_id.len() > super::MAX_SESSION_ID_BYTES {
         super::debug(&cfg.hooks, "recall: unusable session_id");
         return;
@@ -284,6 +288,16 @@ fn usable_prompt(input: &hookio::HookInput) -> Option<&str> {
     };
     let trimmed = raw.trim();
     (trimmed.chars().count() >= MIN_PROMPT_CHARS).then_some(trimmed)
+}
+
+/// Prompts a person did not type: background-task notifications, a master
+/// session's broadcasts, peer-session reports, system notices.
+fn is_machine_prompt(prompt: &str) -> bool {
+    let s = prompt.trim_start();
+    s.starts_with("<task-notification>")
+        || s.starts_with("[MASTER]")
+        || s.starts_with("Another Claude session")
+        || s.starts_with("[SYSTEM")
 }
 
 /// Longest prefix of `s` with at most `max` **characters**.
@@ -884,6 +898,26 @@ mod tests {
             .filter(|n| n.ends_with(".tmp"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn is_machine_prompt_detects_the_four_prefixes() {
+        assert!(is_machine_prompt("<task-notification>\n<task-id>x"));
+        assert!(is_machine_prompt("  [MASTER] 컨텍스트 85%"));
+        assert!(is_machine_prompt("Another Claude session sent a message:"));
+        assert!(is_machine_prompt("[SYSTEM NOTIFICATION]"));
+    }
+
+    #[test]
+    fn is_machine_prompt_rejects_person_prompts() {
+        assert!(!is_machine_prompt("이 버그 어떻게 고쳤지?"));
+        assert!(!is_machine_prompt(
+            "<command-message>loop</command-message>"
+        ));
+        assert!(!is_machine_prompt("<pasted_content id=\"1\">x"));
+        // Contains but does not start with the prefix (after trim).
+        assert!(!is_machine_prompt("see <task-notification> in the logs"));
+        assert!(!is_machine_prompt(""));
     }
 
     /// The collision the `.jsonl` extension exists to make impossible: a
