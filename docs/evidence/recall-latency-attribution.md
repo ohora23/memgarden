@@ -52,13 +52,16 @@ embedding.
 **Longer prompts.** Machine-sent prompts — background-task notifications and
 peer-session reports, which became common in this period — are long: in the
 replay their median was 26.9 ms against 14.1 ms for prompts a person typed.
-The hook truncates every query at `recall_max_query_chars = 800`, so the
-worst case is ~50 ms, inside the 70 ms gate.
+The hook truncates every query at `recall_max_query_chars = 800`; by the
+word-count table that is ~50 ms of embedding on top of ~10 ms of retrieval,
+about 55–60 ms at the median — close to the 70 ms p95 gate rather than
+comfortably inside it.
 
 Two consequences:
 
-- Skipping machine-sent prompts (`[hooks] skip_machine_prompts`) removes the
-  slow half of the median along with 40% of the injected tokens.
+- Skipping machine-sent prompts (`[hooks] skip_machine_prompts`) should remove
+  the slower half of the median along with 40% of the injected tokens — an
+  estimate from the replay's split, not a re-measurement after the change.
 - If latency ever needs more, embedding only the first ~300 characters of the
   query would bound it near 25 ms. That changes what the semantic arm sees and
   is not done without a quality measurement.
