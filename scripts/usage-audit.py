@@ -441,8 +441,6 @@ def main(argv: list[str] | None = None):
     result = audit(turns, judge=judge_fn, max_turns=args.max_turns, seed=seed)
     result['window_start'] = window_start.isoformat()
     result['window_end'] = window_end.isoformat()
-    result['generated_at'] = now.isoformat()
-    result['version'] = 1
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
