@@ -32,6 +32,22 @@ Near-duplicates inside one injection, all dates:
 | ≥ 0.5 | 90 / 3,534 (2.5%) | 50 / 881 (5.7%) |
 | ≥ 0.6 | 63 / 3,534 (1.8%) | 46 / 881 (5.2%) |
 
+## On the gold set
+
+The same rule — a newer memory moves ahead of an older one when their content
+tokens overlap ≥ 0.4 — applied offline to the RRF top 20 of the fully
+labelled gold set (14 answerable queries; the metric code reproduces the
+harness's 0.384 / 0.696 / 0.431 exactly before the change):
+
+| | |
+|---|---|
+| same-subject pairs of different dates in a top 20 | 2, across all 14 queries |
+| ...older ranked first | 1 |
+| recall@10 / MRR / nDCG@10 after reordering | 0.384 / 0.696 / 0.431 — unchanged |
+
+The gold corpus spans one week, so it holds few dated pairs by construction;
+it cannot show a gain, and it shows no loss.
+
 ## Decision
 
 **Held.** The case it targets — an older claim outranking a newer contrary one
