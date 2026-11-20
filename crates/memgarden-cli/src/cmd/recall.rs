@@ -297,6 +297,8 @@ fn is_machine_prompt(prompt: &str) -> bool {
     s.starts_with("<task-notification>")
         || s.starts_with("[MASTER]")
         || s.starts_with("Another Claude session")
+        // The peer format since 2026-11-19; the line above is the older one.
+        || s.starts_with("<cross-session-message")
         || s.starts_with("[SYSTEM")
 }
 
@@ -905,6 +907,9 @@ mod tests {
         assert!(is_machine_prompt("<task-notification>\n<task-id>x"));
         assert!(is_machine_prompt("  [MASTER] 컨텍스트 85%"));
         assert!(is_machine_prompt("Another Claude session sent a message:"));
+        assert!(is_machine_prompt(
+            "<cross-session-message from=\"uds:/run/x.sock\" from-name=\"peer\">"
+        ));
         assert!(is_machine_prompt("[SYSTEM NOTIFICATION]"));
     }
 

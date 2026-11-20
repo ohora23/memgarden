@@ -71,8 +71,9 @@ repeated what the session had already said.
 
 The recall hook does not receive `origin` (its input carries the prompt text,
 session, cwd and event name only), so it decides from the text: a prompt that
-starts with `<task-notification>`, `[MASTER]`, `Another Claude session` or
-`[SYSTEM` is skipped when `[hooks] skip_machine_prompts = true` (the default).
+starts with `<task-notification>`, `[MASTER]`, `Another Claude session`,
+`<cross-session-message` (the peer format since 2026-11-19) or `[SYSTEM` is
+skipped when `[hooks] skip_machine_prompts = true` (the default).
 
 Checked against Claude Code's own `origin.kind` on 1,121 non-empty prompts: the
 rule matches 489/489 `task-notification`, 63/63 `peer` and 1/569 `human`.
