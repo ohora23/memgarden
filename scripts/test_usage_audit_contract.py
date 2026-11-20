@@ -194,6 +194,9 @@ class ReviewFindings(unittest.TestCase):
         self.assertIn("job done", t[1]["prior"])
         self.assertEqual(t[1]["ts"], "2026-11-17T00:00:30Z")
 
+    def test_new_peer_format_is_machine_sent(self):
+        self.assertTrue(ua.is_automated('<cross-session-message from="uds:/run/x.sock" from-name="p">hi'))
+
     def test_human_origin_beats_the_prefix_rule(self):
         rec = user("<command-message>session-handoff</command-message>", "2026-11-17T00:00:00Z")
         rec["origin"] = {"kind": "human"}

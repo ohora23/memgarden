@@ -17,6 +17,7 @@ _AUTOMATED_PREFIXES = (
     "<task-notification>",
     "[MASTER]",
     "Another Claude session",
+    "<cross-session-message",
     "[SYSTEM",
 )
 _TOKEN = re.compile(r'[\w\-./:]{3,}')
