@@ -1,0 +1,13 @@
+# GitHub Pages: render README.md (+ docs/) as the project page.
+# Source trees and the one doc whose `{%` text Liquid misreads are excluded.
+exclude:
+  - crates
+  - book
+  - gold
+  - skills
+  - scripts
+  - Cargo.toml
+  - Cargo.lock
+  - rust-toolchain.toml
+  - config.example.toml
+  - docs/design/ce-11-reranker.md
